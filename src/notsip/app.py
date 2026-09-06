@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid, inspect, logging
+import json, os, socket, time, uuid, inspect
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -13,11 +13,12 @@ from .memory_service import MemoryService
 from .account_store import AccountStore
 from .conversations import ConversationStore
 from .logging_setup import configure as configure_logging
-attach_streaming(app, media, settings, settings.api_key)
-attach_background(app, store, nodes, recovery, intellect, events, settings.perception_interval)
-attach_perception(app, settings, win, media, store, events)
-attach_extra(app, require_auth, web, emailc)
-PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,os.getenv('NOTSIP_LOG_LEVEL','INFO'))
+from .native_voice import NativeVoiceWorker
+attach_streaming(app,media,settings,settings.api_key)
+attach_extra(app,require_auth,web,emailc)
+PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
+attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval)
+attach_perception(app,settings,win,media,store,events)
 
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
 @app.get('/',include_in_schema=False)
@@ -71,7 +72,7 @@ async def api_logout(request:Request):
     s=request.cookies.get('notsip_session');d=_sessions();d.pop(s,None);_save_sessions(d);auth.sessions.pop(s,None);r=Response(status_code=204);r.delete_cookie('notsip_session');return r
 
 @app.get('/api/capabilities')
-async def capabilities(_:None=Depends(require_auth)):return {'configured':probes.snapshot(),'diagnostics':diagnostics.run()}
+async def capabilities(_:None=Depends(require_auth)):return {'configured':probes.snapshot(),'diagnostics':diagnostics.run(),'voice_native':native_voice.running}
 @app.get('/api/diagnostics')
 async def diagnostics_route(_:None=Depends(require_auth)):return diagnostics.run()
 @app.get('/api/audit/log')
@@ -135,6 +136,12 @@ async def oauth_disconnect(account_id:str,_:None=Depends(require_auth)):
 async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
 async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
+@app.get('/api/voice/native')
+async def native_voice_status(_:None=Depends(require_auth)):return {'running':native_voice.running}
+@app.post('/api/voice/native/start')
+async def native_voice_start(_:None=Depends(require_auth)):return native_voice.start()
+@app.post('/api/voice/native/stop')
+async def native_voice_stop(_:None=Depends(require_auth)):return native_voice.stop()
 @app.get('/api/windows/tree')
 async def windows_tree(window_title:str='',window_re:str='',_:None=Depends(require_auth)):return uia.control_tree(window_title,window_re)
 @app.post('/api/windows/click')
