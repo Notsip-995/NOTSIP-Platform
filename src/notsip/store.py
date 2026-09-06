@@ -34,39 +34,55 @@ class Store:
             try:return self.rows('SELECT m.kind,m.content,m.weight,m.source,m.provenance,m.ts FROM memory_fts f JOIN memories m ON m.id=f.rowid WHERE m.user_id=? AND f.content MATCH ? ORDER BY rank LIMIT ?',(uid,q.replace('"',' '),limit))
             except sqlite3.OperationalError:pass
         return self.rows('SELECT kind,content,weight,source,provenance,ts FROM memories WHERE user_id=? ORDER BY weight DESC,ts DESC LIMIT ?',(uid,limit))
-    def entity(self,eid,kind,name,data):self.exec('INSERT INTO entities VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,data=excluded.data,updated=excluded.updated',(eid,kind,name,json.dumps(data),time.time()))
-    def entities(self):return self.rows('SELECT * FROM entities ORDER BY updated DESC')
-    def relation(self,s,p,o,confidence=1.,source='system'):self.exec('INSERT INTO relations(subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?)',(s,p,o,confidence,source,time.time()))
-    def relations(self):return self.rows('SELECT * FROM relations ORDER BY ts DESC')
+    def entity(self,eid,kind,name,data):
+        if self._backend:return self._backend.entity(eid,kind,name,data)
+        self.exec('INSERT INTO entities VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,data=excluded.data,updated=excluded.updated',(eid,kind,name,json.dumps(data),time.time()))
+    def entities(self):return self._backend.entities() if self._backend else self.rows('SELECT * FROM entities ORDER BY updated DESC')
+    def relation(self,s,p,o,confidence=1.,source='system'):
+        if self._backend:return self._backend.relation(s,p,o,confidence,source)
+        self.exec('INSERT INTO relations(subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?)',(s,p,o,confidence,source,time.time()))
+    def relations(self):return self._backend.relations() if self._backend else self.rows('SELECT * FROM relations ORDER BY ts DESC')
     def fact(self,statement,source,url='',confidence=.5,metadata=None):
+        if self._backend:return self._backend.fact(statement,source,url,confidence,metadata)
         fid=str(uuid.uuid4());self.exec('INSERT INTO facts VALUES(?,?,?,?,?,?,?)',(fid,statement,source,url,confidence,time.time(),json.dumps(metadata or {})));return fid
-    def facts(self,n=100):return self.rows('SELECT * FROM facts ORDER BY retrieved DESC LIMIT ?',(n,))
+    def facts(self,n=100):return self._backend.facts(n) if self._backend else self.rows('SELECT * FROM facts ORDER BY retrieved DESC LIMIT ?',(n,))
     def task(self,objective,state='PENDING',priority=0,handler='',data=None,run_at=None,interval_sec=None):
+        if self._backend:return self._backend.task(objective,state,priority,handler,data,run_at,interval_sec)
         tid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(tid,objective,state,priority,handler,json.dumps(data or {}),run_at,interval_sec,0,now,now,''));return tid
-    def tasks(self,state=None):
-        q='SELECT * FROM tasks';args=()
-        if state:q+=' WHERE state=?';args=(state,)
-        q+=' ORDER BY priority DESC,created ASC';return self.rows(q,args)
+    def tasks(self,state=None):return self._backend.tasks(state) if self._backend else self.rows(('SELECT * FROM tasks WHERE state=? ORDER BY priority DESC,created ASC' if state else 'SELECT * FROM tasks ORDER BY priority DESC,created ASC'),((state,) if state else ()))
     def task_update(self,tid,**fields):
         if not fields:return
         fields['updated']=time.time();self.exec('UPDATE tasks SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',(*fields.values(),tid))
-    def audit(self,*args):self.exec('INSERT INTO audit(user_id,request,interpretation,tool,action,result,ts) VALUES(?,?,?,?,?,?,?)',(*args,time.time()))
-    def audit_recent(self,n=200):return self.rows('SELECT * FROM audit ORDER BY id DESC LIMIT ?',(n,))
+    def audit(self,*args):
+        if self._backend:return self._backend.audit(*args)
+        self.exec('INSERT INTO audit(user_id,request,interpretation,tool,action,result,ts) VALUES(?,?,?,?,?,?,?)',(*args,time.time()))
+    def audit_recent(self,n=200):return self._backend.audit_recent(n) if self._backend else self.rows('SELECT * FROM audit ORDER BY id DESC LIMIT ?',(n,))
     def create_pair_code(self,ttl=300):
+        if self._backend:return self._backend.create_pair_code(ttl)
         code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()+ttl));return code
     def consume_pair_code(self,code):
+        if self._backend:return self._backend.consume_pair_code(code)
         r=self.row('SELECT expires FROM pairing_codes WHERE code=?',(code.upper(),));ok=bool(r and r['expires']>time.time());
         if ok:self.exec('DELETE FROM pairing_codes WHERE code=?',(code.upper(),))
         return ok
-    def pair_device(self,id,name,platform,public_key,token):self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE','{}'))
+    def pair_device(self,id,name,platform,public_key,token):
+        if self._backend:return self._backend.pair_device(id,name,platform,public_key,token)
+        self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE','{}'))
     def device_token_valid(self,id,token):
+        if self._backend:return self._backend.device_token_valid(id,token)
         r=self.row('SELECT token_hash FROM devices WHERE id=?',(id,));return bool(r and secrets.compare_digest(r['token_hash'],hashlib.sha256(token.encode()).hexdigest()))
-    def heartbeat(self,id,status='ONLINE'):self.exec('UPDATE devices SET last_seen=?,status=? WHERE id=?',(time.time(),status,id))
-    def devices(self):return self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name')
-    def queue_command(self,device_id,action,payload):
+    def heartbeat(self,id,status='ONLINE'):
+        if self._backend:return self._backend.heartbeat(id,status)
+        self.exec('UPDATE devices SET last_seen=?,status=? WHERE id=?',(time.time(),status,id))
+    def devices(self):return self._backend.devices() if self._backend else self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name')
+    def queue_command(self,device_id,action,payload):return self._backend.queue_command(device_id,action,payload) if self._backend else self._queue_sqlite(device_id,action,payload)
+    def _queue_sqlite(self,device_id,action,payload):
         cid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO commands VALUES(?,?,?,?,?,?,?,?)',(cid,device_id,action,json.dumps(payload or {}),'PENDING',now,now,''));return cid
     def pull_commands(self,device_id,limit=20):
+        if self._backend:return self._backend.pull_commands(device_id,limit)
         rows=self.rows("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit))
         for r in rows:self.exec('UPDATE commands SET status=?,updated=? WHERE id=?',('DELIVERED',time.time(),r['id']));r['payload']=json.loads(r['payload'])
         return rows
-    def command_result(self,cid,status,result):self.exec('UPDATE commands SET status=?,result=?,updated=? WHERE id=?',(status,json.dumps(result),time.time(),cid))
+    def command_result(self,cid,status,result):
+        if self._backend:return self._backend.command_result(cid,status,result)
+        self.exec('UPDATE commands SET status=?,result=?,updated=? WHERE id=?',(status,json.dumps(result),time.time(),cid))
