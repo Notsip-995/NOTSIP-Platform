@@ -1,40 +1,42 @@
 # NOTSIP Platform
 
-Standalone NOTSIP platform project. This repository is completely separate from `Notsip-995/NOTSIPAI`.
+Standalone NOTSIP project. This repository is completely independent from `Notsip-995/NOTSIPAI`.
 
-## Current track
+## 0.5.0 operational baseline
 
-`0.3.0-alpha` — installable integration platform. Adapters either call real configured services or return explicit availability/configuration errors. No fake telemetry or fabricated successful actions are intended.
+The executable entrypoint is `python -m notsip`, backed by `src/notsip/runtime05.py`. It provides a persistent local control plane with memory, model tool-calling, autonomy gates, Windows execution boundaries, desktop screenshot/open actions, web search, persistent tasks, signed events, Android pairing, device command polling, email/ICS/OAuth/vision configuration surfaces, and an explicit degraded mode when a real dependency is unavailable.
 
-## Structure
+Nothing in this repository fabricates device telemetry or claims an external action succeeded without a real adapter result.
 
-- `src/notsip/` — control plane, agent loop, persistent store, policy, tools, world model, events and jobs
-- `android/` — Android companion / pairing / accessibility boundary
-- `scripts/` — Windows installation and startup
-- `docs/` — architecture
-- `tests/` — smoke tests
-
-## Windows setup
+## Windows 11 setup
 
 ```powershell
+git clone https://github.com/Notsip-995/NOTSIP-Platform.git
+cd NOTSIP-Platform
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install_windows.ps1
-# Edit .env with real provider/service configuration
+notepad .env
 .\scripts\start_windows.ps1
 ```
 
-Then open `http://127.0.0.1:8765`.
+Open `http://127.0.0.1:8765`.
 
-## Model
+## Real provider
 
-Set `NOTSIP_LLM_BASE_URL`, `NOTSIP_LLM_MODEL` and, when required, `NOTSIP_LLM_API_KEY`. The gateway uses the OpenAI-compatible chat-completions protocol and can point at a hosted or local inference endpoint.
+Set `NOTSIP_LLM_BASE_URL`, `NOTSIP_LLM_MODEL`, and `NOTSIP_LLM_API_KEY` when required. The provider uses the OpenAI-compatible `/chat/completions` contract, so it can point to a hosted or local inference server.
+
+## Android
+
+The companion uses a short-lived pairing code and a device-scoped token. Provider secrets stay on the NOTSIP node. Android UI automation is bounded by the user-enabled AccessibilityService permission. Google Play requires new apps/updates to target Android 16 (API 36) from August 31, 2026. citeturn987980search0 Android also requires AccessibilityService to be explicitly enabled by the user. citeturn987980search1
 
 ## Security
 
-Secrets are excluded from Git. Tool capabilities have risk classes and autonomy gates. Destructive/high-risk operations are blocked below the configured threshold. Android receives a device-scoped pairing token rather than provider API keys.
+Secrets are excluded from Git. High-risk tools are autonomy-gated. Workspace file operations are sandboxed. Pairing tokens are hashed at rest. Use a dedicated secret manager for production deployment.
 
-## Deferred
+## Current hardware target
 
-Robotics, satellite/remote-sensing, vehicle and building integrations remain disabled until real systems are available.
+The design is tuned for the supplied Lenovo Windows 11 Pro laptop (Intel i5-1335U, 16 GB RAM, Intel Iris Xe) plus an Android phone. CUDA is not required. Docker, local PostgreSQL/Redis, robotics, satellites, vehicles, Raspberry Pi, ESP32 and smart-home hardware are optional rather than prerequisites.
 
-The repository source tree is the authoritative clone target.
+## Deferred by design
+
+Robotics, satellite/remote sensing, vehicle systems and building automation are disabled until real target infrastructure exists. Google/Microsoft/messaging OAuth requires actual developer registrations and user authorization; those interfaces are present, but the platform will not invent access.
