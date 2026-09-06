@@ -13,7 +13,6 @@ Standalone NOTSIP platform project. This repository is completely separate from 
 - `scripts/` — Windows installation and startup
 - `docs/` — architecture
 - `tests/` — smoke tests
-- `releases/` — source release archive
 
 ## Windows setup
 
@@ -38,4 +37,4 @@ Secrets are excluded from Git. Tool capabilities have risk classes and autonomy 
 
 Robotics, satellite/remote-sensing, vehicle and building integrations remain disabled until real systems are available.
 
-The `releases/NOTSIP-0.3.0-alpha.zip` archive is included as the original standalone package; the source tree in this repository is the authoritative clone target.
+The repository source tree is the authoritative clone target.
