@@ -2,13 +2,15 @@ from __future__ import annotations
 import hashlib,json,os,secrets,sqlite3,threading,time,uuid
 from pathlib import Path
 class Store:
-    def __init__(self,root):
+    def __init__(self,root,database_url=''):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock();self._backend=None
-        url=os.getenv('NOTSIP_DATABASE_URL','')
-        if url.startswith('postgresql://') or url.startswith('postgres://'):
+        url=database_url or os.getenv('NOTSIP_DATABASE_URL','')
+        if url.startswith('sqlite:///'): self.db=Path(url.replace('sqlite:///','',1)); self.db=self.db if self.db.is_absolute() else self.root/self.db.name
+        elif url.startswith('postgresql://') or url.startswith('postgres://'):
             from .postgres_store import PostgreSQLStore
             self._backend=PostgreSQLStore(self.root,url);self.db=None;return
-        self.db=self.root/'notsip.db';self.init()
+        else:self.db=self.root/'notsip.db'
+        self.init()
     def conn(self):
         if self._backend:raise RuntimeError('PostgreSQL backend does not expose SQLite connection')
         c=sqlite3.connect(self.db,check_same_thread=False);c.row_factory=sqlite3.Row;return c
