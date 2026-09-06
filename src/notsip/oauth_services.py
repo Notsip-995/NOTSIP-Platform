@@ -16,12 +16,15 @@ class OAuthService:
         token=self._token(provider)
         if not token:raise RuntimeError(f'{provider} account is not authorized')
         async with httpx.AsyncClient(timeout=30) as c:
-            r=await c.get(self.PROFILES[provider][path],headers={'Authorization':'Bearer '+token,'Accept':'application/json'});r.raise_for_status();return r.json()
+            r=await c.get(self.PROFILES[provider][path],headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
+            if r.status_code==401:
+                await self.refresh(provider); token=self._token(provider); r=await c.get(self.PROFILES[provider][path],headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
+            r.raise_for_status();return r.json()
     async def calendar(self,provider):return await self._get(provider,'calendar')
     async def mail(self,provider):return await self._get(provider,'mail')
     async def refresh(self,provider):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
-        refresh=self.secrets.get(f'{provider}:refresh_token','') or self.secrets.get('oidc:tokens',{}).get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','')
+        refresh=self.secrets.get(f'{provider}:refresh_token','') or self.secrets.get('oidc:tokens',{}).get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','') or self.secrets.get('oidc:client_id','')
         if not refresh or not client_id:raise RuntimeError(f'{provider} refresh token or client id unavailable')
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id});r.raise_for_status();tokens=r.json()
@@ -29,6 +32,5 @@ class OAuthService:
     def save_tokens(self,provider,tokens):
         if tokens.get('access_token'):self.secrets.set(f'{provider}:access_token',tokens['access_token'])
         if tokens.get('refresh_token'):self.secrets.set(f'{provider}:refresh_token',tokens['refresh_token'])
-        if provider:self.secrets.set(f'{provider}:client_id',self.secrets.get('oidc:client_id',''))
         return {'provider':provider,'stored':sorted(k for k in tokens if 'token' in k)}
     def profile(self,provider):return self.PROFILES.get(provider,{'scopes':''})
