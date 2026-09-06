@@ -5,6 +5,13 @@ from .events import Event
 
 
 def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
+    @app.get('/api/config/public')
+    async def config_public():
+        secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+        values={k:getattr(settings,k) for k in settings.__class__.model_fields if k not in secret_names}
+        presence={k:bool(getattr(settings,k,None)) for k in secret_names}
+        return {'settings':values,'secret_configured':presence}
+
     @app.get('/api/voice/transcribe')
     async def voice_transcribe(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
         if not settings.stt_base_url or not settings.stt_model:
