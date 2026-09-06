@@ -1,21 +1,24 @@
 from __future__ import annotations
-import json, time, urllib.parse, uuid
+import json, os, socket, time, uuid
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
-from .runtime_prod import app, media, settings, store, nodes, recovery, intellect, events, web, emailc, require_auth, auth, provider, pairing
+from fastapi import Depends, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from .runtime_prod import app, media, settings, store, nodes, recovery, intellect, events, web, emailc, require_auth, auth, provider, pairing, uia, win
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
 from .routes_extra import attach as attach_extra
+from .perception_loop import attach as attach_perception
 from .product_layer import resource_root, repo_root, ConfigStore, AuditLog, BackupManager, ApprovalStore, Diagnostics, Maintenance, CapabilityProbe
 attach_streaming(app, media, settings, settings.api_key)
 attach_background(app, store, nodes, recovery, intellect, events, settings.perception_interval)
+attach_perception(app, settings, win, media, store, events)
 attach_extra(app, require_auth, web, emailc)
-PRODUCT_ROOT=repo_root(); DATA=Path(settings.data_dir).resolve(); config_store=ConfigStore(DATA); audit_log=AuditLog(DATA); backups=BackupManager(DATA); approvals=ApprovalStore(DATA); diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc); maintenance=Maintenance(PRODUCT_ROOT); probes=CapabilityProbe(settings,store,provider,web,emailc)
+PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc)
 
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
 @app.get('/',include_in_schema=False)
 async def product_root():
+    if not config_store.path.exists():return RedirectResponse('/setup',status_code=302)
     ui=resource_root()/'ui.html'
     if ui.exists():return FileResponse(ui)
     return JSONResponse({'name':'NOTSIP','version':'0.9.0','status':'online','error':'UI resource missing'})
@@ -39,10 +42,8 @@ def _validate_persistent(token):
     if not s or s.get('expires',0)<=time.time():
         if token in d:d.pop(token);_save_sessions(d)
         return False
-    auth.sessions[token]=s
-    return True
-auth.mint_session=_mint_persistent
-auth.validate_session=_validate_persistent
+    auth.sessions[token]=s;return True
+auth.mint_session=_mint_persistent;auth.validate_session=_validate_persistent
 _pair_attempts={}
 def _rate_limited(ip:str,window=60,limit=15):
     now=time.time();recent=[t for t in _pair_attempts.get(ip,[]) if now-t<window];_pair_attempts[ip]=recent
@@ -52,15 +53,25 @@ def _rate_limited(ip:str,window=60,limit=15):
 @app.middleware('http')
 async def production_security(request:Request,call_next):
     rid=request.headers.get('X-Request-ID') or uuid.uuid4().hex;request.state.request_id=rid
+    cookie=request.cookies.get('notsip_session')
+    if cookie and not request.headers.get('authorization') and auth.validate_session(cookie):
+        request.scope['headers']=list(request.scope.get('headers',[]))+[(b'authorization',('Bearer '+settings.api_key).encode())]
     if request.url.path=='/api/devices/result':
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
-        if not device_id or not device_token or not store.device_token_valid(device_id,device_token):
-            return JSONResponse({'detail':'device authentication required'},status_code=401,headers={'X-Request-ID':rid})
-    if request.url.path=='/api/pair/consume' and _rate_limited(request.client.host if request.client else 'unknown'):
-        return JSONResponse({'detail':'pairing rate limit exceeded'},status_code=429,headers={'X-Request-ID':rid})
+        if not device_id or not device_token or not store.device_token_valid(device_id,device_token):return JSONResponse({'detail':'device authentication required'},status_code=401,headers={'X-Request-ID':rid})
+    if request.url.path=='/api/pair/consume' and _rate_limited(request.client.host if request.client else 'unknown'):return JSONResponse({'detail':'pairing rate limit exceeded'},status_code=429,headers={'X-Request-ID':rid})
     try:response=await call_next(request)
     except Exception as exc:audit_log.write('request.error',request_id=rid,path=request.url.path,error=str(exc));raise
     response.headers['X-Request-ID']=rid;audit_log.write('request',request_id=rid,method=request.method,path=request.url.path,status=response.status_code);return response
+
+@app.post('/api/login')
+async def api_login(payload:dict):
+    if not settings.api_key:raise HTTPException(503,'API key authentication is disabled; local access is open')
+    if not __import__('secrets').compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
+    token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=settings.session_ttl);return r
+@app.post('/api/logout')
+async def api_logout(request:Request):
+    s=request.cookies.get('notsip_session');d=_sessions();d.pop(s,None);_save_sessions(d);auth.sessions.pop(s,None);r=Response(status_code=204);r.delete_cookie('notsip_session');return r
 
 @app.get('/api/capabilities')
 async def capabilities(_:None=Depends(require_auth)):return {'configured':probes.snapshot(),'diagnostics':diagnostics.run()}
@@ -73,8 +84,7 @@ async def config_get(_:None=Depends(require_auth)):
     data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if not any(x in k.lower() for x in ('api_key','password','secret','client_secret'))}
-    secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret'}
+    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if not any(x in k.lower() for x in ('api_key','password','secret','client_secret'))};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret'}
     for k,v in requested.items():
         if k in allowed:setattr(settings,k,v)
         elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
@@ -97,5 +107,22 @@ async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_au
 @app.get('/api/self/provenance')
 async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
-async def process_info(_:None=Depends(require_auth)):return {'pid':__import__('os').getpid(),'host':__import__('socket').gethostname(),'port':settings.port,'data_dir':str(DATA)}
+async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
+@app.get('/api/windows/tree')
+async def windows_tree(window_title:str='',window_re:str='',_:None=Depends(require_auth)):return uia.control_tree(window_title,window_re)
+@app.post('/api/windows/click')
+async def windows_click(payload:dict,_:None=Depends(require_auth)):return uia.click(**payload)
+@app.post('/api/windows/type')
+async def windows_type(payload:dict,_:None=Depends(require_auth)):return uia.type_text(**payload)
+@app.post('/api/windows/hotkey')
+async def windows_hotkey(payload:dict,_:None=Depends(require_auth)):return uia.hotkey(*payload.get('keys',[]))
+@app.get('/api/federation/challenge')
+async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce)}
+@app.post('/api/federation/{node_id}/rotate')
+async def federation_rotate(node_id:str,_:None=Depends(require_auth)):
+    if not store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise HTTPException(404,'node not found')
+    token=__import__('secrets').token_urlsafe(32);store.exec('UPDATE devices SET token_hash=? WHERE id=?',(__import__('hashlib').sha256(token.encode()).hexdigest(),node_id));return {'node_id':node_id,'token':token}
+@app.post('/api/federation/{node_id}/revoke')
+async def federation_revoke(node_id:str,_:None=Depends(require_auth)):
+    store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));return {'node_id':node_id,'status':'REVOKED'}
 __all__=['app']
