@@ -20,17 +20,16 @@ class Scheduler:
         handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
         if not fn:
             self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');return {'status':'FAILURE','error':'no handler registered'}
-        current=self.store.row('SELECT state FROM tasks WHERE id=?',(task['id'],))
-        if not current or current['state']!='PENDING':return {'status':'SKIPPED','reason':'task already claimed'}
-        payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':time.time(),'execution_id':uuid.uuid4().hex})
-        self.store.task_update(task['id'],state='RUNNING',data=json.dumps(payload),error='')
+        execution_id=uuid.uuid4().hex;started=time.time();payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id})
+        claimed=self.store.claim_task(task['id'],json.dumps(payload))
+        if not claimed:return {'status':'SKIPPED','reason':'task already claimed'}
         try:
-            result=fn(task)
+            result=fn(dict(task, data=json.dumps(payload)))
             if inspect.isawaitable(result):result=await result
             payload.update({'finished_at':time.time(),'last_result':result})
             if task.get('interval_sec'):self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
             else:self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
-            return {'status':'SUCCESS','result':result,'execution_id':payload['execution_id']}
+            return {'status':'SUCCESS','result':result,'execution_id':execution_id}
         except Exception as exc:
             retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time()})
             if retries<=max_retries:
