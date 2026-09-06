@@ -17,7 +17,8 @@ def repo_root()->Path:
 
 def choose_free_port(host,port,limit=20):
     for p in range(int(port),int(port)+limit+1):
-        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        import socket as _socket
+        with _socket.socket(_socket.AF_INET,_socket.SOCK_STREAM) as s:
             try:s.bind((host,p));return p
             except OSError:continue
     raise RuntimeError('no free TCP port')
@@ -48,7 +49,7 @@ class ProcessGuard:
             self._owned=False
 
 class ConfigStore:
-    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret'}
+    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
     def __init__(self,root):self.root=Path(root);self.path=self.root/'config.json';self.root.mkdir(parents=True,exist_ok=True)
     def load(self):
         if not self.path.exists():return {'version':CONFIG_VERSION,'settings':{}}
@@ -83,24 +84,41 @@ class BackupManager:
                 z.write(f,rel.as_posix());count+=1
         return {'status':'SUCCESS','path':str(p.relative_to(self.root)),'files':count,'bytes':p.stat().st_size}
     def list(self):return [{'name':p.name,'bytes':p.stat().st_size} for p in sorted(self.dir.glob('*.zip'),key=lambda x:x.stat().st_mtime,reverse=True)]
+    def _safe_members(self,z):
+        out=[]
+        for info in z.infolist():
+            name=info.filename.replace('\\','/')
+            if name.startswith('/') or name.startswith('\\') or any(part in ('..','') for part in Path(name).parts if part=='..'):
+                raise ValueError('backup contains unsafe archive path')
+            out.append(info)
+        return out
     def verify(self,name):
         p=(self.dir/name).resolve()
         if self.dir not in p.parents:raise ValueError('invalid backup path')
-        with zipfile.ZipFile(p) as z:return {'valid':z.testzip() is None,'files':len(z.namelist())}
+        with zipfile.ZipFile(p) as z:
+            members=self._safe_members(z)
+            return {'valid':z.testzip() is None,'files':len(members)}
     def restore(self,name,confirm=False):
         if not confirm:raise PermissionError('restore requires explicit confirmation')
         p=(self.dir/name).resolve()
         if self.dir not in p.parents:raise ValueError('invalid backup path')
         with zipfile.ZipFile(p) as z:
+            members=self._safe_members(z)
             if z.testzip() is not None:raise ValueError('backup archive is corrupt')
-            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent));z.extractall(stage)
-        try:
-            for item in stage.iterdir():
-                target=self.root/item.name
-                if item.name=='backups':continue
-                if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
-                shutil.move(str(item),str(target))
-        finally:shutil.rmtree(stage,ignore_errors=True)
+            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent))
+            try:
+                for info in members:
+                    target=(stage/info.filename).resolve()
+                    if stage not in target.parents and target!=stage:raise ValueError('backup contains unsafe archive path')
+                    if info.is_dir():target.mkdir(parents=True,exist_ok=True);continue
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    with z.open(info) as src,target.open('wb') as dst:shutil.copyfileobj(src,dst)
+                for item in stage.iterdir():
+                    target=self.root/item.name
+                    if item.name=='backups':continue
+                    if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
+                    shutil.move(str(item),str(target))
+            finally:shutil.rmtree(stage,ignore_errors=True)
         return {'status':'SUCCESS','restored':name,'restart_required':True}
 
 class ApprovalStore:
