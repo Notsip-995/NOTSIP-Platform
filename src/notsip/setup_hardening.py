@@ -1,5 +1,5 @@
 from __future__ import annotations
-import importlib
+import importlib, copy
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -45,7 +45,14 @@ def attach(app):
     @app.post('/api/config')
     async def config_set_with_session(payload:dict,request:Request):
         await _require_after_setup(mod,request)
-        data=await mod.config_set(payload,None)
+        incoming=copy.deepcopy(payload)
+        settings_payload=dict(incoming.get('settings') or {})
+        for key in SECRET_NAMES:
+            if key in settings_payload and not str(settings_payload[key] or '').strip():
+                mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
+                settings_payload.pop(key,None)
+        incoming['settings']=settings_payload
+        data=await mod.config_set(incoming,None)
         response=JSONResponse(data)
         if mod.settings.auth_mode=='api_key' and mod.settings.api_key:
             token=mod.auth.mint_session({'mode':'api_key','sub':'primary-user'});response.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=mod.settings.session_ttl,path='/')
