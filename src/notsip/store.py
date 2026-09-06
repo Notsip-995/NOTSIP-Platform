@@ -1,23 +1,35 @@
 from __future__ import annotations
-import hashlib,json,secrets,sqlite3,threading,time,uuid
+import hashlib,json,os,secrets,sqlite3,threading,time,uuid
 from pathlib import Path
 class Store:
-    def __init__(self,root):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.db=self.root/'notsip.db';self.lock=threading.RLock();self.init()
-    def conn(self):c=sqlite3.connect(self.db,check_same_thread=False);c.row_factory=sqlite3.Row;return c
+    def __init__(self,root):
+        self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock();self._backend=None
+        url=os.getenv('NOTSIP_DATABASE_URL','')
+        if url.startswith('postgresql://') or url.startswith('postgres://'):
+            from .postgres_store import PostgreSQLStore
+            self._backend=PostgreSQLStore(self.root,url);self.db=None;return
+        self.db=self.root/'notsip.db';self.init()
+    def conn(self):
+        if self._backend:raise RuntimeError('PostgreSQL backend does not expose SQLite connection')
+        c=sqlite3.connect(self.db,check_same_thread=False);c.row_factory=sqlite3.Row;return c
     def init(self):
         with self.lock,self.conn() as c:c.executescript('''CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,role TEXT,content TEXT,ts REAL);CREATE TABLE IF NOT EXISTS memories(id INTEGER PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight REAL,source TEXT,provenance TEXT,ts REAL);CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(content,content='memories',content_rowid='id');CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated REAL);CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence REAL,source TEXT,ts REAL);CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence REAL,retrieved REAL,metadata TEXT);CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at REAL,interval_sec REAL,retries INTEGER,created REAL,updated REAL,error TEXT);CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts REAL);CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires REAL);CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen REAL,status TEXT,data TEXT);CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created REAL,updated REAL,result TEXT);''')
     def exec(self,sql,args=()):
+        if self._backend:return self._backend.exec(sql,args)
         with self.lock,self.conn() as c:c.execute(sql,args)
     def rows(self,sql,args=()):
+        if self._backend:return self._backend.rows(sql,args)
         with self.conn() as c:return [dict(r) for r in c.execute(sql,args).fetchall()]
     def row(self,sql,args=()):
         x=self.rows(sql,args);return x[0] if x else None
     def message(self,role,content):self.exec('INSERT INTO messages(role,content,ts) VALUES(?,?,?)',(role,content,time.time()))
     def history(self,n=24):return self.rows('SELECT role,content FROM messages ORDER BY id DESC LIMIT ?',(n,))[::-1]
     def remember(self,uid,kind,content,weight=.8,source='conversation',provenance=None):
+        if self._backend:return self._backend.remember(uid,kind,content,weight,source,provenance)
         with self.lock,self.conn() as c:
             cur=c.execute('INSERT INTO memories(user_id,kind,content,weight,source,provenance,ts) VALUES(?,?,?,?,?,?,?)',(uid,kind,content,weight,source,json.dumps(provenance or {}),time.time()));c.execute('INSERT INTO memory_fts(rowid,content) VALUES(?,?)',(cur.lastrowid,content))
     def memories(self,uid,q='',limit=20):
+        if self._backend:return self._backend.memories(uid,q,limit)
         if q:
             try:return self.rows('SELECT m.kind,m.content,m.weight,m.source,m.provenance,m.ts FROM memory_fts f JOIN memories m ON m.id=f.rowid WHERE m.user_id=? AND f.content MATCH ? ORDER BY rank LIMIT ?',(uid,q.replace('"',' '),limit))
             except sqlite3.OperationalError:pass
