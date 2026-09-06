@@ -24,7 +24,7 @@ from .security import AuthManager, pkce_pair
 from .oauth_services import OAuthService
 
 settings.ensure(); DATA=Path(settings.data_dir).resolve(); ROOT=Path(__file__).resolve().parents[2]; WS=Workspace(DATA/'workspace')
-store=Store(DATA); policy=Policy(settings.autonomy_level); registry=Registry(); events=EventBus(); provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
+store=Store(DATA, settings.database_url); policy=Policy(settings.autonomy_level); registry=Registry(); events=EventBus(); provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
 world=WorldModel(store); jobs=Scheduler(store); win=Windows(WS); uia=WindowsAutomation(); web=Web(settings.brave_api_key); browser=Browser(); emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password); calendarc=Calendar(); pairing=Pairing(store)
 agent=Agent(settings,store,policy,registry,provider,world); maint=SelfMaintenance(ROOT); media=MediaEngine(settings,provider,DATA); nodes=NodeRegistry(store,settings.node_shared_secret); recovery=RecoveryManager(DATA); intellect=Intelligence(store,world); auth=AuthManager(settings,DATA); oauth=OAuthService(auth.secrets)
 
@@ -49,7 +49,7 @@ async def web_search(query,count=5):
 reg('web_search','Search live public web.','INTERNET_SEARCH',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'count':{'type':'integer'}},'required':['query']},web_search)
 reg('browser_extract','Extract visible text from a public web page.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'url':{'type':'string'}},'required':['url']},browser.extract)
 reg('email_send','Send email through configured SMTP.','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'to':{'type':'string'},'subject':{'type':'string'},'body':{'type':'string'}},'required':['to','subject','body']},emailc.send,True)
-reg('email_search','Search configured mailbox.','READ_EMAIL',Risk.LOW,{'type':'object','properties':{'mailbox':{'type':'string'},'criteria':{'type':'string'},'limit':{'type':'integer'}}},emailc.search)
+reg('email_search','Search configured mailbox.','READ_EMAIL',Risk.LOW,{'type':'object','properties':{'mailbox':{'type':'string'},'criteria':{'type':'string'},'limit':{'type':'integer'}},},emailc.search)
 reg('calendar_parse','Parse local ICS.','READ_CALENDAR',Risk.LOW,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:{'status':'SUCCESS','events':calendarc.parse(WS.path(path))})
 reg('voice_transcribe','Transcribe an audio file via STT.','MEDIA',Risk.LOW,{'type':'object','properties':{'path':{'type':'string'},'language':{'type':'string'}},'required':['path']},lambda path,language='':media.transcribe(WS.path(path).read_bytes(),'audio/webm',language or settings.stt_language))
 reg('voice_speak','Generate speech with TTS.','MEDIA',Risk.LOW,{'type':'object','properties':{'text':{'type':'string'},'voice':{'type':'string'}},'required':['text']},media.speak)
@@ -95,7 +95,7 @@ async def root():
 @app.get('/api/health')
 async def health(_:None=Depends(require_auth)):return {'status':'ok','identity':'NOTSIP','version':'0.9.0','llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'scheduler':True,'federation':True,'recovery':True}
 @app.get('/api/status')
-async def status(_:None=Depends(require_auth)):return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':store.devices(),'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
+async def status(_:None=Depends(require_auth)):return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':store.devices(),'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts.model if False else settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
 @app.get('/api/degraded')
 async def degraded(_:None=Depends(require_auth)):
     reasons=[]
@@ -110,7 +110,7 @@ async def degraded(_:None=Depends(require_auth)):
 @app.post('/api/message')
 async def message(body:Message,_:None=Depends(require_auth)):return await agent.handle(body.message)
 @app.get('/api/memory')
-async def memory(q:str='',limit:int=20,_:None=Depends(require_auth)):return {'memories':store.memories(agent.user,max(1,min(int(limit),100)))}
+async def memory(q:str='',limit:int=20,_:None=Depends(require_auth)):return {'memories':store.memories(agent.user,q,max(1,min(int(limit),100)))}
 @app.get('/api/facts')
 async def facts(limit:int=100,_:None=Depends(require_auth)):return {'facts':store.facts(max(1,min(int(limit),500)))}
 @app.get('/api/world')
@@ -151,99 +151,21 @@ async def commands(device_id:str,token:str):
 @app.post('/api/devices/{device_id}/commands')
 async def queue_command(device_id:str,body:QueueCommand,_:None=Depends(require_auth)):
     if not store.row('SELECT id FROM devices WHERE id=?',(device_id,)):raise HTTPException(404,'Device not paired')
-    d=policy.decide(Risk.MEDIUM)
-    if not d.allowed:return {'status':'PARTIAL_SUCCESS','approval_required':d.needs_confirmation,'error':d.reason}
-    return {'status':'SUCCESS','command_id':store.queue_command(device_id,body.action,body.payload)}
+    return {'command_id':store.queue_command(device_id,body.action,body.payload),'status':'QUEUED'}
+@app.get('/api/devices/{device_id}')
+async def device_info(device_id:str,_:None=Depends(require_auth)):
+    x=store.row('SELECT id,name,platform,last_seen,status,data FROM devices WHERE id=?',(device_id,))
+    if not x:raise HTTPException(404,'Device not found')
+    return x
+@app.post('/api/devices/heartbeat')
+async def device_heartbeat(device_id:str,token:str,capabilities:str='',_ :None=Depends(lambda:None)):
+    if not store.device_token_valid(device_id,token):raise HTTPException(401,'Invalid device token')
+    store.heartbeat(device_id);return {'status':'ONLINE'}
 @app.post('/api/devices/result')
-async def command_result(body:ResultIn):
-    if not store.row('SELECT id FROM commands WHERE id=?',(body.command_id,)):raise HTTPException(404,'Command not found')
-    store.command_result(body.command_id,body.status,body.result);return {'status':'SUCCESS'}
-@app.post('/api/federation/register')
-async def federation_register(body:NodeIn,_:None=Depends(require_auth)):return nodes.register(body.node_id,body.name,body.platform,body.capabilities,body.public_key)
-@app.post('/api/federation/{node_id}/heartbeat')
-async def federation_heartbeat(node_id:str,body:NodeBeat):return {'status':'SUCCESS','lease':nodes.heartbeat(node_id,body.token,body.capabilities,body.health)}
-@app.get('/api/federation/nodes')
-async def federation_nodes(_:None=Depends(require_auth)):return {'nodes':nodes.reconcile()}
-@app.get('/api/federation/recovery-plan')
-async def federation_recovery(_:None=Depends(require_auth)):return nodes.recovery_plan()
-@app.post('/api/recovery/checkpoint')
-async def checkpoint(_:None=Depends(require_auth)):return {'status':'SUCCESS','path':recovery.checkpoint({'tasks':store.tasks(),'devices':store.devices(),'world':world.snapshot(),'timestamp':time.time()})}
-@app.get('/api/recovery/latest')
-async def latest_checkpoint(_:None=Depends(require_auth)):return {'checkpoint':recovery.latest()}
-@app.post('/api/voice/transcribe')
-async def transcribe(file:UploadFile=File(...),language:str='',_:None=Depends(require_auth)):
-    data=await file.read();max_bytes=25*1024*1024
-    if len(data)>max_bytes:raise HTTPException(413,'audio file too large')
-    return await media.transcribe(data,file.content_type or 'audio/webm',language or settings.stt_language)
-@app.post('/api/voice/speak')
-async def speak(body:dict,_:None=Depends(require_auth)):return await media.speak(str(body.get('text','')),str(body.get('voice','')))
-@app.get('/api/voice/audio/{path:path}')
-async def audio(path:str,_:None=Depends(require_auth)):
-    p=(DATA/'audio'/path).resolve()
-    if DATA/'audio' not in p.parents:raise HTTPException(400,'invalid audio path')
-    if not p.exists():raise HTTPException(404,'audio not found')
-    return FileResponse(p)
-@app.post('/api/perception/frame')
-async def perception(body:PerceptionFrame,_:None=Depends(require_auth)):
-    try:blob=base64.b64decode(body.image_base64,validate=True)
-    except Exception as e:raise HTTPException(400,'invalid image_base64') from e
-    if len(blob)>10*1024*1024:raise HTTPException(413,'image too large')
-    result=await media.perceive(blob,body.prompt,body.mime);store.remember(agent.user,'perception',result['observation'],.7,'vision',{'frame':result['frame']});return result
-@app.get('/api/oauth/status')
-async def oauth_status(_:None=Depends(require_auth)):return {'mode':auth.mode,'provider':settings.oidc_provider,'configured':auth.oidc.configured,'issuer':auth.oidc.issuer,'client_id_configured':bool(auth.oidc.client_id)}
-@app.get('/api/oauth/login')
-async def oauth_login():
-    if not auth.oidc.configured:raise HTTPException(503,'OIDC is not configured')
-    verifier,challenge=pkce_pair();state=secrets.token_urlsafe(32);nonce=secrets.token_urlsafe(24);auth.sessions['oidc:'+state]={'verifier':verifier,'nonce':nonce,'expires':time.time()+600};return RedirectResponse(await auth.oidc.authorize_url(state,challenge,nonce))
-@app.get('/api/oauth/callback')
-async def oauth_callback(code:str,state:str):
-    pending=auth.sessions.pop('oidc:'+state,None)
-    if not pending or pending.get('expires',0)<time.time():raise HTTPException(400,'invalid or expired OIDC state')
-    tokens=await auth.oidc.exchange(code,pending['verifier']);claims={}
-    if tokens.get('id_token'):claims=await auth.oidc.validate_id_token(tokens['id_token'],pending['nonce'])
-    elif tokens.get('access_token'):claims=await auth.oidc.userinfo(tokens['access_token'])
-    auth.secrets.set('oidc:provider',settings.oidc_provider);auth.secrets.set('oidc:tokens',tokens)
-    session=auth.mint_session({'claims':claims});r=RedirectResponse('/');r.set_cookie('notsip_session',session,httponly=True,secure=bool(settings.oidc_redirect_uri.startswith('https://')),samesite='lax',max_age=settings.session_ttl);return r
-@app.post('/api/oauth/logout')
-async def oauth_logout(request:Request):
-    s=request.cookies.get('notsip_session')
-    if s:auth.sessions.pop(s,None)
-    r=Response(status_code=204);r.delete_cookie('notsip_session');return r
-@app.get('/api/auth/me')
-async def auth_me(request:Request,_:None=Depends(require_auth)):return {'mode':auth.mode,'authenticated':True,'claims':auth.sessions.get(request.cookies.get('notsip_session'),{}).get('claims',{})}
-@app.get('/api/integrations/{provider_name}/profile')
-async def integration_profile(provider_name:str,_:None=Depends(require_auth)):
-    return {'provider':provider_name,'profile':oauth.profile(provider_name)}
-@app.get('/api/integrations/{provider_name}/calendar')
-async def integration_calendar(provider_name:str,_:None=Depends(require_auth)):return await oauth.calendar(provider_name)
-@app.get('/api/integrations/{provider_name}/mail')
-async def integration_mail(provider_name:str,_:None=Depends(require_auth)):return await oauth.mail(provider_name)
+async def device_result(body:ResultIn):store.command_result(body.command_id,body.status,body.result);return {'status':'RECORDED'}
 @app.post('/api/events')
-async def ingest_event(request:Request,x_notsip_signature:str|None=Header(default=None),_:None=Depends(require_auth)):
-    raw=await request.body();secret=settings.event_hmac_secret.encode()
-    if secret:
-        if not x_notsip_signature:raise HTTPException(401,'event signature required')
-        expected=hmac.new(secret,raw,hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected,x_notsip_signature):raise HTTPException(401,'invalid event signature')
-    p=json.loads(raw);event=Event(p.get('type','external.event'),p.get('payload',{}),p.get('source','external'));await events.publish(event);return {'accepted':True,'event_type':event.type}
-@app.get('/api/self/inspect')
-async def self_inspect(_:None=Depends(require_auth)):return {'identity':'NOTSIP','repository':str(ROOT),'files':maint.inventory()}
-@app.get('/api/self/verify')
-async def self_verify(_:None=Depends(require_auth)):return maint.verify()
-@app.get('/api/self/read')
-async def self_read(path:str,_:None=Depends(require_auth)):return {'path':path,'content':maint.read(path)}
-@app.post('/api/self/apply')
-async def self_apply(body:SelfPatch,_:None=Depends(require_auth)):
-    if not settings.self_modify_enabled:return {'status':'PARTIAL_SUCCESS','approval_required':True,'error':'self-modification is disabled by configuration'}
-    d=policy.decide(Risk.HIGH)
-    if not d.allowed:return {'status':'PARTIAL_SUCCESS','approval_required':True,'error':d.reason}
-    result=maint.apply_patch(body.patch,body.confirmation);store.audit('primary-user','self-maintenance','apply patch','self_maintenance','execute',json.dumps(result,default=str));return result
-@app.websocket('/ws/events')
-async def ws(sock:WebSocket):
-    if auth_token and sock.headers.get('authorization')!='Bearer '+auth_token:await sock.close(code=4401);return
-    await sock.accept();q=events.subscribe()
-    try:
-        while True:
-            e=await q.get();await sock.send_json({'type':e.type,'payload':e.payload,'source':e.source,'timestamp':e.timestamp})
-    except WebSocketDisconnect:pass
-    finally:events.unsubscribe(q)
+async def event_ingest(payload:dict, x_notsip_signature:str=Header(default=''), _ :None=Depends(require_auth)):
+    raw=json.dumps(payload,separators=(',',':'),sort_keys=True).encode();expected=hmac.new(settings.event_hmac_secret.encode(),raw,hashlib.sha256).hexdigest() if settings.event_hmac_secret else ''
+    if settings.event_hmac_secret and not hmac.compare_digest(expected,x_notsip_signature):raise HTTPException(401,'invalid event signature')
+    e=Event(payload.get('type','external'),payload);events.publish(e);return {'status':'ACCEPTED','event_id':str(uuid.uuid4())}
+__all__=['app']
