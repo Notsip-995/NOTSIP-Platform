@@ -1,9 +1,9 @@
 from __future__ import annotations
-import json, os, socket, time, uuid
+import json, os, socket, time, uuid, inspect
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from .runtime_prod import app, media, settings, store, nodes, recovery, intellect, events, web, emailc, require_auth, auth, provider, pairing, uia, win
+from .runtime_prod import app, media, settings, store, nodes, recovery, intellect, events, web, emailc, require_auth, auth, provider, pairing, uia, win, registry, agent
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
 from .routes_extra import attach as attach_extra
@@ -22,8 +22,7 @@ app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)==
 async def product_root():
     if not config_store.path.exists():return RedirectResponse('/setup',status_code=302)
     ui=resource_root()/'ui.html'
-    if ui.exists():return FileResponse(ui)
-    return JSONResponse({'name':'NOTSIP','version':'0.9.0','status':'online','error':'UI resource missing'})
+    return FileResponse(ui) if ui.exists() else JSONResponse({'name':'NOTSIP','version':'0.9.0','status':'online','error':'UI resource missing'})
 @app.get('/setup',include_in_schema=False)
 async def setup_page():
     p=resource_root()/'setup.html'
@@ -101,11 +100,20 @@ async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.ve
 async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):return backups.restore(name,bool(payload.get('confirm')))
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
+@app.post('/api/approvals')
+async def create_approval(payload:dict,_:None=Depends(require_auth)):return approvals.request(str(payload.get('action','')),str(payload.get('reason','')),payload.get('context') or {})
 @app.post('/api/approvals/{approval_id}')
 async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_auth)):
     item=approvals.decide(approval_id,bool(payload.get('approved')))
     if not item:raise HTTPException(404,'approval not found')
-    audit_log.write('approval.decided',approval_id=approval_id,status=item['status']);return item
+    audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
+    if item['status']=='APPROVED' and payload.get('execute',True):
+        ctx=item.get('context') or {};name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
+        if not tool:raise HTTPException(400,'approved tool no longer exists')
+        result=tool.fn(**args);result=await result if inspect.isawaitable(result) else result
+        result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result}
+        audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
+    return item
 @app.get('/api/memory/lifecycle')
 async def memory_lifecycle(_:None=Depends(require_auth)):return memory_service.snapshot()
 @app.post('/api/memory/maintain')
