@@ -9,11 +9,13 @@ from .background import attach as attach_background
 from .routes_extra import attach as attach_extra
 from .perception_loop import attach as attach_perception
 from .product_layer import resource_root, repo_root, ConfigStore, AuditLog, BackupManager, ApprovalStore, Diagnostics, Maintenance, CapabilityProbe
+from .memory_service import MemoryService
+from .account_store import AccountStore
 attach_streaming(app, media, settings, settings.api_key)
 attach_background(app, store, nodes, recovery, intellect, events, settings.perception_interval)
 attach_perception(app, settings, win, media, store, events)
 attach_extra(app, require_auth, web, emailc)
-PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc)
+PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets)
 
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
 @app.get('/',include_in_schema=False)
@@ -49,13 +51,11 @@ def _rate_limited(ip:str,window=60,limit=15):
     now=time.time();recent=[t for t in _pair_attempts.get(ip,[]) if now-t<window];_pair_attempts[ip]=recent
     if len(recent)>=limit:return True
     recent.append(now);return False
-
 @app.middleware('http')
 async def production_security(request:Request,call_next):
     rid=request.headers.get('X-Request-ID') or uuid.uuid4().hex;request.state.request_id=rid
     cookie=request.cookies.get('notsip_session')
-    if cookie and not request.headers.get('authorization') and auth.validate_session(cookie):
-        request.scope['headers']=list(request.scope.get('headers',[]))+[(b'authorization',('Bearer '+settings.api_key).encode())]
+    if cookie and not request.headers.get('authorization') and auth.validate_session(cookie):request.scope['headers']=list(request.scope.get('headers',[]))+[(b'authorization',('Bearer '+settings.api_key).encode())]
     if request.url.path=='/api/devices/result':
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
         if not device_id or not device_token or not store.device_token_valid(device_id,device_token):return JSONResponse({'detail':'device authentication required'},status_code=401,headers={'X-Request-ID':rid})
@@ -97,6 +97,8 @@ async def create_backup(_:None=Depends(require_auth)):return backups.create()
 async def list_backups(_:None=Depends(require_auth)):return {'backups':backups.list()}
 @app.get('/api/backups/{name}/verify')
 async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.verify(name)
+@app.post('/api/backups/{name}/restore')
+async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):return backups.restore(name,bool(payload.get('confirm')))
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
 @app.post('/api/approvals/{approval_id}')
@@ -104,6 +106,17 @@ async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_au
     item=approvals.decide(approval_id,bool(payload.get('approved')))
     if not item:raise HTTPException(404,'approval not found')
     audit_log.write('approval.decided',approval_id=approval_id,status=item['status']);return item
+@app.get('/api/memory/lifecycle')
+async def memory_lifecycle(_:None=Depends(require_auth)):return memory_service.snapshot()
+@app.post('/api/memory/maintain')
+async def memory_maintain(_:None=Depends(require_auth)):return {'decay':memory_service.decay(),'consolidation':memory_service.consolidate()}
+@app.get('/api/integrations/accounts')
+async def oauth_accounts(_:None=Depends(require_auth)):return {'accounts':accounts.list()}
+@app.post('/api/integrations/accounts/{account_id}/disconnect')
+async def oauth_disconnect(account_id:str,_:None=Depends(require_auth)):
+    item=accounts.disconnect(account_id)
+    if not item:raise HTTPException(404,'account not found')
+    return {'status':'SUCCESS','account_id':account_id}
 @app.get('/api/self/provenance')
 async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
