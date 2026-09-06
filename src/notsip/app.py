@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid, inspect
+import json, os, socket, time, uuid, inspect, logging
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -11,30 +11,28 @@ from .perception_loop import attach as attach_perception
 from .product_layer import resource_root, repo_root, ConfigStore, AuditLog, BackupManager, ApprovalStore, Diagnostics, Maintenance, CapabilityProbe
 from .memory_service import MemoryService
 from .account_store import AccountStore
+from .conversations import ConversationStore
+from .logging_setup import configure as configure_logging
 attach_streaming(app, media, settings, settings.api_key)
 attach_background(app, store, nodes, recovery, intellect, events, settings.perception_interval)
 attach_perception(app, settings, win, media, store, events)
 attach_extra(app, require_auth, web, emailc)
-PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets)
+PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,os.getenv('NOTSIP_LOG_LEVEL','INFO'))
 
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
 @app.get('/',include_in_schema=False)
 async def product_root():
     if not config_store.path.exists():return RedirectResponse('/setup',status_code=302)
-    ui=resource_root()/'ui.html'
-    return FileResponse(ui) if ui.exists() else JSONResponse({'name':'NOTSIP','version':'0.9.0','status':'online','error':'UI resource missing'})
+    ui=resource_root()/'ui.html';return FileResponse(ui) if ui.exists() else JSONResponse({'name':'NOTSIP','version':'0.9.0','status':'online','error':'UI resource missing'})
 @app.get('/setup',include_in_schema=False)
 async def setup_page():
     p=resource_root()/'setup.html'
     if not p.exists():raise HTTPException(404,'setup UI missing')
     return FileResponse(p)
 
-_session_path=DATA/'runtime'/'sessions.json'
-def _sessions():
-    try:return json.loads(_session_path.read_text())
-    except Exception:return {}
-def _save_sessions(d):
-    _session_path.parent.mkdir(parents=True,exist_ok=True);tmp=_session_path.with_suffix('.tmp');tmp.write_text(json.dumps(d,sort_keys=True));tmp.replace(_session_path)
+SESSION_KEY='runtime:browser_sessions'
+def _sessions():return auth.secrets.get(SESSION_KEY,{}) or {}
+def _save_sessions(d):auth.secrets.set(SESSION_KEY,d)
 _old_mint=auth.mint_session
 def _mint_persistent(claims):
     token=_old_mint(claims);d=_sessions();d[token]={'claims':claims,'expires':time.time()+settings.session_ttl};_save_sessions(d);return token
@@ -60,7 +58,7 @@ async def production_security(request:Request,call_next):
         if not device_id or not device_token or not store.device_token_valid(device_id,device_token):return JSONResponse({'detail':'device authentication required'},status_code=401,headers={'X-Request-ID':rid})
     if request.url.path=='/api/pair/consume' and _rate_limited(request.client.host if request.client else 'unknown'):return JSONResponse({'detail':'pairing rate limit exceeded'},status_code=429,headers={'X-Request-ID':rid})
     try:response=await call_next(request)
-    except Exception as exc:audit_log.write('request.error',request_id=rid,path=request.url.path,error=str(exc));raise
+    except Exception as exc:logger.exception('request failed');audit_log.write('request.error',request_id=rid,path=request.url.path,error=str(exc));raise
     response.headers['X-Request-ID']=rid;audit_log.write('request',request_id=rid,method=request.method,path=request.url.path,status=response.status_code);return response
 
 @app.post('/api/login')
@@ -110,14 +108,22 @@ async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_au
     if item['status']=='APPROVED' and payload.get('execute',True):
         ctx=item.get('context') or {};name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
         if not tool:raise HTTPException(400,'approved tool no longer exists')
-        result=tool.fn(**args);result=await result if inspect.isawaitable(result) else result
-        result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result}
-        audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
+        result=tool.fn(**args);result=await result if inspect.isawaitable(result) else result;result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result};audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
     return item
 @app.get('/api/memory/lifecycle')
 async def memory_lifecycle(_:None=Depends(require_auth)):return memory_service.snapshot()
 @app.post('/api/memory/maintain')
 async def memory_maintain(_:None=Depends(require_auth)):return {'decay':memory_service.decay(),'consolidation':memory_service.consolidate()}
+@app.get('/api/sessions')
+async def list_sessions(_:None=Depends(require_auth)):return {'sessions':conversations.list()}
+@app.post('/api/sessions')
+async def create_session(payload:dict,_:None=Depends(require_auth)):
+    s=conversations.create(str(payload.get('title','New conversation')));agent.session=conversations.get_or_create(s['id']);return s
+@app.get('/api/sessions/{session_id}')
+async def get_session(session_id:str,_:None=Depends(require_auth)):return {'session':next((x for x in conversations.list() if x['id']==session_id),None),'messages':conversations.history(session_id,200)}
+@app.post('/api/sessions/{session_id}/select')
+async def select_session(session_id:str,_:None=Depends(require_auth)):
+    s=conversations.get_or_create(session_id);agent.session=s;return s
 @app.get('/api/integrations/accounts')
 async def oauth_accounts(_:None=Depends(require_auth)):return {'accounts':accounts.list()}
 @app.post('/api/integrations/accounts/{account_id}/disconnect')
