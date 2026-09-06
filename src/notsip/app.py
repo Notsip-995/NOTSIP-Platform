@@ -8,6 +8,7 @@ from .runtime_prod import policy
 from .provider import Provider
 from .connectors import Web, Email
 from .security import OIDCProvider
+from .policy import Policy
 from .nodes import NodeRegistry
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
