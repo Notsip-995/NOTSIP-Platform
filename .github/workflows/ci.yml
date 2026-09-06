@@ -16,3 +16,5 @@ jobs:
         run: python -m compileall -q src
       - name: Test
         run: pytest -q
+      - name: Docker build
+        run: docker build -t notsip-ci .
