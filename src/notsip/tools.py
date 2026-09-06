@@ -1,37 +1,42 @@
 from __future__ import annotations
-import ast,operator,os,platform,subprocess
+import ast,operator,os,platform,subprocess,webbrowser
 from pathlib import Path
 from .policy import Risk
 class Tool:
-    def __init__(self,name,description,capability,risk,schema,fn,destructive=False): self.name=name; self.description=description; self.capability=capability; self.risk=risk; self.schema=schema; self.fn=fn; self.destructive=destructive
-    def schema_openai(self): return {'type':'function','function':{'name':self.name,'description':self.description,'parameters':self.schema}}
+    def __init__(self,name,desc,capability,risk,schema,fn,destructive=False):self.name=name;self.desc=desc;self.capability=capability;self.risk=risk;self.schema=schema;self.fn=fn;self.destructive=destructive
+    def openai(self):return {'type':'function','function':{'name':self.name,'description':self.desc,'parameters':self.schema}}
 class Registry:
-    def __init__(self): self.tools={}
-    def add(self,t): self.tools[t.name]=t
-    def get(self,n): return self.tools.get(n)
-    def all(self): return list(self.tools.values())
-    def schemas(self): return [t.schema_openai() for t in self.all()]
+    def __init__(self):self.items={}
+    def add(self,t):self.items[t.name]=t
+    def get(self,n):return self.items.get(n)
+    def all(self):return list(self.items.values())
+    def schemas(self):return [t.openai() for t in self.all()]
 def calc(expr):
-    node=ast.parse(expr,mode='eval').body; ops={ast.Add:operator.add,ast.Sub:operator.sub,ast.Mult:operator.mul,ast.Div:operator.truediv,ast.Pow:operator.pow,ast.Mod:operator.mod}
+    node=ast.parse(expr,mode='eval').body;ops={ast.Add:operator.add,ast.Sub:operator.sub,ast.Mult:operator.mul,ast.Div:operator.truediv,ast.Pow:operator.pow,ast.Mod:operator.mod}
     def ev(n):
-        if isinstance(n,ast.Constant) and isinstance(n.value,(int,float)): return n.value
-        if isinstance(n,ast.UnaryOp) and isinstance(n.op,(ast.UAdd,ast.USub)): return +ev(n.operand) if isinstance(n.op,ast.UAdd) else -ev(n.operand)
-        if isinstance(n,ast.BinOp) and type(n.op) in ops: return ops[type(n.op)](ev(n.left),ev(n.right))
+        if isinstance(n,ast.Constant) and isinstance(n.value,(int,float)):return n.value
+        if isinstance(n,ast.UnaryOp) and type(n.op) in (ast.UAdd,ast.USub):return (+1 if isinstance(n.op,ast.UAdd) else -1)*ev(n.operand)
+        if isinstance(n,ast.BinOp) and type(n.op) in ops:return ops[type(n.op)](ev(n.left),ev(n.right))
         raise ValueError('unsupported expression')
     return ev(node)
-def list_workspace(workspace,query=''):
-    root=Path(workspace).resolve(); out=[]
-    for p in root.rglob('*'):
-        if p.is_file() and (not query or query.lower() in p.name.lower()): out.append(str(p.relative_to(root)))
-        if len(out)>=200: break
-    return {'status':'SUCCESS','files':out}
-def read_workspace(workspace,path):
-    root=Path(workspace).resolve(); target=(root/path).resolve()
-    if root not in target.parents and target!=root: raise PermissionError('path outside NOTSIP workspace')
-    return {'status':'SUCCESS','path':str(target.relative_to(root)),'content':target.read_text(encoding='utf-8')}
-def windows_exec(workspace,command,timeout=30):
-    if platform.system()!='Windows': raise RuntimeError('windows_exec is only available on Windows nodes')
-    p=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],cwd=workspace,capture_output=True,text=True,timeout=max(1,min(timeout,120)))
-    return {'status':'SUCCESS' if p.returncode==0 else 'FAILURE','returncode':p.returncode,'stdout':p.stdout[-12000:],'stderr':p.stderr[-12000:]}
-def diagnostics(workspace):
-    root=Path(workspace).resolve(); return {'status':'SUCCESS','platform':platform.platform(),'python':platform.python_version(),'workspace':str(root),'workspace_exists':root.exists()}
+class Workspace:
+    def __init__(self,root):self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True)
+    def path(self,rel):
+        p=(self.root/rel).resolve()
+        if self.root not in p.parents and p!=self.root:raise PermissionError('outside NOTSIP workspace')
+        return p
+    def read(self,rel):return self.path(rel).read_text(encoding='utf-8')
+    def write(self,rel,content):p=self.path(rel);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content,encoding='utf-8');return str(p.relative_to(self.root))
+    def list(self,q=''):return [str(p.relative_to(self.root)) for p in self.root.rglob('*') if p.is_file() and (not q or q.lower() in p.name.lower())][:500]
+class Windows:
+    def __init__(self,workspace):self.workspace=workspace
+    def exec(self,command,timeout=60):
+        if platform.system()!='Windows':raise RuntimeError('Windows node required')
+        p=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',command],cwd=str(self.workspace.root),capture_output=True,text=True,timeout=max(1,min(int(timeout),180)))
+        return {'status':'SUCCESS' if p.returncode==0 else 'FAILURE','returncode':p.returncode,'stdout':p.stdout[-20000:],'stderr':p.stderr[-20000:]}
+    def screenshot(self,filename='desktop.png'):
+        if platform.system()!='Windows':raise RuntimeError('Windows node required')
+        t=self.workspace.path(filename);e=str(t).replace("'","''");cmd=f"Add-Type -AssemblyName System.Drawing;Add-Type -AssemblyName System.Windows.Forms;$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height;$g=[System.Drawing.Graphics]::FromImage($i);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);$i.Save('{e}',[System.Drawing.Imaging.ImageFormat]::Png);$g.Dispose();$i.Dispose()";r=self.exec(cmd,30)
+        if r['status']!='SUCCESS':raise RuntimeError(r['stderr'] or 'screenshot failed')
+        return {'status':'SUCCESS','path':str(t.relative_to(self.workspace.root)),'size':t.stat().st_size}
+def open_target(target):return {'status':'SUCCESS','opened':webbrowser.open(target),'target':target}
