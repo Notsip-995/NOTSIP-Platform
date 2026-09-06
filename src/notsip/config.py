@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     llm_base_url:str=''; llm_api_key:str=''; llm_model:str=''; fallback_llm_base_url:str=''; fallback_llm_api_key:str=''; fallback_llm_model:str=''
     stt_base_url:str=''; stt_api_key:str=''; stt_model:str=''; stt_language:str=''; stt_stream_url:str=''
     tts_base_url:str=''; tts_api_key:str=''; tts_model:str=''; tts_voice:str='alloy'; tts_format:str='mp3'
-    voice_enabled:bool=False; voice_sample_rate:int=16000; vad_rms_threshold:float=700; vad_silence_blocks:int=8; wake_word:str=''
+    voice_enabled:bool=False; native_voice_enabled:bool=False; voice_sample_rate:int=16000; vad_rms_threshold:float=700; vad_silence_blocks:int=8; wake_word:str=''
     vision_enabled:bool=True; perception_enabled:bool=True; perception_interval:int=10; brave_api_key:str=''; browser_enabled:bool=True
     perception_screen_enabled:bool=False; health_interval:int=15; checkpoint_interval:int=300; proactive_interval:int=60; memory_maintenance_interval:int=900
     smtp_host:str=''; smtp_port:int=587; imap_host:str=''; email_username:str=''; email_password:str=''; oauth_authorize_url:str=''; oauth_token_url:str=''; oauth_client_id:str=''; oauth_client_secret:str=''; oauth_redirect_uri:str=''; oauth_scopes:str=''
