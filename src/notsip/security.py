@@ -32,6 +32,11 @@ class SecretStore:
         except Exception:pass
     def get(self,name,default=None):return self.load().get(name,default)
     def set(self,name,value):d=self.load();d[name]=value;self.save(d)
+    def delete(self,name):
+        d=self.load()
+        if name in d:
+            d.pop(name,None);self.save(d)
+        return True
 class OIDCProvider:
     PRESETS={'google':'https://accounts.google.com','microsoft':'https://login.microsoftonline.com/common/v2.0'}
     PROFILE_SCOPES={'google':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly','microsoft':'openid profile email offline_access User.Read Calendars.Read Mail.Read','generic':'openid profile email'}
