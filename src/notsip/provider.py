@@ -13,41 +13,45 @@ class Provider:
 
     @property
     def enabled(self):
-        base=settings.llm_base_url.rstrip('/')
-        model=settings.llm_model
-        return bool(base and model)
+        return bool((settings.llm_base_url or '').rstrip('/') and settings.llm_model)
 
     @property
     def fallback_enabled(self):
-        base=settings.fallback_llm_base_url.rstrip('/')
-        model=settings.fallback_llm_model
-        return bool(base and model)
+        return bool((settings.fallback_llm_base_url or '').rstrip('/') and settings.fallback_llm_model)
 
     def _current_primary(self):
-        return (settings.llm_base_url.rstrip('/'), settings.llm_api_key, settings.llm_model)
+        return ((settings.llm_base_url or '').rstrip('/'), settings.llm_api_key or '', settings.llm_model or '')
 
     def _current_fallback(self):
-        return (settings.fallback_llm_base_url.rstrip('/'), settings.fallback_llm_api_key, settings.fallback_llm_model)
+        return ((settings.fallback_llm_base_url or '').rstrip('/'), settings.fallback_llm_api_key or '', settings.fallback_llm_model or '')
 
     async def _chat(self, base, key, model, messages, tools=None):
-        if not base or not model: raise RuntimeError('provider endpoint/model not configured')
+        if not base or not model:
+            raise RuntimeError('provider endpoint/model not configured')
         h={'Content-Type':'application/json'}
-        if key:h['Authorization']='Bearer '+key
+        if key:
+            h['Authorization']='Bearer '+key
         body={'model':model,'messages':messages,'temperature':0.2}
-        if tools: body['tools']=tools
+        if tools:
+            body['tools']=tools
         async with httpx.AsyncClient(timeout=120) as c:
-            r=await c.post(base.rstrip('/')+'/chat/completions',headers=h,json=body);r.raise_for_status();return r.json()
+            r=await c.post(base.rstrip('/')+'/chat/completions',headers=h,json=body)
+            r.raise_for_status()
+            return r.json()
 
     async def chat(self,messages,tools=None):
         base,key,model=self._current_primary()
         if base and model:
-            try:return await self._chat(base,key,model,messages,tools)
+            try:
+                return await self._chat(base,key,model,messages,tools)
             except Exception:
                 fbase,fkey,fmodel=self._current_fallback()
-                if not fbase or not fmodel: raise
+                if not fbase or not fmodel:
+                    raise
                 return await self._chat(fbase,fkey,fmodel,messages,tools)
         fbase,fkey,fmodel=self._current_fallback()
-        if fbase and fmodel:return await self._chat(fbase,fkey,fmodel,messages,tools)
+        if fbase and fmodel:
+            return await self._chat(fbase,fkey,fmodel,messages,tools)
         raise RuntimeError('no usable model provider configured')
 
     async def vision(self,prompt,image_bytes,mime='image/png'):
