@@ -13,12 +13,15 @@ def resource_root()->Path:
 
 def repo_root()->Path:
     override=os.getenv('NOTSIP_REPO_ROOT','')
-    return Path(override).expanduser().resolve() if override else resource_root()
+    if override:return Path(override).expanduser().resolve()
+    if getattr(sys,'frozen',False):
+        candidate=Path(sys.executable).resolve().parent/'source'
+        if candidate.exists():return candidate
+    return resource_root()
 
 def choose_free_port(host,port,limit=20):
     for p in range(int(port),int(port)+limit+1):
-        import socket as _socket
-        with _socket.socket(_socket.AF_INET,_socket.SOCK_STREAM) as s:
+        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
             try:s.bind((host,p));return p
             except OSError:continue
     raise RuntimeError('no free TCP port')
@@ -88,16 +91,14 @@ class BackupManager:
         out=[]
         for info in z.infolist():
             name=info.filename.replace('\\','/')
-            if name.startswith('/') or name.startswith('\\') or any(part in ('..','') for part in Path(name).parts if part=='..'):
-                raise ValueError('backup contains unsafe archive path')
+            if name.startswith('/') or name.startswith('\\') or any(part=='..' for part in Path(name).parts):raise ValueError('backup contains unsafe archive path')
             out.append(info)
         return out
     def verify(self,name):
         p=(self.dir/name).resolve()
         if self.dir not in p.parents:raise ValueError('invalid backup path')
         with zipfile.ZipFile(p) as z:
-            members=self._safe_members(z)
-            return {'valid':z.testzip() is None,'files':len(members)}
+            members=self._safe_members(z);return {'valid':z.testzip() is None,'files':len(members)}
     def restore(self,name,confirm=False):
         if not confirm:raise PermissionError('restore requires explicit confirmation')
         p=(self.dir/name).resolve()
@@ -171,4 +172,4 @@ class Maintenance:
 
 class CapabilityProbe:
     def __init__(self,settings,store,provider,web,email):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
-    def snapshot(self):return {'llm':self.provider.enabled,'fallback_llm':self.provider.fallback_enabled,'stt':bool(self.settings.stt_base_url and self.settings.stt_model),'tts':bool(self.settings.tts_base_url and self.settings.tts_model),'vision':bool(self.settings.vision_enabled),'web':self.web.enabled,'email':self.email.enabled,'android':bool(self.store.devices()),'windows':platform.system()=='Windows','self_maintenance':(repo_root()/'.git').exists()}
+    def snapshot(self):return {'llm':self.provider.enabled,'fallback_llm':self.provider.fallback_enabled,'stt':bool(self.settings.stt_base_url and self.settings.stt_model),'tts':bool(self.settings.tts_base_url and self.settings.tts_model),'vision':bool(self.settings.vision_enabled),'web':self.web.enabled,'email':self.email.enabled,'android':bool(self.store.devices()),'windows':platform.system()=='Windows','self_maintenance':True}
