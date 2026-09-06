@@ -11,7 +11,7 @@ class BackgroundSupervisor:
                 if now>=self.next_checkpoint:
                     self.recovery.checkpoint({'timestamp':now,'devices':self.store.devices(),'tasks':self.store.tasks(),'world':self.intellect.world.snapshot()});self.next_checkpoint=now+self.checkpoint_interval
                 if now>=self.next_proactive:
-                    candidates=self.intellect.trigger_candidates();
+                    candidates=self.intellect.trigger_candidates()
                     if candidates:await self.events.publish(__import__('notsip.events',fromlist=['Event']).Event('proactive.candidates',{'count':len(candidates),'candidates':candidates[:10]},'intelligence'))
                     self.next_proactive=now+self.proactive_interval
                 if now>=self.next_memory and self.memory:
@@ -22,10 +22,8 @@ class BackgroundSupervisor:
             await asyncio.sleep(self.health_interval)
     def stop(self):self.running=False
 
-def attach(app,store,nodes,recovery,intellect,events,interval=60):
-    # Compatibility wrapper uses one configured interval; the canonical app can
-    # replace this supervisor with explicit intervals when desired.
-    supervisor=BackgroundSupervisor(store,nodes,recovery,intellect,events,health_interval=interval,checkpoint_interval=max(30,interval*10),proactive_interval=max(15,interval),memory_interval=max(60,interval*30))
+def attach(app,store,nodes,recovery,intellect,events,memory=None,health_interval=15,checkpoint_interval=300,proactive_interval=60,memory_interval=900):
+    supervisor=BackgroundSupervisor(store,nodes,recovery,intellect,events,memory,health_interval,checkpoint_interval,proactive_interval,memory_interval)
     @app.on_event('startup')
     async def start_supervisor():app.state.supervisor=asyncio.create_task(supervisor.loop())
     @app.on_event('shutdown')
