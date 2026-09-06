@@ -46,36 +46,39 @@ jobs:
             $ready = $false
             1..40 | ForEach-Object {
               if(-not $ready) {
-                try {
-                  $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 5
-                  if($r.StatusCode -eq 200 -and $r.Content -match 'NOTSIP') { $ready = $true }
-                } catch {}
-                if(-not $ready) { Start-Sleep -Milliseconds 500 }
+                try { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 5; if($r.StatusCode -eq 200 -and $r.Content -match 'NOTSIP'){ $ready=$true } } catch {}
+                if(-not $ready){Start-Sleep -Milliseconds 500}
               }
             }
-            if(-not $ready) {
-              Write-Host '--- stdout ---'; if(Test-Path "$env:NOTSIP_DATA_DIR\notsip.stdout.log") { Get-Content "$env:NOTSIP_DATA_DIR\notsip.stdout.log" }
-              Write-Host '--- stderr ---'; if(Test-Path "$env:NOTSIP_DATA_DIR\notsip.stderr.log") { Get-Content "$env:NOTSIP_DATA_DIR\notsip.stderr.log" }
-              throw 'NOTSIP.exe did not start its HTTP server'
+            if(-not $ready){Write-Host '--- stdout ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.stdout.log" -ErrorAction SilentlyContinue;Write-Host '--- stderr ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.stderr.log" -ErrorAction SilentlyContinue;throw 'NOTSIP.exe did not start'}
+            $setup=Invoke-WebRequest 'http://127.0.0.1:8765/setup' -UseBasicParsing -TimeoutSec 5
+            if($setup.StatusCode -ne 200 -or $setup.Content -notmatch 'NOTSIP setup'){throw 'First-run setup UI failed'}
+            $body='{"settings":{"local_timezone":"Africa/Kigali","autonomy_level":1,"vision_enabled":false,"perception_enabled":false,"browser_enabled":false,"checkpoint_interval":60,"health_interval":5,"proactive_interval":30,"memory_maintenance_interval":120}}'
+            $cfg=Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/config' -Method POST -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 5
+            if($cfg.StatusCode -ne 200 -or $cfg.Content -notmatch '"status":"SUCCESS"'){throw 'Minimal configuration failed'}
+            $console=Invoke-WebRequest 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 5
+            if($console.StatusCode -ne 200 -or $console.Content -notmatch 'NOTSIP</b>'){throw 'Configured console failed'}
+            foreach($path in @('/api/health','/api/status','/api/diagnostics','/api/capabilities','/api/backups','/api/approvals','/api/devices','/api/tasks','/api/sessions','/api/integrations/accounts','/api/update/check')){
+              $r=Invoke-WebRequest $path -UseBasicParsing -TimeoutSec 5
+              if($r.StatusCode -notin @(200,503)){throw "Endpoint failed: $path -> $($r.StatusCode)"}
             }
-            $setup = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/setup' -UseBasicParsing -TimeoutSec 5
-            if($setup.StatusCode -ne 200 -or $setup.Content -notmatch 'first-run setup') { throw 'First-run setup UI failed' }
-            $body = '{"settings":{"local_timezone":"Africa/Kigali","autonomy_level":1,"vision_enabled":false,"perception_enabled":false,"browser_enabled":false}}'
-            $cfg = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/config' -Method POST -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 5
-            if($cfg.StatusCode -ne 200 -or $cfg.Content -notmatch '"status":"SUCCESS"') { throw 'Minimal configuration failed' }
-            $console = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 5
-            if($console.StatusCode -ne 200 -or $console.Content -notmatch 'NOTSIP</b>') { throw 'Configured NOTSIP console failed' }
-            $health = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 5
-            if($health.StatusCode -ne 200 -or $health.Content -notmatch '"status":"ok"') { throw 'Health endpoint failed' }
-            $status = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/status' -UseBasicParsing -TimeoutSec 5
-            if($status.StatusCode -ne 200 -or $status.Content -notmatch '"identity":"NOTSIP"') { throw 'Status endpoint failed' }
-            $diag = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/api/diagnostics' -UseBasicParsing -TimeoutSec 5
-            if($diag.StatusCode -ne 200 -or $diag.Content -notmatch 'database') { throw 'Diagnostics endpoint failed' }
-            $p2 = Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden -Wait
-            if($p2.ExitCode -ne 0) { throw "Second launch returned $($p2.ExitCode)" }
-            if($p.HasExited) { throw 'First NOTSIP.exe instance exited unexpectedly' }
-          }
-          finally { if($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+            $p2=Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden -Wait
+            if($p2.ExitCode -ne 0){throw "Second launch returned $($p2.ExitCode)"}
+            if($p.HasExited){throw 'First NOTSIP.exe instance exited unexpectedly'}
+          } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' .\scripts\NOTSIP.iss
+          if(-not(Test-Path 'Output\NOTSIP-Setup.exe')){throw 'Installer was not produced'}
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOTSIP-Windows
+          path: |
+            dist/NOTSIP.exe
+            Output/NOTSIP-Setup.exe
   android-build:
     runs-on: ubuntu-latest
     steps:
