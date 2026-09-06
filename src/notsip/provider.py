@@ -13,21 +13,21 @@ class Provider:
 
     @property
     def enabled(self):
-        base=(settings.llm_base_url or self.base).rstrip('/')
-        model=settings.llm_model or self.model
+        base=settings.llm_base_url.rstrip('/')
+        model=settings.llm_model
         return bool(base and model)
 
     @property
     def fallback_enabled(self):
-        base=(settings.fallback_llm_base_url or self.fallback_base).rstrip('/')
-        model=settings.fallback_llm_model or self.fallback_model
+        base=settings.fallback_llm_base_url.rstrip('/')
+        model=settings.fallback_llm_model
         return bool(base and model)
 
     def _current_primary(self):
-        return ((settings.llm_base_url or self.base).rstrip('/'), settings.llm_api_key or self.key, settings.llm_model or self.model)
+        return (settings.llm_base_url.rstrip('/'), settings.llm_api_key, settings.llm_model)
 
     def _current_fallback(self):
-        return ((settings.fallback_llm_base_url or self.fallback_base).rstrip('/'), settings.fallback_llm_api_key or self.fallback_key, settings.fallback_llm_model or self.fallback_model)
+        return (settings.fallback_llm_base_url.rstrip('/'), settings.fallback_llm_api_key, settings.fallback_llm_model)
 
     async def _chat(self, base, key, model, messages, tools=None):
         if not base or not model: raise RuntimeError('provider endpoint/model not configured')
