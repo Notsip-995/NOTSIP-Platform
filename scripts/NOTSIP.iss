@@ -15,14 +15,17 @@ Uninstallable=yes
 Source: "..\dist\NOTSIP.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\ui.html"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\setup.html"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\src\notsip\*"; DestDir: "{app}\source\notsip"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{app}\data"
 Name: "{app}\updates"
 Name: "{app}\runtime"
+Name: "{app}\source"
 
 [Registry]
 Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "NOTSIP_DATA_DIR"; ValueData: "{app}\data"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "NOTSIP_REPO_ROOT"; ValueData: "{app}\source"; Flags: uninsdeletevalue
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
