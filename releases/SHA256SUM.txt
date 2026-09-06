@@ -1,0 +1,1 @@
+NOTSIP-0.3.0-alpha.zip — standalone source package. Verify the archive hash locally after cloning before installation.
