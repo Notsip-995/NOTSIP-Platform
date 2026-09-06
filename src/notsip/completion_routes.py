@@ -4,7 +4,7 @@ from fastapi import Depends, File, HTTPException, UploadFile
 from .events import Event
 
 
-def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings):
+def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
     @app.get('/api/voice/transcribe')
     async def voice_transcribe(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
         if not settings.stt_base_url or not settings.stt_model:
@@ -12,9 +12,7 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         raw = await file.read()
         if len(raw) > 30 * 1024 * 1024:
             raise HTTPException(413, 'audio file too large')
-        mime = file.content_type or 'audio/webm'
-        result = await media.transcribe(raw, mime, language or settings.stt_language)
-        return result
+        return await media.transcribe(raw, file.content_type or 'audio/webm', language or settings.stt_language)
 
     @app.post('/api/voice/transcribe')
     async def voice_transcribe_post(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
@@ -68,20 +66,20 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         return {'nodes': nodes.reconcile()}
 
     @app.get('/api/integrations/{provider_name}/calendar')
-    async def integration_calendar(provider_name: str, _: None = Depends(require_auth)):
+    async def integration_calendar(provider_name: str, account_id: str = '', _: None = Depends(require_auth)):
         if provider_name not in oauth.PROFILES:
             raise HTTPException(400, 'unsupported OAuth provider')
         try:
-            return await oauth.calendar(provider_name)
+            return await oauth.calendar(provider_name, account_id or None)
         except Exception as exc:
             raise HTTPException(503, str(exc))
 
     @app.get('/api/integrations/{provider_name}/mail')
-    async def integration_mail(provider_name: str, _: None = Depends(require_auth)):
+    async def integration_mail(provider_name: str, account_id: str = '', _: None = Depends(require_auth)):
         if provider_name not in oauth.PROFILES:
             raise HTTPException(400, 'unsupported OAuth provider')
         try:
-            return await oauth.mail(provider_name)
+            return await oauth.mail(provider_name, account_id or None)
         except Exception as exc:
             raise HTTPException(503, str(exc))
 
@@ -95,16 +93,9 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         if not hmac.compare_digest(expected, signature):
             raise HTTPException(401, 'invalid event signature')
         event = Event(payload.get('type', 'signed.external'), payload, 'signed-external')
-        await maybe_publish(getattr(app, 'state', None), event)
-        return {'status': 'ACCEPTED', 'event': payload}
-
-
-async def maybe_publish(state, event):
-    events = getattr(state, 'events', None) if state else None
-    if events:
-        result = events.publish(event)
-        if hasattr(result, '__await__'):
-            await result
+        if events is not None:
+            await events.publish(event)
+        return {'status': 'ACCEPTED', 'event': payload, 'published': events is not None}
 
 
 def store_fact_if_present(store, result, payload):
