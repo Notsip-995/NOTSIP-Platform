@@ -3,8 +3,11 @@ from notsip.core_runtime import app
 
 def test_product_ui_and_setup_routes():
     with TestClient(app) as c:
-        r=c.get('/');assert r.status_code in (200,302) and 'NOTSIP' in r.text or r.status_code==302
-        s=c.get('/setup');assert s.status_code==200 and 'NOTSIP setup' in s.text
+        r=c.get('/')
+        assert r.status_code in (200,302)
+        if r.status_code==200: assert 'NOTSIP' in r.text
+        s=c.get('/setup')
+        assert s.status_code==200 and 'first-run setup' in s.text.lower()
 
 def test_product_control_plane():
     with TestClient(app) as c:
@@ -19,5 +22,4 @@ def test_backup_roundtrip_and_process_info():
 
 def test_login_session_cookie():
     with TestClient(app) as c:
-        # In CI/local test mode, no API key means local access remains available.
         r=c.get('/api/health');assert r.status_code==200
