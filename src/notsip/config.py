@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -13,9 +14,20 @@ class Settings(BaseSettings):
     android_poll_seconds:int=3; node_lease_seconds:int=90; node_shared_secret:str=''
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore')
     def ensure(self):
-        root=Path(self.data_dir); root.mkdir(parents=True,exist_ok=True)
-        for name in ('workspace','screenshots','audio','perception','recovery','runtime'):(root/name).mkdir(parents=True,exist_ok=True)
-settings=Settings(); settings.ensure()
+        root=Path(self.data_dir);root.mkdir(parents=True,exist_ok=True)
+        for name in ('workspace','screenshots','audio','perception','recovery','runtime','backups'):(root/name).mkdir(parents=True,exist_ok=True)
+settings=Settings()
+# Versioned non-secret configuration overrides environment defaults. Secrets are
+# deliberately excluded and remain in the encrypted SecretStore.
+try:
+    cfg=Path(settings.data_dir)/'config.json'
+    if cfg.exists():
+        data=json.loads(cfg.read_text(encoding='utf-8')).get('settings',{})
+        secret_fields={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret'}
+        for k,v in data.items():
+            if k not in secret_fields and k in Settings.model_fields and not (k in os.environ): setattr(settings,k,v)
+except Exception:pass
+settings.ensure()
 try:
     from .security import SecretStore
     _secret_store=SecretStore(Path(settings.data_dir).resolve())
