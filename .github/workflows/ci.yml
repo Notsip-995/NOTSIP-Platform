@@ -31,9 +31,33 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: .\scripts\build_exe.ps1
-      - name: Smoke executable exists
+      - name: Smoke executable launch and UI
         shell: pwsh
-        run: if(-not(Test-Path dist\NOTSIP.exe)){throw 'NOTSIP.exe was not produced'}
+        env:
+          NOTSIP_HOST: '127.0.0.1'
+          NOTSIP_PORT: '8765'
+          NOTSIP_API_KEY: ''
+          NOTSIP_AUTH_MODE: 'api_key'
+          NOTSIP_DATA_DIR: '${{ github.workspace }}\\ci-data'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            1..20 | ForEach-Object {
+              if(-not $ready) {
+                try {
+                  $r = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 2
+                  if($r.StatusCode -eq 200 -and $r.Content -match 'NOTSIP') { $ready = $true }
+                } catch {}
+                if(-not $ready) { Start-Sleep -Milliseconds 500 }
+              }
+            }
+            if(-not $ready) { throw 'NOTSIP.exe launched but did not serve the UI at http://127.0.0.1:8765/' }
+          }
+          finally {
+            if($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
   android-build:
     runs-on: ubuntu-latest
     steps:
