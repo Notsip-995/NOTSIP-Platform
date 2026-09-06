@@ -1,8 +1,8 @@
-# NOTSIP Platform 0.8
+# NOTSIP Platform 0.9
 
-Standalone NOTSIP platform for the Windows 11 laptop + Android phone target. This repository is completely separate from `Notsip-995/NOTSIPAI`.
+NOTSIP is a persistent local AI operating layer for the Windows 11 laptop + Android companion target. This repository is deliberately separate from `Notsip-995/NOTSIPAI`.
 
-## Install on Windows 11
+## First install
 
 ```powershell
 git clone https://github.com/Notsip-995/NOTSIP-Platform.git
@@ -12,26 +12,46 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\start_windows.ps1
 ```
 
-The installer creates the Python environment, installs the development/runtime dependencies, installs Chromium for Playwright, and launches a guided first-run configuration wizard. The wizard writes `.env`, which is excluded from Git. It covers the model provider/fallback, web search, email, OAuth, Android pairing, API authentication, event signing, autonomy, and controlled self-maintenance settings.
+The installer creates the Python environment, installs runtime and Windows UI Automation dependencies, installs Chromium for Playwright, creates the data directories, and runs the first-run configuration wizard. The wizard covers model/fallback routing, STT/TTS, visual perception, browser/web access, email, Google/Microsoft/generic OIDC, OAuth integration, API authentication, Android pairing, autonomy, event signing, federation, and controlled self-maintenance.
 
-After startup, open `http://127.0.0.1:8765` for the NOTSIP UI. API documentation is available from FastAPI at `/docs`.
+After startup, open `http://127.0.0.1:8765`; FastAPI documentation is at `/docs`.
 
-## Runtime
+## Production runtime
 
-The authoritative runtime is `python -m notsip`, which imports `src/notsip/core_runtime.py`. `src/notsip/server.py` is only a compatibility alias to that runtime; there is no second server implementation.
+`python -m notsip` loads one canonical application assembly. `src/notsip/runtime.py`, `src/notsip/core_runtime.py`, and `src/notsip/server.py` are compatibility aliases only; they do not contain alternate server implementations.
 
-The platform provides persistent identity/context, SQL+FTS memory with provenance, world entities/relations, fact/evidence records, model tool calling with primary/fallback routing, risk/autonomy enforcement, confirmation gates, persistent scheduled jobs with registered handlers, signed event ingestion and WebSocket events, Windows execution/screenshot/open actions, Playwright browser extraction, live web retrieval, SMTP/IMAP email, ICS/OAuth scaffolding, Android pairing/device commands, a local web UI, self-inspection, verification, and controlled self-modification with a test-and-rollback workflow.
+The platform provides persistent identity/context, SQL+FTS memory with provenance, world entities/relations and evidence records, primary/fallback model routing, risk/autonomy enforcement, durable scheduled jobs with retry/backoff, signed events, Windows PowerShell + screenshot + UI Automation, Playwright browsing, web search, SMTP/IMAP and ICS support, Google/Microsoft OIDC/OAuth integrations, Android pairing/device transport, browser microphone/camera controls, streaming voice/perception sockets, self-inspection/self-verification/guarded self-maintenance, node leases and recovery checkpoints, and model-independent planning/evidence/contradiction/proactive-intelligence services.
 
-External capabilities are configuration-gated. NOTSIP does not fabricate success when an external dependency is unavailable.
+External capabilities remain configuration-gated. NOTSIP never fabricates external success.
 
-## Self-awareness / self-maintenance
+## Security
 
-NOTSIP can inspect its repository, enumerate source files with SHA-256 hashes, read its own source, run compile/tests, and—only when explicitly enabled and approved—apply a supplied patch on a temporary Git branch. The patch is tested before commit; a failing change is rolled back. This is deliberate rather than unrestricted self-editing.
+On Windows, secrets are protected with DPAPI-backed key material and AES-GCM encrypted local storage. OIDC uses discovery, authorization-code PKCE, state/nonce protection, JWKS-backed ID-token verification, issuer/audience/time validation, and HttpOnly sessions. Event ingress supports HMAC signatures. High-risk computer actions, outbound mail, and self-modification remain policy-gated.
 
-## Target hardware
+## Self-awareness
 
-Windows 11 Pro, Lenovo ThinkPad-class laptop, Intel Core i5-1335U, 16 GB RAM, Intel Iris Xe integrated graphics, microphone array, integrated cameras/IR camera, Wi-Fi 6E, Bluetooth, and Android phone companion. CUDA is not required.
+NOTSIP can inventory the repository, hash files, read its own source/configuration, compile/test itself, and—only when explicitly enabled and approved—apply a Git patch on a temporary branch. Changes are tested before commit and failed changes are rolled back.
 
-## Deferred until real infrastructure exists
+## Windows automation
 
-Robotics, satellites/remote sensing, vehicles, smart-building controllers, Raspberry Pi/ESP32 fleets, and specialized external clusters are not enabled until the corresponding real targets are connected.
+The Windows layer combines PowerShell for system-level actions with UI Automation through `pywinauto` for window enumeration/focus, control clicks, text entry, hotkeys, and additional application-specific interactions.
+
+## Voice and perception
+
+The web UI records microphone input for STT, plays returned TTS audio, and captures camera frames for vision. `/ws/voice` and `/ws/perception` are available for richer clients.
+
+## Distributed nodes and recovery
+
+Nodes use device-scoped tokens and renewable leases. NOTSIP reconciles stale nodes, produces recovery plans, persists state checkpoints, and retries failed scheduled work with exponential backoff. Hardware-specific actions remain capability-gated.
+
+## Windows executable
+
+Build locally with `.\scripts\build_exe.ps1`. The Windows release workflow builds `dist\NOTSIP.exe` directly on a Windows runner and publishes the executable for tagged releases; repository development does not depend on ZIP archives.
+
+## Target
+
+Windows 11 Pro laptop with Intel Core i5-1335U, 16 GB RAM, Intel Iris Xe, integrated microphone/cameras, Wi-Fi/Bluetooth, plus Android companion. CUDA is not required.
+
+## Physical systems
+
+Robotics, vehicles, satellites/remote sensing, smart-building controllers, Raspberry Pi/ESP32 fleets, and other physical infrastructure are not simulated. Their adapters activate only when real systems are connected and authorized.
