@@ -1,3 +1,2 @@
-from .core_runtime import app
-
-__all__ = ['app']
+from .runtime_prod import app
+__all__=['app']
