@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, hashlib, json, secrets, time
+import asyncio, hashlib, json, os, secrets, time
 from fastapi import Depends, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from .updater import UpdateManager
@@ -28,7 +28,6 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return nodes.rotate(node_id)
     @app.post('/api/federation/{node_id}/revoke')
     async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return nodes.revoke(node_id)
-
     @app.post('/api/recovery/checkpoint')
     async def checkpoint(_:None=Depends(require_auth)):return {'status':'SUCCESS','path':recovery.checkpoint({'tasks':store.tasks(),'devices':store.devices(),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()})}
     @app.get('/api/recovery/latest')
@@ -36,7 +35,6 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/recovery/restore')
     async def restore(_:None=Depends(require_auth)):
         state=recovery.restore_state();return {'status':'RECOVERABLE','state':state['state'],'action':'restart_runtime_to_apply'}
-
     @app.get('/api/update/check')
     async def update_check(_:None=Depends(require_auth)):return await updates.check()
     @app.post('/api/update/download')
@@ -46,8 +44,12 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
-        return updates.install_and_verify(__import__('pathlib').Path(str(payload['path'])).resolve())
-
+        result=updates.install_and_verify(__import__('pathlib').Path(str(payload['path'])).resolve())
+        async def stop_after_response():
+            await asyncio.sleep(1.0)
+            os._exit(0)
+        asyncio.create_task(stop_after_response())
+        return result
     @app.get('/api/oauth/status')
     async def oauth_status(_:None=Depends(require_auth)):return {'mode':auth.mode,'provider':settings.oidc_provider,'configured':auth.oidc.configured,'issuer':auth.oidc.issuer,'client_id_configured':bool(auth.oidc.client_id),'accounts':accounts.list()}
     @app.get('/api/oauth/login')
@@ -67,19 +69,3 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/oauth/revoke')
     async def oauth_revoke(_:None=Depends(require_auth)):
         auth.secrets.set('oidc:tokens',{});return {'status':'SUCCESS','revoked':True}
-
-    async def reactive_loop():
-        q=events.subscribe()
-        try:
-            while True:
-                ev=await q.get()
-                if ev.type=='perception.observed' and settings.autonomy_level>=3:
-                    obs=(ev.payload or {}).get('observation','');
-                    if obs:await agent.handle('Review this newly observed desktop state and act only when a configured policy allows it: '+obs[:2000])
-        finally:events.unsubscribe(q)
-    @app.on_event('startup')
-    async def start_reactive():app.state.reactive_task=asyncio.create_task(reactive_loop())
-    @app.on_event('shutdown')
-    async def stop_reactive():
-        task=getattr(app.state,'reactive_task',None)
-        if task:task.cancel()
