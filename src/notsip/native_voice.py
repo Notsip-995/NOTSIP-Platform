@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,math,platform,queue,threading,time
+import asyncio, io, math, platform, threading, time, wave
 
 class NativeVoiceWorker:
     def __init__(self,settings,media,events):
@@ -27,17 +27,22 @@ class NativeVoiceWorker:
                 frames.append(raw);silent+=1
                 if silent>=silence_blocks:
                     blob=b''.join(frames);frames=[];silent=0;active=False
-                    if self.loop:asyncio.run_coroutine_threadsafe(self._utterance(blob),self.loop)
+                    if self.loop:asyncio.run_coroutine_threadsafe(self._utterance(blob,rate),self.loop)
         try:
             with sd.RawInputStream(samplerate=rate,channels=1,dtype='int16',blocksize=block,callback=cb):
                 while self.running:time.sleep(.2)
         except Exception as e:
             if self.loop:asyncio.run_coroutine_threadsafe(self._emit('native_voice.error',{'error':str(e)}),self.loop)
-    async def _utterance(self,pcm):
+    @staticmethod
+    def _wav(pcm:bytes,rate:int)->bytes:
+        out=io.BytesIO()
+        with wave.open(out,'wb') as w:
+            w.setnchannels(1);w.setsampwidth(2);w.setframerate(rate);w.writeframes(pcm)
+        return out.getvalue()
+    async def _utterance(self,pcm,rate):
         try:
-            # Providers normally expect WAV/WebM. The generic HTTP STT adapter
-            # accepts a byte payload; mark it as PCM so custom STT gateways can decode it.
-            result=await self.media.transcribe(pcm,'audio/pcm',getattr(self.settings,'stt_language',''))
+            blob=self._wav(pcm,rate)
+            result=await self.media.transcribe(blob,'audio/wav',getattr(self.settings,'stt_language',''))
             text=result.get('text','').strip();wake=getattr(self.settings,'wake_word','').strip().lower()
             if wake and not text.lower().startswith(wake):return
             await self._emit('voice.transcript',{'text':text,'wake_word':wake})
