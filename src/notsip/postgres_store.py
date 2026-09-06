@@ -49,6 +49,17 @@ class PostgreSQLStore:
     def task_update(self,tid,**fields):
         if not fields:return
         fields['updated']=time.time();cols=','.join(f'{k}=%s' for k in fields);self.exec(f'UPDATE tasks SET {cols} WHERE id=%s',(*fields.values(),tid))
+    def restore_runtime_state(self,state):
+        tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or []
+        with self.conn() as c:
+            for table in ('commands','tasks','devices','entities','relations','facts'):c.execute(f'DELETE FROM {table}')
+            for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error','')))
+            for d in devices:c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),d.get('token_hash',''),d.get('last_seen'),d.get('status',''),d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
+            for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(%s,%s,%s,%s,%s)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
+            for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(%s,%s,%s,%s,%s,%s,%s)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
+            for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
+            c.commit()
+        return {'status':'RESTORED','tasks':len(tasks),'devices':len(devices),'entities':len(world.get('entities') or []),'relations':len(world.get('relations') or []),'facts':len(world.get('facts') or [])}
     def audit(self,*args):self.exec('INSERT INTO audit(user_id,request,interpretation,tool,action,result,ts) VALUES(%s,%s,%s,%s,%s,%s,%s)',(*args,time.time()))
     def audit_recent(self,n=200):return self.rows('SELECT * FROM audit ORDER BY id DESC LIMIT %s',(n,))
     def create_pair_code(self,ttl=300):
@@ -65,8 +76,7 @@ class PostgreSQLStore:
         cid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO commands(id,device_id,action,payload,status,created,updated,result) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(cid,device_id,action,json.dumps(payload or {}),'PENDING',now,now,''));return cid
     def pull_commands(self,device_id,limit=20):
         with self.conn() as c:
-            rows=c.execute("WITH claimed AS (SELECT id FROM commands WHERE device_id=%s AND status='PENDING' ORDER BY created LIMIT %s) UPDATE commands SET status='DELIVERED',updated=%s WHERE id IN (SELECT id FROM claimed) RETURNING *",(device_id,limit,time.time())).fetchall();c.commit()
-            out=[]
+            rows=c.execute("WITH claimed AS (SELECT id FROM commands WHERE device_id=%s AND status='PENDING' ORDER BY created LIMIT %s) UPDATE commands SET status='DELIVERED',updated=%s WHERE id IN (SELECT id FROM claimed) RETURNING *",(device_id,limit,time.time())).fetchall();c.commit();out=[]
             for r in rows:
                 d=dict(r);d['payload']=json.loads(d['payload']);out.append(d)
             return out
