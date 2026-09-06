@@ -1,5 +1,7 @@
-# NOTSIP 0.7 status
+# NOTSIP 0.8 status
 
-Implemented and tested locally: persistent store/memory, world model, provenance facts, model tool loop, autonomy policy, Windows node controls, browser extraction, web search, email/ICS/OAuth adapters, scheduled task infrastructure, Android pairing and command/result transport, local web UI, and Windows installer.
+The 0.8 runtime fixes the prior alpha release-blockers: the obsolete `server05.py` is removed, `server.py` is now only a compatibility alias to the authoritative runtime, the root route serves `ui.html`, advertised API routes are wired, scheduled tasks have registered handlers, and CI/Docker/regression tests are present.
 
-Requires real configuration for model providers, web/email/OAuth accounts and Android permissions. Robotics, satellite/remote sensing, vehicles and building automation remain deferred until real systems are connected.
+Implemented and locally validated: persistent store/memory/world state, model tool loop with primary/fallback endpoints, autonomy policy, Windows node controls, browser extraction, web search, email/ICS/OAuth surfaces, background scheduled tasks, Android pairing and command/result transport, local UI, repository self-inspection, guarded self-maintenance with rollback, first-run configuration wizard, CI, and Docker runtime definition.
+
+Runtime dependencies remain configuration-gated rather than simulated. Robotics, satellites/remote sensing, vehicles, building automation and other absent physical infrastructure remain deferred.
