@@ -10,10 +10,8 @@ class SecretStore:
         if os.name!='nt': return None
         try:
             class BLOB(ctypes.Structure): _fields_=[('cbData',ctypes.c_uint32),('pbData',ctypes.POINTER(ctypes.c_byte))]
-            crypt32=ctypes.windll.crypt32; kernel32=ctypes.windll.kernel32
-            raw=ctypes.create_string_buffer(data); inp=BLOB(len(data),ctypes.cast(raw,ctypes.POINTER(ctypes.c_byte))); out=BLOB()
-            fn=crypt32.CryptUnprotectData if decrypt else crypt32.CryptProtectData
-            if not fn(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)): return None
+            crypt32=ctypes.windll.crypt32; kernel32=ctypes.windll.kernel32; raw=ctypes.create_string_buffer(data); inp=BLOB(len(data),ctypes.cast(raw,ctypes.POINTER(ctypes.c_byte))); out=BLOB(); fn=crypt32.CryptUnprotectData if decrypt else crypt32.CryptProtectData
+            if not fn(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)):return None
             try:return ctypes.string_at(out.pbData,out.cbData)
             finally:kernel32.LocalFree(out.pbData)
         except Exception:return None
@@ -22,9 +20,8 @@ class SecretStore:
         if env:return hashlib.sha256(env.encode()).digest()
         p=self.root/'master.key'
         if p.exists():
-            raw=p.read_bytes();dec=self._dpapi(raw,True)
-            return dec[:32] if dec else hashlib.sha256(raw).digest()
-        key=secrets.token_bytes(32);p.write_bytes(self._dpapi(key) or key)
+            raw=p.read_bytes(); dec=self._dpapi(raw,True); return dec[:32] if dec else hashlib.sha256(raw).digest()
+        key=secrets.token_bytes(32); p.write_bytes(self._dpapi(key) or key)
         try:p.chmod(0o600)
         except Exception:pass
         return key
@@ -41,16 +38,18 @@ class SecretStore:
 class OIDCProvider:
     PRESETS={'google':'https://accounts.google.com','microsoft':'https://login.microsoftonline.com/common/v2.0'}
     def __init__(self,provider='',issuer='',client_id='',client_secret='',redirect_uri='',scopes='openid profile email'):
-        self.provider=provider or 'generic'; self.issuer=(issuer or self.PRESETS.get(self.provider,'')).rstrip('/'); self.client_id=client_id; self.client_secret=client_secret; self.redirect_uri=redirect_uri; self.scopes=scopes; self.metadata={}
+        self.provider=provider or 'generic';self.issuer=(issuer or self.PRESETS.get(self.provider,'')).rstrip('/');self.client_id=client_id;self.client_secret=client_secret;self.redirect_uri=redirect_uri;self.scopes=scopes;self.metadata={}
     @property
     def configured(self):return bool(self.issuer and self.client_id and self.redirect_uri)
     async def discover(self):
         if not self.configured:raise RuntimeError('OIDC not configured')
         import httpx
         async with httpx.AsyncClient(timeout=20) as c:r=await c.get(self.issuer+'/.well-known/openid-configuration');r.raise_for_status();self.metadata=r.json();return self.metadata
-    async def authorize_url(self,state,challenge,nonce):
+    async def authorize_url(self,state,challenge,nonce=''):
         from urllib.parse import urlencode
-        m=self.metadata or await self.discover();return m['authorization_endpoint']+'?'+urlencode({'client_id':self.client_id,'redirect_uri':self.redirect_uri,'response_type':'code','scope':self.scopes,'state':state,'nonce':nonce,'code_challenge':challenge,'code_challenge_method':'S256'})
+        m=self.metadata or await self.discover();payload={'client_id':self.client_id,'redirect_uri':self.redirect_uri,'response_type':'code','scope':self.scopes,'state':state,'code_challenge':challenge,'code_challenge_method':'S256'}
+        if nonce:payload['nonce']=nonce
+        return m['authorization_endpoint']+'?'+urlencode(payload)
     async def exchange(self,code,verifier):
         import httpx
         m=self.metadata or await self.discover();d={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect_uri,'code_verifier':verifier}
@@ -63,13 +62,8 @@ class OIDCProvider:
         async with httpx.AsyncClient(timeout=20) as c:r=await c.get(url,headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
     async def validate_id_token(self,id_token,nonce=''):
         import jwt
-        m=self.metadata or await self.discover(); jwks=jwt.PyJWKClient(m['jwks_uri']); key=jwks.get_signing_key_from_jwt(id_token)
-        claims=jwt.decode(id_token,key.key,algorithms=['RS256','RS384','RS512','ES256','ES384','ES512'],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
-        iss=claims.get('iss','')
-        if self.provider=='microsoft' and '{tenantid}' in m.get('issuer',''):
-            tid=claims.get('tid',''); expected=m['issuer'].replace('{tenantid}',tid)
-        else:expected=m.get('issuer',self.issuer)
-        if iss!=expected:raise ValueError('OIDC issuer validation failed')
+        m=self.metadata or await self.discover();jwks=jwt.PyJWKClient(m['jwks_uri']);key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=['RS256','RS384','RS512','ES256','ES384','ES512'],audience=self.client_id,options={'require':['exp','iat','iss','sub']});
+        if claims.get('iss')!=m.get('issuer',self.issuer):raise ValueError('OIDC issuer validation failed')
         if nonce and claims.get('nonce')!=nonce:raise ValueError('OIDC nonce validation failed')
         return claims
 
@@ -79,6 +73,7 @@ def pkce_pair():
 class AuthManager:
     def __init__(self,settings,root:Path):
         self.settings=settings;self.secrets=SecretStore(root);self.sessions={};self.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes)
+        if self.oidc.client_id:self.secrets.set('oidc:client_id',self.oidc.client_id)
     @property
     def mode(self):return self.settings.auth_mode
     def mint_session(self,claims):t=secrets.token_urlsafe(48);self.sessions[t]={'claims':claims,'expires':time.time()+self.settings.session_ttl};return t
