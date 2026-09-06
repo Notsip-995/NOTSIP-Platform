@@ -16,12 +16,14 @@ class Store:
         c=sqlite3.connect(self.db,check_same_thread=False);c.row_factory=sqlite3.Row;return c
     def init(self):
         with self.lock,self.conn() as c:c.executescript('''CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,role TEXT,content TEXT,ts REAL);CREATE TABLE IF NOT EXISTS memories(id INTEGER PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight REAL,source TEXT,provenance TEXT,ts REAL);CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(content,content='memories',content_rowid='id');CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated REAL);CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence REAL,source TEXT,ts REAL);CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence REAL,retrieved REAL,metadata TEXT);CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at REAL,interval_sec REAL,retries INTEGER,created REAL,updated REAL,error TEXT);CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts REAL);CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires REAL);CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen REAL,status TEXT,data TEXT);CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created REAL,updated REAL,result TEXT);''')
+    def conn_rows(self,sql,args=()):
+        with self.lock,self.conn() as c:return [dict(r) for r in c.execute(sql,args).fetchall()]
     def exec(self,sql,args=()):
         if self._backend:return self._backend.exec(sql,args)
         with self.lock,self.conn() as c:c.execute(sql,args)
     def rows(self,sql,args=()):
         if self._backend:return self._backend.rows(sql,args)
-        with self.conn() as c:return [dict(r) for r in c.execute(sql,args).fetchall()]
+        return self.conn_rows(sql,args)
     def row(self,sql,args=()):
         x=self.rows(sql,args);return x[0] if x else None
     def message(self,role,content):self.exec('INSERT INTO messages(role,content,ts) VALUES(?,?,?)',(role,content,time.time()))
@@ -52,6 +54,11 @@ class Store:
         if self._backend:return self._backend.task(objective,state,priority,handler,data,run_at,interval_sec)
         tid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(tid,objective,state,priority,handler,json.dumps(data or {}),run_at,interval_sec,0,now,now,''));return tid
     def tasks(self,state=None):return self._backend.tasks(state) if self._backend else self.rows(('SELECT * FROM tasks WHERE state=? ORDER BY priority DESC,created ASC' if state else 'SELECT * FROM tasks ORDER BY priority DESC,created ASC'),((state,) if state else ()))
+    def claim_task(self,tid,data):
+        if self._backend:return self._backend.claim_task(tid,data)
+        with self.lock,self.conn() as c:
+            cur=c.execute("UPDATE tasks SET state='RUNNING',data=?,error='',updated=? WHERE id=? AND state='PENDING'",(data,time.time(),tid))
+            return cur.rowcount==1
     def task_update(self,tid,**fields):
         if not fields:return
         fields['updated']=time.time();self.exec('UPDATE tasks SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',(*fields.values(),tid))
@@ -64,9 +71,10 @@ class Store:
         code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()+ttl));return code
     def consume_pair_code(self,code):
         if self._backend:return self._backend.consume_pair_code(code)
-        r=self.row('SELECT expires FROM pairing_codes WHERE code=?',(code.upper(),));ok=bool(r and r['expires']>time.time());
-        if ok:self.exec('DELETE FROM pairing_codes WHERE code=?',(code.upper(),))
-        return ok
+        with self.lock,self.conn() as c:
+            r=c.execute('SELECT expires FROM pairing_codes WHERE code=?',(code.upper(),)).fetchone();ok=bool(r and r[0]>time.time())
+            if ok:c.execute('DELETE FROM pairing_codes WHERE code=?',(code.upper(),))
+            return ok
     def pair_device(self,id,name,platform,public_key,token):
         if self._backend:return self._backend.pair_device(id,name,platform,public_key,token)
         self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE','{}'))
@@ -82,9 +90,15 @@ class Store:
         cid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO commands VALUES(?,?,?,?,?,?,?,?)',(cid,device_id,action,json.dumps(payload or {}),'PENDING',now,now,''));return cid
     def pull_commands(self,device_id,limit=20):
         if self._backend:return self._backend.pull_commands(device_id,limit)
-        rows=self.rows("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit))
-        for r in rows:self.exec('UPDATE commands SET status=?,updated=? WHERE id=?',('DELIVERED',time.time(),r['id']));r['payload']=json.loads(r['payload'])
-        return rows
-    def command_result(self,cid,status,result):
-        if self._backend:return self._backend.command_result(cid,status,result)
-        self.exec('UPDATE commands SET status=?,result=?,updated=? WHERE id=?',(status,json.dumps(result),time.time(),cid))
+        with self.lock,self.conn() as c:
+            rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
+            if rows:
+                ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
+            for r in rows:r['payload']=json.loads(r['payload'])
+            return rows
+    def command_result(self,cid,status,result,device_id=None):
+        if self._backend:return self._backend.command_result(cid,status,result,device_id)
+        with self.lock,self.conn() as c:
+            if device_id is None:cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=?',(status,json.dumps(result),time.time(),cid))
+            else:cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=?',(status,json.dumps(result),time.time(),cid,device_id))
+            return cur.rowcount==1
