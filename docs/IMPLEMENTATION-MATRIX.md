@@ -1,55 +1,41 @@
-# NOTSIP implementation matrix
+# NOTSIP implementation matrix — 0.8
 
-This matrix separates what the current platform implements from capabilities that require a real external service or physical system.
+## Implemented and wired
 
-## Implemented in software
-
-- natural-language API and web UI
-- conversational history
-- persistent SQL memory
-- memory classes: short-term, episodic, semantic, preference, procedural, system
+- single authoritative `python -m notsip` runtime
+- functional root web UI plus FastAPI API docs
+- persistent identity, conversation history and SQL/FTS memory
+- memory provenance/source fields
 - world entities and relations
-- model-provider abstraction using OpenAI-compatible chat completions
+- primary OpenAI-compatible model with fallback model support
 - structured tool calling
-- capability/risk/autonomy policy
-- explicit confirmation primitives
-- audit trail
-- evidence/provenance ledger
-- task persistence and background worker foundation
-- signed event ingestion and event streaming
-- Windows node boundary with PowerShell execution in the authorized workspace
-- Android device pairing token and heartbeat
-- real public web search adapter
-- degraded-service state tracking
-- reproducible Windows setup scripts
-- Docker deployment foundation
+- capability/risk/autonomy policy and confirmation boundaries
+- persistent audit trail and evidence/fact ledger
+- persistent scheduled tasks
+- registered `agent` and `self_verify` scheduler handlers
+- explicit task run endpoint
+- signed external event ingestion and WebSocket event stream
+- Windows PowerShell, desktop screenshot and open-target controls
+- isolated NOTSIP workspace
+- Playwright page extraction
+- live Brave web search adapter
+- SMTP/IMAP mail adapters and status/search/send routes
+- ICS calendar parser and OAuth status/authorize/callback routes
+- Android pairing, heartbeat, command queue, result reporting and command executor
+- repository self-inspection, source reading, compile/test verification and guarded self-modification with branch + rollback
+- interactive Windows first-run configuration wizard
+- CI compile/test workflow
+- Docker runtime definition
+- regression tests for API, pairing, workspace isolation, scheduler and self-maintenance
 
-## Real adapters present but require configuration
+## Configuration-gated capabilities
 
-- hosted/local LLM endpoint
-- Brave Search
-- Android companion
-- SMTP/IMAP email
-- Home Assistant/MQTT when those services are actually available
+These become operational when their real endpoint/account/permission is supplied during first-run configuration: model providers, web search, SMTP/IMAP, OAuth providers, Android AccessibilityService, and other external services.
 
-## Deferred until the real system exists
+## Deferred by hardware availability
 
-- robotics hardware control
-- satellite/remote-sensing feeds
-- vehicle/armor-like systems
-- building automation hardware not present on the target machine
-- specialized server clusters and external enterprise systems
+Robotics, satellite/remote-sensing feeds, vehicles, smart-building controllers, Raspberry Pi/ESP32 fleets, and specialized external infrastructure remain disabled until the corresponding real systems exist.
 
-## Still required for a production-complete NOTSIP
+## Not claimed as complete merely by having an adapter
 
-- hardened authentication/OIDC and a secrets manager
-- production PostgreSQL/Redis deployment and worker queue
-- full OAuth integrations for calendar/mail/messaging
-- high-fidelity Windows GUI automation and screen perception
-- Android command channel and user-approved accessibility actions beyond heartbeat/pairing
-- streaming speech recognition, wake word, TTS and interruption handling
-- camera/vision ingestion and multimodal perception
-- richer source corroboration and information-fusion pipelines
-- automatic proactive monitoring and policy-driven trigger evaluation
-- distributed node synchronization, recovery and failover
-- signed releases/installer distribution and update mechanism
+High-fidelity multimodal voice/wake-word processing, deep application-specific GUI automation, full production OIDC/secrets-vault deployment, distributed-node consensus/failover, advanced information-fusion/corroboration, and production-grade release signing/update infrastructure still require additional engineering and real deployment validation.
