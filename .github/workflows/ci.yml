@@ -18,3 +18,19 @@ jobs:
         run: pytest -q
       - name: Docker build
         run: docker build -t notsip-ci .
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        shell: pwsh
+        run: python -m pip install -e '.[windows]'
+      - name: Build executable
+        shell: pwsh
+        run: .\scripts\build_exe.ps1
+      - name: Smoke executable exists
+        shell: pwsh
+        run: if(-not(Test-Path dist\NOTSIP.exe)){throw 'NOTSIP.exe was not produced'}
