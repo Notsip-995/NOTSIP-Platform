@@ -4,6 +4,10 @@ from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from .runtime_prod import app, media, settings, store, nodes, recovery, intellect, events, web, emailc, require_auth, auth, provider, pairing, uia, win, registry, agent
+from .runtime_prod import policy
+from .provider import Provider
+from .connectors import Web, Email
+from .security import OIDCProvider
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
 from .routes_extra import attach as attach_extra
@@ -16,7 +20,7 @@ from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
-PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
+PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval)
 attach_perception(app,settings,win,media,store,events)
 
@@ -30,7 +34,6 @@ async def setup_page():
     p=resource_root()/'setup.html'
     if not p.exists():raise HTTPException(404,'setup UI missing')
     return FileResponse(p)
-
 SESSION_KEY='runtime:browser_sessions'
 def _sessions():return auth.secrets.get(SESSION_KEY,{}) or {}
 def _save_sessions(d):auth.secrets.set(SESSION_KEY,d)
@@ -61,7 +64,6 @@ async def production_security(request:Request,call_next):
     try:response=await call_next(request)
     except Exception as exc:logger.exception('request failed');audit_log.write('request.error',request_id=rid,path=request.url.path,error=str(exc));raise
     response.headers['X-Request-ID']=rid;audit_log.write('request',request_id=rid,method=request.method,path=request.url.path,status=response.status_code);return response
-
 @app.post('/api/login')
 async def api_login(payload:dict):
     if not settings.api_key:raise HTTPException(503,'API key authentication is disabled; local access is open')
@@ -70,7 +72,6 @@ async def api_login(payload:dict):
 @app.post('/api/logout')
 async def api_logout(request:Request):
     s=request.cookies.get('notsip_session');d=_sessions();d.pop(s,None);_save_sessions(d);auth.sessions.pop(s,None);r=Response(status_code=204);r.delete_cookie('notsip_session');return r
-
 @app.get('/api/capabilities')
 async def capabilities(_:None=Depends(require_auth)):return {'configured':probes.snapshot(),'diagnostics':diagnostics.run(),'voice_native':native_voice.running}
 @app.get('/api/diagnostics')
@@ -82,11 +83,17 @@ async def config_get(_:None=Depends(require_auth)):
     data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if not any(x in k.lower() for x in ('api_key','password','secret','client_secret'))};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret'}
+    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
     for k,v in requested.items():
         if k in allowed:setattr(settings,k,v)
         elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
-    config_store.save({k:getattr(settings,k) for k in allowed});audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested)}
+    config_store.save({k:getattr(settings,k) for k in allowed})
+    global provider,web,emailc,policy,nodes,diagnostics,probes,auth_token
+    provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes=NodeRegistry(store,settings.node_shared_secret)
+    agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
+    diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
+    audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False}
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
