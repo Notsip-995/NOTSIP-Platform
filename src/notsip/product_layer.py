@@ -93,15 +93,14 @@ class BackupManager:
         if self.dir not in p.parents:raise ValueError('invalid backup path')
         with zipfile.ZipFile(p) as z:
             if z.testzip() is not None:raise ValueError('backup archive is corrupt')
-            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent))
-            try:z.extractall(stage)
-            except Exception:shutil.rmtree(stage,ignore_errors=True);raise
+            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent));z.extractall(stage)
+        try:
             for item in stage.iterdir():
                 target=self.root/item.name
                 if item.name=='backups':continue
                 if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
                 shutil.move(str(item),str(target))
-            shutil.rmtree(stage,ignore_errors=True)
+        finally:shutil.rmtree(stage,ignore_errors=True)
         return {'status':'SUCCESS','restored':name,'restart_required':True}
 
 class ApprovalStore:
@@ -119,23 +118,32 @@ class ApprovalStore:
     def pending(self):return [x for x in self._load().values() if x.get('status')=='PENDING' and x.get('expires',0)>time.time()]
 
 class Diagnostics:
-    def __init__(self,root,settings=None,store=None,provider=None,web=None,email=None):self.root=Path(root);self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
+    def __init__(self,root,settings=None,store=None,provider=None,web=None,email=None,auth=None,nodes=None,recovery=None):self.root=Path(root);self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email;self.auth=auth;self.nodes=nodes;self.recovery=recovery
     def run(self):
-        checks={'python':{'ok':sys.version_info[:2]>=(3,12),'detail':sys.version},'platform':{'ok':True,'detail':platform.platform()},'storage':{'ok':self.root.exists() and os.access(self.root,os.W_OK),'detail':str(self.root)}}
+        s=self.settings;checks={'python':{'ok':sys.version_info[:2]>=(3,12),'detail':sys.version},'platform':{'ok':True,'detail':platform.platform()},'storage':{'ok':self.root.exists() and os.access(self.root,os.W_OK),'detail':str(self.root)}}
         if self.store:
-            try:self.store.row('SELECT 1');checks['database']={'ok':True}
+            try:self.store.row('SELECT 1');checks['database']={'ok':True,'detail':'connected'}
             except Exception as e:checks['database']={'ok':False,'detail':str(e)}
-        if self.provider:checks['llm']={'ok':self.provider.enabled or self.provider.fallback_enabled,'detail':'configured' if self.provider.enabled or self.provider.fallback_enabled else 'not configured'}
-        if self.web:checks['web_search']={'ok':self.web.enabled,'detail':'configured' if self.web.enabled else 'not configured'}
-        if self.email:checks['email']={'ok':self.email.enabled,'detail':'configured' if self.email.enabled else 'not configured'}
-        checks['browser']={'ok':True,'detail':'Playwright adapter installed'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'}
+        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'}
+        checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'}
+        checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'}
+        checks['vision']={'ok':bool(s and s.vision_enabled),'detail':'enabled' if s and s.vision_enabled else 'disabled'}
+        checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'}
+        checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'}
+        checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'}
+        checks['browser']={'ok':bool(getattr(s,'browser_enabled',True)),'detail':'enabled' if getattr(s,'browser_enabled',True) else 'disabled'}
+        checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'}
+        checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'}
+        checks['scheduler']={'ok':True,'detail':'durable scheduler available'}
+        checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'}
+        checks['recovery']={'ok':bool(self.recovery and self.recovery.verify_latest()['valid']) if self.recovery else False,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'no verified checkpoint'}
+        checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
         return {'ok':all(v['ok'] for v in checks.values()),'checks':checks,'timestamp':time.time()}
 
 class Maintenance:
     def __init__(self,root):self.root=Path(root).resolve()
     def inventory(self):
-        import hashlib
-        out=[]
+        import hashlib;out=[]
         for p in self.root.rglob('*'):
             if not p.is_file() or any(x in {'.git','.venv','__pycache__','.pytest_cache','data','dist','build','backups'} for x in p.parts):continue
             out.append({'path':p.relative_to(self.root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size})
