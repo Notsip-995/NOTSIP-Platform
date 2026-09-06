@@ -1,40 +1,51 @@
 from __future__ import annotations
-import asyncio, inspect, time
+import asyncio, inspect, json, os, socket, time, uuid
 
 class Scheduler:
-    def __init__(self,store): self.store=store; self.handlers={}; self.running=True; self.max_retries=4
-    def register(self,name,fn): self.handlers[name]=fn
-    def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0):
-        payload=dict(data or {}); payload.setdefault('max_retries',self.max_retries)
+    def __init__(self,store):
+        self.store=store; self.handlers={}; self.running=True; self.max_retries=4; self.worker_id=f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}'; self.reclaim_after=300
+        self._recover_stale()
+    def _recover_stale(self):
+        now=time.time()
+        for task in self.store.tasks('RUNNING'):
+            data=_json(task.get('data'));started=float(data.get('started_at',0) or 0)
+            if started and now-started>self.reclaim_after:
+                data.update({'recovered_from':data.get('worker_id'),'recovered_at':now})
+                self.store.task_update(task['id'],state='PENDING',run_at=now,data=json.dumps(data),error='reclaimed after worker timeout')
+    def register(self,name,fn):self.handlers[name]=fn
+    def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key=''):
+        payload=dict(data or {});payload.setdefault('max_retries',self.max_retries);payload.setdefault('idempotency_key',idempotency_key or uuid.uuid4().hex)
         return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval)
     async def run_one(self,task):
-        fn=self.handlers.get(task.get('handler') or 'agent')
+        handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
         if not fn:
-            self.store.task_update(task['id'],state='FAILED',error=f"no handler registered: {task.get('handler') or 'agent'}"); return {'status':'FAILURE','error':'no handler registered'}
-        self.store.task_update(task['id'],state='RUNNING')
+            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');return {'status':'FAILURE','error':'no handler registered'}
+        current=self.store.row('SELECT state FROM tasks WHERE id=?',(task['id'],))
+        if not current or current['state']!='PENDING':return {'status':'SKIPPED','reason':'task already claimed'}
+        payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':time.time(),'execution_id':uuid.uuid4().hex})
+        self.store.task_update(task['id'],state='RUNNING',data=json.dumps(payload),error='')
         try:
             result=fn(task)
-            if inspect.isawaitable(result): result=await result
-            if task.get('interval_sec'): self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],error='')
-            else:self.store.task_update(task['id'],state='COMPLETED',error='')
-            return {'status':'SUCCESS','result':result}
+            if inspect.isawaitable(result):result=await result
+            payload.update({'finished_at':time.time(),'last_result':result})
+            if task.get('interval_sec'):self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
+            else:self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
+            return {'status':'SUCCESS','result':result,'execution_id':payload['execution_id']}
         except Exception as exc:
-            retries=int(task.get('retries') or 0)+1; max_retries=int(json_or(task.get('data'),'max_retries',self.max_retries))
+            retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time()})
             if retries<=max_retries:
-                backoff=min(300,2**retries); self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,error=str(exc))
-                return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff}
-            self.store.task_update(task['id'],state='FAILED',error=str(exc),retries=retries); return {'status':'FAILURE','error':str(exc),'retries':retries}
+                backoff=min(900,2**min(retries,9));self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,data=json.dumps(payload),error=str(exc));return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff}
+            self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=str(exc),retries=retries);return {'status':'FAILURE','error':str(exc),'retries':retries}
     async def tick(self):
-        now=time.time()
+        self._recover_stale();now=time.time()
         for task in self.store.tasks('PENDING'):
             if task.get('run_at') and task['run_at']>now:continue
             await self.run_one(task)
     async def loop(self):
         while self.running:
-            await self.tick(); await asyncio.sleep(1)
-    def stop(self): self.running=False
+            await self.tick();await asyncio.sleep(1)
+    def stop(self):self.running=False
 
-def json_or(value,key,default):
-    try:
-        import json; return json.loads(value or '{}').get(key,default)
-    except Exception:return default
+def _json(value):
+    try:return json.loads(value or '{}')
+    except Exception:return {}
