@@ -96,7 +96,6 @@ jobs:
             if(-not $ready){throw 'Installed NOTSIP.exe did not start'}
             foreach($u in @('http://127.0.0.1:8776/api/health','http://127.0.0.1:8776/api/status')){$r=Invoke-WebRequest $u -UseBasicParsing -TimeoutSec 5;if($r.StatusCode -ne 200){throw "Installed endpoint failed: $u"}}
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
-          Uninstall-String -ErrorAction SilentlyContinue
           $uninstaller=Join-Path $installDir 'unins000.exe';if(Test-Path $uninstaller){Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT','/NORESTART' -Wait}
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
