@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib,json,os,shutil,subprocess,sys,time
 from pathlib import Path
+from urllib.parse import urlparse
 import httpx
 
 class UpdateManager:
@@ -10,6 +11,9 @@ class UpdateManager:
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
     def current_exe(self):return Path(sys.executable).resolve() if self.frozen else None
+    def _trusted_asset(self,url:str)->bool:
+        p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ')
+        return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/')
     async def check(self):
         repo=getattr(self.settings,'github_repository','')
         if not repo:return {'available':False,'reason':'github_repository not configured'}
@@ -22,6 +26,7 @@ class UpdateManager:
         r.raise_for_status();d=r.json()
         return {'available':bool(d.get('tag_name')),'tag':d.get('tag_name'),'name':d.get('name'),'url':d.get('html_url'),'assets':[{'name':a['name'],'size':a['size'],'url':a['browser_download_url']} for a in d.get('assets',[])]}
     async def download(self,asset_url:str,sha256:str=''):
+        if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
         token=os.getenv('NOTSIP_GITHUB_TOKEN','');headers={'Accept':'application/octet-stream'}
         if token:headers['Authorization']='Bearer '+token
