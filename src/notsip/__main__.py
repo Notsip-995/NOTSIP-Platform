@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, socket, sys, time, webbrowser
+import os, socket, sys, webbrowser
 from pathlib import Path
 import uvicorn
 from notsip.config import settings
@@ -9,7 +9,8 @@ from notsip.product_layer import ProcessGuard, resource_root, choose_free_port
 def _is_notsip_listener(host:str,port:int)->bool:
     import urllib.request
     try:
-        with urllib.request.urlopen(f'http://{host}:{port}/api/health',timeout=.8) as r:return r.status==200 and 'NOTSIP' in r.read().decode('utf-8','replace')
+        with urllib.request.urlopen(f'http://{host}:{port}/api/health',timeout=.8) as r:
+            return r.status==200 and 'NOTSIP' in r.read().decode('utf-8','replace')
     except Exception:return False
 
 def _port_in_use(host:str,port:int)->bool:
@@ -40,8 +41,8 @@ def main()->None:
     try:
         url=f'http://{host}:{port}/'
         print(f'NOTSIP listening at {url}')
-        if os.getenv('NOTSIP_OPEN_BROWSER','true').lower() in {'1','true','yes'}: _open_browser(url)
-        uvicorn.run(app,host=host,port=port,log_level=os.getenv('NOTSIP_LOG_LEVEL','info'))
+        if settings.open_browser:_open_browser(url)
+        uvicorn.run(app,host=host,port=port,log_level=settings.log_level.lower())
     finally:guard.release()
 
 if __name__=='__main__':main()
