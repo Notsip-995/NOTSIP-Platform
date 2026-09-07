@@ -35,7 +35,15 @@ def attach(app):
 
     @app.middleware('http')
     async def hardened_security(request:Request,call_next):
-        # In OIDC mode, do not allow the legacy API key bearer path to bypass OIDC.
+        # A valid OIDC/API session cookie is authoritative for browser auth.
+        # The legacy middleware may add an API-key bearer header from the cookie;
+        # strip that synthetic header in OIDC mode so it cannot trip the bearer
+        # rejection below. Real bearer API-key authentication remains rejected.
+        if mod.settings.auth_mode=='oidc':
+            cookie=request.cookies.get('notsip_session')
+            if cookie and mod.auth.validate_session(cookie):
+                headers=[(k,v) for (k,v) in request.scope.get('headers',[]) if k.lower()!=b'authorization']
+                request.scope['headers']=headers
         if mod.settings.auth_mode=='oidc' and request.headers.get('authorization','').startswith('Bearer '):
             bearer=request.headers.get('authorization','')[7:]
             if mod.settings.api_key and secrets.compare_digest(bearer,mod.settings.api_key):
