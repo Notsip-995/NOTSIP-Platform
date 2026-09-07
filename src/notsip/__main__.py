@@ -37,21 +37,21 @@ def _open_browser(url:str):
 
 
 def main()->None:
-    host=settings.host
-    port=_select_port(host,settings.port)
-    if port==0:
-        if getattr(sys,'frozen',False):os._exit(0)
-        return
-    settings.port=port
-    os.environ['NOTSIP_EFFECTIVE_PORT']=str(port)
     guard=ProcessGuard(root=Path(settings.data_dir))
     if not guard.acquire():
-        url=f'http://{host}:{port}/'
+        port=settings.port
+        url=f'http://{host}:{port}/' if (host:=settings.host) else f'http://127.0.0.1:{port}/'
         print(f'NOTSIP is already running; opening {url}')
         _open_browser(url)
         if getattr(sys,'frozen',False):os._exit(0)
         return
     try:
+        host=settings.host
+        port=_select_port(host,settings.port)
+        if port==0:
+            return
+        settings.port=port
+        os.environ['NOTSIP_EFFECTIVE_PORT']=str(port)
         from notsip.core_runtime import app
         if getattr(sys,'frozen',False):
             import notsip.runtime_prod as runtime_prod
@@ -62,6 +62,7 @@ def main()->None:
         print(f'NOTSIP listening at {url}')
         if settings.open_browser:_open_browser(url)
         uvicorn.run(app,host=host,port=port,log_level=settings.log_level.lower())
-    finally:guard.release()
+    finally:
+        guard.release()
 
 if __name__=='__main__':main()
