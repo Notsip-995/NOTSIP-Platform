@@ -14,13 +14,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The installer creates the Python environment, installs runtime and Windows UI Automation dependencies, installs Chromium for Playwright, creates the data directories, and runs the first-run configuration wizard. The wizard covers model/fallback routing, STT/TTS, visual perception, browser/web access, email, Google/Microsoft/generic OIDC, OAuth integration, API authentication, Android pairing, autonomy, event signing, federation, and controlled self-maintenance.
 
-After startup, open `http://127.0.0.1:8765`; FastAPI documentation is at `/docs`.
+After startup, NOTSIP normally uses `http://127.0.0.1:8765`. If that port is occupied by another application, the launcher selects the next available local port and prints the effective URL in the terminal. FastAPI documentation is at `/docs` on that effective URL.
 
 ## Production runtime
 
 `python -m notsip` loads one canonical application assembly. `src/notsip/runtime.py`, `src/notsip/core_runtime.py`, and `src/notsip/server.py` are compatibility aliases only; they do not contain alternate server implementations.
 
-The platform provides persistent identity/context, SQL+FTS memory with provenance, world entities/relations and evidence records, primary/fallback model routing, risk/autonomy enforcement, durable scheduled jobs with retry/backoff, signed events, Windows PowerShell + screenshot + UI Automation, Playwright browsing, web search, SMTP/IMAP and ICS support, Google/Microsoft OIDC/OAuth integrations, Android pairing/device transport, browser microphone/camera controls, streaming voice/perception sockets, self-inspection/self-verification/guarded self-maintenance, node leases and recovery checkpoints, and model-independent planning/evidence/contradiction/proactive-intelligence services.
+The platform provides persistent identity/context, SQL+FTS memory with provenance, world entities/relations and evidence records, primary/fallback model routing, risk/autonomy enforcement, durable scheduled jobs with retry/backoff, signed events, Windows PowerShell + screenshot + UI Automation, Playwright browsing, web search, SMTP/IMAP and ICS support, Google/Microsoft OIDC/OAuth integrations, Android pairing/device transport, browser microphone controls, streaming voice/perception sockets, self-inspection/self-verification/guarded self-maintenance, node leases and recovery checkpoints, and model-independent planning/evidence/contradiction/proactive-intelligence services.
 
 External capabilities remain configuration-gated. NOTSIP never fabricates external success.
 
@@ -34,11 +34,11 @@ NOTSIP can inventory and hash its source workspace, read its own source/configur
 
 ## Windows automation
 
-The Windows layer combines PowerShell for system-level actions with UI Automation through `pywinauto` for window enumeration/focus, control clicks, text entry, hotkeys, and additional application-specific interactions.
+The Windows layer combines PowerShell for system-level actions with UI Automation through `pywinauto` for window enumeration/focus, control clicks, text entry, hotkeys, clipboard, mouse input and waits/verification. Application-specific UI selectors still depend on the target application's accessible UI tree.
 
 ## Voice and perception
 
-The web UI records microphone input for STT, plays returned TTS audio, and captures camera frames for vision. `/ws/voice` and `/ws/perception` are available for richer clients.
+The web console records microphone input for STT when voice is enabled. Native Windows voice adds VAD/wake-phrase capture and can play WAV TTS responses when the configured provider supports WAV output. `/ws/voice` and `/ws/perception` are available for richer clients. Continuous desktop perception requires the corresponding saved perception/vision toggles and a compatible Windows/vision environment.
 
 ## Distributed nodes and recovery
 
@@ -46,7 +46,7 @@ Nodes use device-scoped tokens and renewable leases. NOTSIP reconciles stale nod
 
 ## Windows executable
 
-Build locally with `.\scripts\build_exe.ps1`. The Windows release workflow builds `dist\NOTSIP.exe` directly on a Windows runner and publishes the executable for tagged releases; repository development does not depend on ZIP archives.
+Build locally with `.\scripts\build_exe.ps1`. The Windows release workflow builds `dist\NOTSIP.exe` directly on a Windows runner and publishes the executable plus integrity manifests for tagged releases. Repository development does not depend on ZIP archives.
 
 ## Target
 
