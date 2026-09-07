@@ -48,7 +48,10 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
-        result=updates.install_and_verify(__import__('pathlib').Path(str(payload['path'])).resolve())
+        candidate=__import__('pathlib').Path(str(payload.get('path',''))).resolve()
+        update_dir=updates.dir.resolve()
+        if update_dir not in candidate.parents or candidate.suffix.lower()!='.exe' or not candidate.is_file():raise HTTPException(400,'update path must point to a downloaded EXE inside NOTSIP updates directory')
+        result=updates.install_and_verify(candidate)
         async def stop_after_response():
             await asyncio.sleep(1.0)
             os._exit(0)
