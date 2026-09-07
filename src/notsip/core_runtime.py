@@ -21,6 +21,7 @@ from .background import attach as attach_background
 from .health_analytics import HealthAnalytics
 from .health_routes import attach as attach_health_routes
 from .forensics import attach as attach_forensics
+from .event_journal import EventJournal
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -38,7 +39,13 @@ attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
 attach_calendar_service(app,_require,DATA,settings.local_timezone)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
-attach_event_reconstruction(app,_require,store)
+journal=EventJournal(DATA)
+_original_publish=events.publish
+async def _journaled_publish(event):
+    journal.append(event)
+    return await _original_publish(event)
+events.publish=_journaled_publish
+attach_event_reconstruction(app,_require,store,journal)
 _health=HealthAnalytics(DATA)
 attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
