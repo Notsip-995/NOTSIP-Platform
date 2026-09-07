@@ -10,12 +10,18 @@ from notsip.core_runtime import app
 def test_security_secret_roundtrip(tmp_path):
     s=SecretStore(tmp_path);s.set('x','secret-value');assert s.get('x')=='secret-value';assert (tmp_path/'secrets.enc').exists()
 
+def test_secret_clear_is_authoritative(tmp_path):
+    s=SecretStore(tmp_path);s.set('x','secret-value');s.set('x','');assert s.get('x') is None
+
 def test_pkce_pair_is_s256():
     verifier,challenge=pkce_pair();assert verifier and challenge and len(challenge)>40
 
 def test_node_lease_and_recovery(tmp_path,monkeypatch):
     monkeypatch.setenv('NOTSIP_NODE_LEASE_SECONDS','1');store=Store(tmp_path);nodes=NodeRegistry(store,'secret');nonce='n1';sig=nodes.sign('node1',nonce);r=nodes.register('node1','Node','test',[],nonce=nonce,signature=sig);assert r['token'];beat_nonce='n2';beat_sig=nodes.sign('node1',beat_nonce);assert nodes.heartbeat('node1',r['token'],nonce=beat_nonce,signature=beat_sig)['lease_expires']>0
-    recovery=RecoveryManager(tmp_path);p=recovery.checkpoint({'x':1});assert Path(tmp_path,p).exists();assert recovery.latest()['x']==1;assert recovery.verify_latest()['valid']
+    recovery=RecoveryManager(tmp_path);p=recovery.checkpoint({'tasks':[],'devices':[],'world':{'entities':[],'relations':[],'facts':[]}});assert Path(tmp_path,p).exists();assert recovery.latest()['tasks']==[];assert recovery.verify_latest()['valid']
+
+def test_recovery_restore_applies_runtime_state(tmp_path):
+    store=Store(tmp_path);store.task('old task');recovery=RecoveryManager(tmp_path);recovery.checkpoint({'tasks':[{'id':'restored','objective':'restored task','state':'PENDING','priority':1,'handler':'agent','data':{},'run_at':0,'interval_sec':None,'retries':0,'created':1,'updated':1,'error':''}],'devices':[],'world':{'entities':[],'relations':[],'facts':[]}});result=store.restore_runtime_state(recovery.latest());assert result['status']=='RESTORED';assert [x['id'] for x in store.tasks()] == ['restored']
 
 def test_intelligence_helpers(tmp_path):
     store=Store(tmp_path);store.fact('The sky is blue','source-a','u1',.8);store.fact('The sky is blue','source-b','u2',.7);world=WorldModel(store);i=Intelligence(store,world);assert i.corroborate('sky')[0]['support']==2;assert len(i.plan('do something')['steps'])==5
