@@ -2,7 +2,7 @@ from notsip.config import settings
 from notsip.provider import Provider
 from notsip.connectors import Web, Email, Browser
 from notsip.policy import Policy, Risk
-from notsip.security import SecretStore
+from notsip.security import SecretStore, AuthManager
 import asyncio
 import pytest
 
@@ -52,7 +52,7 @@ def test_secret_store_empty_value_clears_secret(tmp_path):
     store.set('NOTSIP_TEST_SECRET','value')
     assert store.get('NOTSIP_TEST_SECRET')=='value'
     store.set('NOTSIP_TEST_SECRET','')
-    assert store.get('NOTSIP_TEST_SECRET')==''
+    assert store.get('NOTSIP_TEST_SECRET') is None
 
 def test_browser_toggle_is_enforced(monkeypatch):
     monkeypatch.setattr(settings, 'browser_enabled', False)
@@ -63,3 +63,11 @@ def test_voice_and_screen_toggles_exist():
     assert hasattr(settings, 'voice_enabled')
     assert hasattr(settings, 'native_voice_enabled')
     assert hasattr(settings, 'perception_screen_enabled')
+
+def test_oidc_pending_state_is_durable(tmp_path):
+    local_settings=settings.model_copy(deep=True)
+    a=AuthManager(local_settings,tmp_path)
+    a.sessions['oidc:test']={'verifier':'v','nonce':'n','expires':time.time()+600}
+    b=AuthManager(local_settings,tmp_path)
+    assert b.sessions.get('oidc:test')['verifier']=='v'
+    assert b.sessions.pop('oidc:test')['nonce']=='n'
