@@ -14,6 +14,7 @@ from .maintenance_hardening import attach as attach_maintenance_hardening
 from .route_integrity import normalize as normalize_routes
 from .system_services import attach as attach_system_services
 from .state_hardening import install as install_state_hardening
+from .calendar_service import attach as attach_calendar_service
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -29,6 +30,7 @@ attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
+attach_calendar_service(app,_require,DATA,settings.local_timezone)
 normalize_routes(app)
 
 @app.on_event('startup')
