@@ -1,4 +1,3 @@
-from __future__ import annotations
 import email,imaplib,ipaddress,json,smtplib,socket,ssl,urllib.parse,uuid
 from email.message import EmailMessage
 from pathlib import Path
@@ -31,9 +30,13 @@ class Email:
     def send(self,to,subject,body):
         if not self.enabled or not self._smtp_host:raise RuntimeError('SMTP not configured')
         m=EmailMessage();m['From']=self._username;m['To']=to;m['Subject']=subject;m.set_content(body)
-        with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:
-            if self._smtp_port!=25:s.starttls(context=ssl.create_default_context())
-            s.login(self._username,self._password);s.send_message(m)
+        if self._smtp_port==465:
+            with smtplib.SMTP_SSL(self._smtp_host,self._smtp_port,timeout=20,context=ssl.create_default_context()) as s:
+                s.login(self._username,self._password);s.send_message(m)
+        else:
+            with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:
+                if self._smtp_port!=25:s.starttls(context=ssl.create_default_context())
+                s.login(self._username,self._password);s.send_message(m)
         return {'status':'SUCCESS','to':to,'subject':subject}
     def search(self,mailbox='INBOX',criteria='ALL',limit=20):
         if not self.enabled or not self._imap_host:raise RuntimeError('IMAP not configured')
@@ -66,7 +69,7 @@ class OAuth:
         return self.authorize+'?'+urllib.parse.urlencode({'client_id':self.client_id,'redirect_uri':self.redirect,'response_type':'code','scope':self.scopes,'state':state})
     async def exchange(self,code):
         if not self.configured:raise RuntimeError('OAuth not configured')
-        data={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect};
+        data={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect}
         if self.client_secret:data['client_secret']=self.client_secret
         async with httpx.AsyncClient(timeout=20) as c:r=await c.post(self.token,data=data);r.raise_for_status();return r.json()
 def _public_host(host):
