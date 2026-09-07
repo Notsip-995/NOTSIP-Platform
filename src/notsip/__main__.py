@@ -9,9 +9,11 @@ from notsip.product_layer import ProcessGuard, resource_root, choose_free_port
 def _is_notsip_listener(host:str,port:int)->bool:
     import urllib.request
     try:
-        with urllib.request.urlopen(f'http://{host}:{port}/api/health',timeout=.8) as r:
-            return r.status==200 and 'NOTSIP' in r.read().decode('utf-8','replace')
-    except Exception:return False
+        with urllib.request.urlopen(f'http://{host}:{port}/',timeout=.8) as r:
+            body=r.read().decode('utf-8','replace')
+            return r.status==200 and 'NOTSIP' in body
+    except Exception:
+        return False
 
 def _port_in_use(host:str,port:int)->bool:
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:s.settimeout(.25);return s.connect_ex((host,port))==0
