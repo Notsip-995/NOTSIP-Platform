@@ -6,12 +6,14 @@ from .events import Event
 def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
     @app.post('/api/voice/transcribe')
     async def voice_transcribe(file:UploadFile=File(...),language:str='',_:None=Depends(require_auth)):
+        if not settings.voice_enabled:raise HTTPException(503,'voice is disabled')
         if not settings.stt_base_url or not settings.stt_model:raise HTTPException(503,'STT is not configured')
         raw=await file.read()
         if len(raw)>30*1024*1024:raise HTTPException(413,'audio file too large')
         return await media.transcribe(raw,file.content_type or 'audio/webm',language or settings.stt_language)
     @app.post('/api/voice/speak')
     async def voice_speak(payload:dict,_:None=Depends(require_auth)):
+        if not settings.voice_enabled:raise HTTPException(503,'voice is disabled')
         text=str(payload.get('text','')).strip()
         if not text:raise HTTPException(400,'text is required')
         if not settings.tts_base_url or not settings.tts_model:raise HTTPException(503,'TTS is not configured')
