@@ -1,5 +1,5 @@
 from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry
-from .runtime_prod import oauth, media
+from .runtime_prod import oauth, media, jobs
 from .product_routes import attach as attach_product
 from .completion_routes import attach as attach_completion
 from .security_hardening import attach as attach_security_hardening
@@ -13,6 +13,7 @@ from .config_hardening import attach as attach_config_hardening
 from .maintenance_hardening import attach as attach_maintenance_hardening
 from .route_integrity import normalize as normalize_routes
 from .system_services import attach as attach_system_services
+from .state_hardening import install as install_state_hardening
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -27,6 +28,7 @@ attach_voice_bridge(app,events,agent,native_voice)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
+install_state_hardening(store,jobs,app)
 normalize_routes(app)
 
 @app.on_event('startup')
