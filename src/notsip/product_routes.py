@@ -29,21 +29,22 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/federation/{node_id}/revoke')
     async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return nodes.revoke(node_id)
     @app.post('/api/recovery/checkpoint')
-    async def checkpoint(_:None=Depends(require_auth)):return {'status':'SUCCESS','path':recovery.checkpoint({'tasks':store.tasks(),'devices':store.devices(),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()})}
+    async def checkpoint(_:None=Depends(require_auth)):
+        return {'status':'SUCCESS','path':recovery.checkpoint({'tasks':store.tasks(),'devices':store.devices(),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()})}
     @app.get('/api/recovery/latest')
     async def latest_checkpoint(_:None=Depends(require_auth)):return {'checkpoint':recovery.latest(),'verified':recovery.verify_latest()}
     @app.post('/api/recovery/restore')
     async def restore(_:None=Depends(require_auth)):
-        state=recovery.restore_state();return {'status':'RECOVERABLE','state':state['state'],'action':'restart_runtime_to_apply'}
+        state=recovery.restore_state()['state'];result=store.restore_runtime_state(state);return {'status':'RESTORED','result':result,'restart_required':True,'action':'restart_runtime_to_rebuild_in_memory_state'}
     @app.get('/api/update/check')
     async def update_check(_:None=Depends(require_auth)):return await updates.check()
     @app.post('/api/update/download')
     async def update_download(payload:dict,_:None=Depends(require_auth)):
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
         asset_url=str(payload.get('asset_url',''));expected_repo=f"https://github.com/{settings.github_repository}/releases/"
-        if not asset_url.startswith(expected_repo) and 'github.com' not in asset_url:raise HTTPException(400,'update asset must originate from configured GitHub repository')
+        if not asset_url.startswith(expected_repo):raise HTTPException(400,'update asset must originate from configured GitHub repository')
         expected_sha=str(payload.get('sha256','')).strip()
-        if not expected_sha:raise HTTPException(400,'update SHA-256 is required')
+        if len(expected_sha)!=64:raise HTTPException(400,'update SHA-256 is required')
         return await updates.download(asset_url,expected_sha)
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
@@ -67,21 +68,17 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
         tokens=await auth.oidc.exchange(code,pending['verifier']);claims={}
         if tokens.get('id_token'):claims=await auth.oidc.validate_id_token(tokens['id_token'],pending['nonce'])
         elif tokens.get('access_token'):claims=await auth.oidc.userinfo(tokens['access_token'])
-        account=accounts.upsert(settings.oidc_provider,claims.get('sub','user'),claims.get('email',''),auth.oidc.scopes,{'expires_at':tokens.get('expires_at'),'token_type':tokens.get('token_type')})
-        accounts.save_tokens(account['id'],tokens)
-        auth.secrets.set('oidc:active_account',account['id'])
+        account=accounts.upsert(settings.oidc_provider,claims.get('sub','user'),claims.get('email',''),auth.oidc.scopes,{'expires_at':tokens.get('expires_at'),'token_type':tokens.get('token_type')});accounts.save_tokens(account['id'],tokens);auth.secrets.set('oidc:active_account',account['id'])
         session=auth.mint_session({'claims':claims,'account_id':account['id']});r=RedirectResponse('/');r.set_cookie('notsip_session',session,httponly=True,secure=settings.oidc_redirect_uri.startswith('https://'),samesite='lax',max_age=settings.session_ttl);return r
     @app.post('/api/oauth/revoke')
     async def oauth_revoke(payload:dict,_:None=Depends(require_auth)):
-        account_id=str(payload.get('account_id') or auth.secrets.get('oidc:active_account',''))
-        item=accounts.get(account_id) if account_id else None
+        account_id=str(payload.get('account_id') or auth.secrets.get('oidc:active_account',''));item=accounts.get(account_id) if account_id else None
         if not item:raise HTTPException(404,'OAuth account not found')
         tokens=accounts.tokens(account_id);provider=item.get('provider','');url={'google':'https://oauth2.googleapis.com/revoke'}.get(provider)
         if url and tokens.get('access_token'):
             import httpx
             try:
-                async with httpx.AsyncClient(timeout=15) as c:
-                    r=await c.post(url,data={'token':tokens['access_token']});r.raise_for_status()
+                async with httpx.AsyncClient(timeout=15) as c:r=await c.post(url,data={'token':tokens['access_token']});r.raise_for_status()
             except Exception as exc:raise HTTPException(502,f'provider revocation failed: {exc}')
         accounts.disconnect(account_id)
         if auth.secrets.get('oidc:active_account','')==account_id:auth.secrets.set('oidc:active_account','')
