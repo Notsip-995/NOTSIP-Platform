@@ -15,7 +15,7 @@ class NotsipClient(private val ctx: Context) {
     private val secure = SecurePrefs(ctx)
     private val http = OkHttpClient()
 
-    fun baseUrl(): String = prefs.getString("base", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
+    fun baseUrl(): String = prefs.getString("base", "") ?: ""
     fun setBaseUrl(value: String) = prefs.edit().putString("base", value.trimEnd('/')).apply()
 
     fun deviceId(): String {
@@ -45,6 +45,7 @@ class NotsipClient(private val ctx: Context) {
     }
 
     suspend fun pair(code: String) {
+        require(baseUrl().startsWith("http://") || baseUrl().startsWith("https://")) { "Configure the NOTSIP server URL first" }
         val body = JSONObject()
             .put("code", code)
             .put("device_id", deviceId())
@@ -56,14 +57,17 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun heartbeat() {
+        requireConfigured()
         request("POST", "/api/devices/heartbeat", null, null, deviceHeaders())
     }
 
-    fun poll(): JSONObject = JSONObject(
-        request("GET", "/api/devices/${deviceId()}/commands", null, null, deviceHeaders())
-    )
+    fun poll(): JSONObject {
+        requireConfigured()
+        return JSONObject(request("GET", "/api/devices/${deviceId()}/commands", null, null, deviceHeaders()))
+    }
 
     fun result(commandId: String, status: String, result: JSONObject) {
+        requireConfigured()
         val body = JSONObject()
             .put("command_id", commandId)
             .put("status", status)
@@ -73,6 +77,7 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun transcribe(bytes: ByteArray, mime: String = "audio/mp4", language: String = ""): JSONObject {
+        requireConfigured()
         val mediaType = mime.toMediaType()
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -83,6 +88,7 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun perceive(jpeg: ByteArray, prompt: String = ""): JSONObject {
+        requireConfigured()
         val encoded = Base64.encodeToString(jpeg, Base64.NO_WRAP)
         val body = JSONObject()
             .put("image_base64", encoded)
@@ -90,6 +96,10 @@ class NotsipClient(private val ctx: Context) {
             .put("prompt", prompt)
             .toString()
         return JSONObject(request("POST", "/api/perception/frame", body))
+    }
+
+    private fun requireConfigured() {
+        require(baseUrl().startsWith("http://") || baseUrl().startsWith("https://")) { "Configure the NOTSIP server URL first" }
     }
 
     private fun deviceHeaders(): Map<String, String> = mapOf(
