@@ -21,6 +21,14 @@ def attach(app, *, require_auth, settings, store, events):
         if authenticated!=device_id:raise HTTPException(403,'device identity mismatch')
         return {'commands':store.pull_commands(device_id)}
 
+    @app.post('/api/devices/{device_id}/commands')
+    async def queue_device_command(device_id:str,payload:dict,_:None=Depends(require_auth)):
+        if not store.row('SELECT id FROM devices WHERE id=?',(device_id,)):raise HTTPException(404,'device not found')
+        action=str(payload.get('action','')).strip()
+        if not action:raise HTTPException(400,'action is required')
+        command_id=store.queue_command(device_id,action,payload.get('payload') or {})
+        return {'status':'QUEUED','command_id':command_id,'device_id':device_id,'action':action}
+
     @app.post('/api/devices/result')
     async def device_result(request: Request, payload: dict):
         device_id=_device(request);command_id=str(payload.get('command_id',''))
