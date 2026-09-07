@@ -40,11 +40,11 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun heartbeat() {
-        request("POST", "/api/devices/heartbeat?device_id=${deviceId()}&token=${token()}", null)
+        request("POST", "/api/devices/heartbeat", null, null, deviceHeaders())
     }
 
     fun poll(): JSONObject = JSONObject(
-        request("GET", "/api/devices/${deviceId()}/commands?token=${token()}", null)
+        request("GET", "/api/devices/${deviceId()}/commands", null, null, deviceHeaders())
     )
 
     fun result(commandId: String, status: String, result: JSONObject) {
