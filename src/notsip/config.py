@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):
@@ -43,7 +43,7 @@ try:
     from .security import SecretStore
     _secret_store=SecretStore(Path(settings.data_dir).resolve())
     for _name in SECRET_FIELDS:
-        if not getattr(settings,_name,None):
+        if not getattr(settings,_name,None) or _name=='database_url':
             _v=_secret_store.get('NOTSIP_'+_name.upper())
             if _v:setattr(settings,_name,_v)
 except Exception:pass
