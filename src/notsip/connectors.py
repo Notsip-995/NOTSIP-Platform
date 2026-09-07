@@ -77,6 +77,7 @@ def _public_host(host):
     except Exception:return False
 class Browser:
     async def extract(self,url,wait_ms=1000):
+        if not settings.browser_enabled:raise RuntimeError('browser automation is disabled')
         parsed=urllib.parse.urlparse(url)
         if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser extraction requires a public http(s) URL')
         if not _public_host(parsed.hostname):raise ValueError('browser extraction blocks private, loopback, link-local, multicast, and reserved addresses')
