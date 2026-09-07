@@ -1,56 +1,44 @@
-# NOTSIP blueprint gap status — 0.8
+# NOTSIP blueprint gap status — 0.9
 
-This document distinguishes actual implementation from external configuration and capabilities that cannot be validated until real hardware/services exist.
+This document distinguishes implemented software from capabilities that require the user's real accounts, devices, permissions, signing material, or deferred physical hardware.
 
-## Operational software in the repository
+## Operational software implemented
 
-- authoritative `python -m notsip` runtime
-- root web UI and FastAPI API documentation
-- persistent identity, conversation history, SQL/FTS memory and provenance
-- world entities and relations
-- primary and fallback OpenAI-compatible model routing
-- structured tool calling and risk/autonomy enforcement
-- persistent scheduled tasks with registered agent/self-verification handlers
-- signed event ingestion and live WebSocket event stream
-- Windows workspace, PowerShell, screenshot and target-opening controls
-- browser extraction through Playwright
-- live web retrieval through Brave
-- SMTP/IMAP and ICS calendar adapters
-- OAuth status/authorize/callback surface
-- Android pairing, heartbeat and command/result transport
-- repository self-inspection, source reading, compile/test verification and guarded self-modification with temporary branch + rollback
-- first-run Windows configuration wizard
-- CI compile/test workflow
-- Docker runtime definition
-- regression test coverage for core, API, scheduler, pairing, workspace isolation and self-maintenance
+- authoritative `python -m notsip` runtime and Windows EXE/installer path
+- persistent identity, conversations, memory, provenance, world state and recovery checkpoints
+- primary/fallback OpenAI-compatible provider routing
+- risk/autonomy policy, persistent approvals and audited tool execution
+- durable scheduler with registered handlers, retries, atomic claiming and worker recovery
+- signed event ingress and authenticated WebSocket streams
+- Windows PowerShell/UI Automation, screenshot, clipboard, mouse, target-opening and verification controls
+- Playwright browsing with capability gating and private-address/SSRF protection
+- Brave web retrieval and SMTP/IMAP/ICS adapters
+- OIDC discovery, PKCE, encrypted pending state, durable browser sessions and account lifecycle
+- Android pairing, foreground service, device authentication, atomic command delivery and device-bound results
+- federation challenge/signature, token rotation, leases, revocation and reconciliation
+- self-inspection, source reading, compile/test verification and guarded self-modification/update/rollback paths
+- first-run configuration with persisted-state hydration and protected secret handling
+- diagnostics, structured rotating logs, request IDs, audit records, backup/restore and configuration migration
+- SQLite plus optional PostgreSQL storage interfaces
+- actual Windows `NOTSIP.exe` and `NOTSIP-Setup.exe` lifecycle acceptance tests
 
-## Requires real configuration / user action
+## External configuration / environment gates
 
-- cloud or local LLM endpoint/model
-- web search API credentials
-- mail account and SMTP/IMAP settings
-- OAuth application registration and consent for the chosen provider
-- Android app installation and user-granted AccessibilityService permission
-- any external smart-home/MQTT service
+- selected LLM, STT and TTS provider accounts/endpoints
+- web-search credentials
+- SMTP/IMAP mail accounts
+- OAuth application registrations/consent
+- Android installation, pairing and OS Accessibility/background permissions
+- real microphone/camera/audio hardware for native media behavior
+- Windows code-signing certificate/private material for signed releases
+- PostgreSQL server and credentials when that backend is selected
 
-These capabilities intentionally report unavailable/degraded when not configured; they are not simulated.
+NOTSIP must report these as unavailable/degraded until the real resource is configured and tested; it must not fabricate success.
 
-## Physical/deployment-gated
+## Deferred physical systems
 
-- robotics and vehicle control
-- satellites/remote sensing
-- building automation
-- Raspberry Pi/ESP32/sensor fleets
-- distributed external clusters
+Robotics, vehicles, satellites/remote sensing, smart-building infrastructure, Raspberry Pi/ESP32 sensor fleets, and external physical clusters remain deferred because those systems are not present in the current environment.
 
-These remain deferred until the corresponding real systems are available.
+## Validation rule
 
-## Production-hardening still required before a universal 'fully complete' claim
-
-- signed release binaries and auto-update channel
-- production-grade OIDC/secret-vault deployment
-- distributed node federation/recovery/failover
-- high-fidelity application-specific desktop automation across arbitrary Windows apps
-- full native streaming voice/wake-word/TTS and interruption handling
-- multimodal camera ingestion and sustained perception
-- deeper information corroboration/fusion and proactive trigger policy
+A release is not declared universally production-ready until the current `main` head passes the full automated release gate using the actual frozen Windows executable and installed Windows installer, and a fresh code audit finds no substantive repository defect. External account, OS permission, signing-material and physical-hardware checks remain real-environment gates.
