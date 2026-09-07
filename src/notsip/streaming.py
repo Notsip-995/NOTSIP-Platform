@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio, base64, json, time
+from http.cookies import SimpleCookie
 from fastapi import WebSocket, WebSocketDisconnect
 
 async def _relay_stream(sock,settings):
@@ -32,10 +33,19 @@ async def _relay_stream(sock,settings):
     except Exception as e:await sock.send_json({'type':'error','error':f'streaming STT failed: {e}'})
 
 def _ws_authenticated(sock,settings):
-    auth=sock.headers.get('authorization','')
-    token=auth[7:] if auth.startswith('Bearer ') else ''
+    auth_header=sock.headers.get('authorization','')
+    token=auth_header[7:] if auth_header.startswith('Bearer ') else ''
     if settings.auth_mode=='api_key':
         return bool(settings.api_key and token and __import__('secrets').compare_digest(token,settings.api_key)) or not settings.api_key
+    if settings.auth_mode=='oidc':
+        raw=sock.headers.get('cookie','')
+        try:
+            c=SimpleCookie();c.load(raw);session=c.get('notsip_session')
+            if session:
+                auth=__import__('notsip.app',fromlist=['auth']).auth
+                return bool(auth.validate_session(session.value))
+        except Exception:
+            return False
     return False
 
 def attach(app,media,settings,auth_token=''):
