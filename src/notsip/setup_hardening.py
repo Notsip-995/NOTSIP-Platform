@@ -4,7 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
 def _redact_database_url(value):
@@ -53,9 +53,15 @@ def attach(app):
         unknown=clear_secrets-SECRET_NAMES
         if unknown:raise HTTPException(400,f'unknown secret fields: {sorted(unknown)}')
         for key in clear_secrets:mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
+        database_url=settings_payload.pop('database_url',None)
+        if database_url is not None:
+            database_url=str(database_url).strip()
+            if not database_url:
+                database_url='sqlite:///data/notsip.db'
+            mod.auth.secrets.set('NOTSIP_DATABASE_URL',database_url);mod.settings.database_url=database_url
         for key in SECRET_NAMES:
             if key in settings_payload and not str(settings_payload[key] or '').strip():settings_payload.pop(key,None)
-        incoming['settings']=settings_payload;data=await mod.config_set(incoming,None);data['restart_required']=any(k in RESTART_KEYS for k in settings_payload)
+        incoming['settings']=settings_payload;data=await mod.config_set(incoming,None);data['restart_required']=any(k in RESTART_KEYS for k in (set(settings_payload)|({'database_url'} if database_url is not None else set())))
         if data['restart_required']:data['restart_reason']='host, port, data directory, or database changes require a NOTSIP restart'
         response=JSONResponse(data)
         if mod.settings.auth_mode=='api_key' and mod.settings.api_key:
