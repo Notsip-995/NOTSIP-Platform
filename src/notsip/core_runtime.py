@@ -1,4 +1,4 @@
-from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice
+from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry
 from .runtime_prod import oauth, media
 from .product_routes import attach as attach_product
 from .completion_routes import attach as attach_completion
@@ -12,6 +12,7 @@ from .voice_bridge import attach as attach_voice_bridge
 from .config_hardening import attach as attach_config_hardening
 from .maintenance_hardening import attach as attach_maintenance_hardening
 from .route_integrity import normalize as normalize_routes
+from .system_services import attach as attach_system_services
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -21,10 +22,11 @@ attach_security_hardening(app)
 attach_runtime_hardening(app,require_auth=_require,settings=settings,store=store,events=events)
 attach_recovery_hardening(app,require_auth=_require,recovery=recovery,store=store)
 attach_setup_hardening(app)
-attach_approval_hardening(app,require_auth=_require,approvals=__import__('notsip.app',fromlist=['approvals']).approvals,registry=__import__('notsip.app',fromlist=['registry']).registry,audit_log=__import__('notsip.app',fromlist=['audit_log']).audit_log)
+attach_approval_hardening(app,require_auth=_require,approvals=__import__('notsip.app',fromlist=['approvals']).approvals,registry=registry,audit_log=__import__('notsip.app',fromlist=['audit_log']).audit_log)
 attach_voice_bridge(app,events,agent,native_voice)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
+attach_system_services(app,_require,settings,store,agent,registry)
 normalize_routes(app)
 
 @app.on_event('startup')
