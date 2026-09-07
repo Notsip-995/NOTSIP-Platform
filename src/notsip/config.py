@@ -1,13 +1,18 @@
 from pathlib import Path
-import json, os
+import json, os, sys
 from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
 
+def _default_data_dir():
+    if getattr(sys,'frozen',False):
+        return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
+    return './data'
+
 class Settings(BaseSettings):
-    host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str='./data'; local_timezone:str='Africa/Kigali'; max_tool_rounds:int=Field(10,ge=1,le=100)
+    host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str=_default_data_dir(); local_timezone:str='Africa/Kigali'; max_tool_rounds:int=Field(10,ge=1,le=100)
     autonomy_level:int=Field(2,ge=0,le=4); self_modify_enabled:bool=False
     api_key:str=''; event_hmac_secret:str=''; pairing_secret:str=''; auth_mode:Literal['api_key','oidc']='api_key'; session_ttl:int=Field(43200,ge=300,le=2592000)
     oidc_provider:str='generic'; oidc_issuer:str=''; oidc_client_id:str=''; oidc_client_secret:str=''; oidc_redirect_uri:str=''; oidc_scopes:str=''
