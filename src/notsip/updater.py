@@ -7,7 +7,7 @@ from . import __version__
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
-        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/health';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
+        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/healthz';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
     @property
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
