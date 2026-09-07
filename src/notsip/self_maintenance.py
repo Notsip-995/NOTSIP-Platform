@@ -51,9 +51,12 @@ class SelfMaintenance:
         self._safe_patch(patch_text)
         if self.frozen and not (self.root/'.git').exists():
             raise RuntimeError('installed self-maintenance requires a durable source checkout; source workspace is read/verify capable but binary replacement must use the signed updater')
+        if not (self.root/'.git').exists(): raise RuntimeError('self-modification requires a Git checkout')
+        status=self.git('status','--porcelain')
+        if status['returncode']!=0: raise RuntimeError('unable to inspect source repository')
+        if status['stdout'].strip(): raise RuntimeError('self-modification requires a clean source workspace; refusing to risk unrelated local changes')
         branch=f'notsip/self-fix-{int(time.time())}'
         original=self.git('rev-parse','--abbrev-ref','HEAD')['stdout'].strip()
-        if not original or not self.git('status','--porcelain')['returncode']==0: raise RuntimeError('unable to inspect source repository')
         created=self.git('switch','-c',branch)
         if created['returncode']!=0: raise RuntimeError(created['stderr'])
         try:
