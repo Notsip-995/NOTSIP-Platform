@@ -20,13 +20,13 @@ class Agent:
         self.store.message('user',text);self.conversations.append(self.session_id,'user',text)
         m=re.match(r'^remember(?: that)?\s+(.+)$',text,re.I)
         if m:
-            v=m.group(1).strip();self.store.remember(self.user,'semantic',v,.95,'conversation',{'text':text});r=f"I'll remember that: {v}";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'memory','remember','SUCCESS');return {'response':r,'status':'SUCCESS','session_id':self.session_id}
-        if not self.provider.enabled and not self.provider.fallback_enabled:r=self.fallback(text);self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);return {'response':r,'status':'DEGRADED','session_id':self.session_id}
+            v=m.group(1).strip();self.store.remember(self.user,'semantic',v,.95,'conversation',{'text':text});r=f"I'll remember that: {v}";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'memory','remember','execute',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+        if not self.provider.enabled and not self.provider.fallback_enabled:r=self.fallback(text);self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'fallback','agent','respond',r);return {'response':r,'status':'DEGRADED','session_id':self.session_id}
         ctx=self.context(text);msgs=[{'role':'system','content':self.SYSTEM+'\nContext JSON:\n'+json.dumps(ctx,default=str)}]+ctx['conversation'][-12:]+[{'role':'user','content':text}]
         for _ in range(self.settings.max_tool_rounds):
             data=await self.provider.chat(msgs,self.registry.schemas());msg=data['choices'][0]['message'];msgs.append(msg);calls=msg.get('tool_calls') or []
             if not calls:
-                r=msg.get('content','');self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'model','respond','SUCCESS');return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+                r=msg.get('content','');self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'model','respond','success',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
             for call in calls:
                 try:args=json.loads(call['function'].get('arguments') or '{}');res=await self.run_tool(call['function']['name'],args)
                 except Exception as e:res={'status':'FAILURE','error':str(e)}
@@ -39,10 +39,10 @@ class Agent:
         if not d.allowed:
             if d.needs_confirmation and not approved:
                 item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk)})
-                self.store.audit(self.user,name,'approval','request','PENDING')
+                self.store.audit(self.user,name,'approval','request','PENDING','approval requested')
                 return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':item['reason']}
             return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason}
-        r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute',json.dumps(r,default=str));return r
+        r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute','SUCCESS',json.dumps(r,default=str));return r
     def fallback(self,text):
         s=text.lower()
         if s=='time' or 'what time' in s:return 'It is '+datetime.now(ZoneInfo(self.settings.local_timezone)).isoformat()
