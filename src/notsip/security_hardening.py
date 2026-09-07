@@ -2,7 +2,7 @@ from __future__ import annotations
 import importlib, secrets, time
 from collections import defaultdict, deque
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
 class LoginRateLimiter:
     def __init__(self, limit:int=10, window:float=60.0):
@@ -35,6 +35,11 @@ def attach(app):
 
     @app.middleware('http')
     async def hardened_security(request:Request,call_next):
+        # In OIDC mode, do not allow the legacy API key bearer path to bypass OIDC.
+        if mod.settings.auth_mode=='oidc' and request.headers.get('authorization','').startswith('Bearer '):
+            bearer=request.headers.get('authorization','')[7:]
+            if mod.settings.api_key and secrets.compare_digest(bearer,mod.settings.api_key):
+                return JSONResponse({'detail':'OIDC authentication required'},status_code=401)
         if request.url.path=='/api/login' and request.method=='POST':
             ip=request.client.host if request.client else 'unknown'
             if limiter.blocked(ip):
