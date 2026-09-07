@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
+SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
 CONFIG_LOAD_ERROR=''
 SECRET_LOAD_ERROR=''
 
@@ -38,7 +38,7 @@ try:
     if cfg.exists():
         data=json.loads(cfg.read_text(encoding='utf-8')).get('settings',{})
         for k,v in data.items():
-            if k not in SECRET_FIELDS and k in Settings.model_fields and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
+            if k in Settings.model_fields and k not in SECRET_FIELDS and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
 except Exception as exc:
     CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
 settings.ensure()
@@ -46,7 +46,7 @@ try:
     from .security import SecretStore
     _secret_store=SecretStore(Path(settings.data_dir).resolve())
     for _name in SECRET_FIELDS:
-        if not getattr(settings,_name,None) or _name=='database_url':
+        if not getattr(settings,_name,None):
             _v=_secret_store.get('NOTSIP_'+_name.upper())
             if _v:setattr(settings,_name,_v)
 except Exception as exc:
