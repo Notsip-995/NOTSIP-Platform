@@ -84,7 +84,7 @@ class NotsipClient(private val ctx: Context) {
             .addFormDataPart("language", language)
             .addFormDataPart("file", "voice.m4a", RequestBody.create(mediaType, bytes))
             .build()
-        return JSONObject(request("POST", "/api/voice/transcribe", null, body))
+        return JSONObject(request("POST", "/api/voice/transcribe", null, body, deviceHeaders()))
     }
 
     fun perceive(jpeg: ByteArray, prompt: String = ""): JSONObject {
@@ -95,11 +95,12 @@ class NotsipClient(private val ctx: Context) {
             .put("mime", "image/jpeg")
             .put("prompt", prompt)
             .toString()
-        return JSONObject(request("POST", "/api/perception/frame", body))
+        return JSONObject(request("POST", "/api/perception/frame", body, null, deviceHeaders()))
     }
 
     private fun requireConfigured() {
         require(baseUrl().startsWith("http://") || baseUrl().startsWith("https://")) { "Configure the NOTSIP server URL first" }
+        require(token().isNotBlank()) { "Pair this device with NOTSIP first" }
     }
 
     private fun deviceHeaders(): Map<String, String> = mapOf(
