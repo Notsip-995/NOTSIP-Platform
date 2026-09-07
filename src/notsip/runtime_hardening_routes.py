@@ -4,12 +4,18 @@ from fastapi import Depends, Header, HTTPException, Request
 from .events import Event
 
 def attach(app, *, require_auth, settings, store, events):
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/devices/result','/api/devices/{device_id}/commands','/api/devices/heartbeat','/api/events'}]
+    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/devices/result','/api/devices/{device_id}/commands','/api/devices/heartbeat','/api/events','/api/healthz'}]
 
     def _device(request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','').strip();token=request.headers.get('X-NOTSIP-Device-Token','').strip()
         if not device_id or not token or not store.device_token_valid(device_id,token):raise HTTPException(401,'device authentication required')
         return device_id
+
+    @app.get('/api/healthz',include_in_schema=False)
+    async def healthz(request:Request):
+        client=request.client.host if request.client else ''
+        if client not in {'127.0.0.1','::1'}:raise HTTPException(403,'local health probe only')
+        return {'status':'ok','identity':'NOTSIP','version':'0.9.0'}
 
     @app.post('/api/devices/heartbeat')
     async def device_heartbeat(request:Request):
