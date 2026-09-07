@@ -39,7 +39,9 @@ def _open_browser(url:str):
 def main()->None:
     host=settings.host
     port=_select_port(host,settings.port)
-    if port==0:return
+    if port==0:
+        if getattr(sys,'frozen',False):os._exit(0)
+        return
     settings.port=port
     os.environ['NOTSIP_EFFECTIVE_PORT']=str(port)
     guard=ProcessGuard(root=Path(settings.data_dir))
@@ -47,6 +49,7 @@ def main()->None:
         url=f'http://{host}:{port}/'
         print(f'NOTSIP is already running; opening {url}')
         _open_browser(url)
+        if getattr(sys,'frozen',False):os._exit(0)
         return
     try:
         from notsip.core_runtime import app
