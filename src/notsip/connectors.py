@@ -1,5 +1,5 @@
 from __future__ import annotations
-import email,imaplib,json,smtplib,ssl,urllib.parse,uuid
+import email,imaplib,ipaddress,json,smtplib,socket,ssl,urllib.parse,uuid
 from email.message import EmailMessage
 from pathlib import Path
 import httpx
@@ -69,9 +69,24 @@ class OAuth:
         data={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect};
         if self.client_secret:data['client_secret']=self.client_secret
         async with httpx.AsyncClient(timeout=20) as c:r=await c.post(self.token,data=data);r.raise_for_status();return r.json()
+def _public_host(host):
+    try:
+        if host.lower() in {'localhost','localhost.localdomain'}:return False
+        addrs=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)
+        return bool(addrs) and all(not (ipaddress.ip_address(a[4][0]).is_private or ipaddress.ip_address(a[4][0]).is_loopback or ipaddress.ip_address(a[4][0]).is_link_local or ipaddress.ip_address(a[4][0]).is_multicast or ipaddress.ip_address(a[4][0]).is_reserved) for a in addrs)
+    except Exception:return False
 class Browser:
     async def extract(self,url,wait_ms=1000):
+        parsed=urllib.parse.urlparse(url)
+        if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser extraction requires a public http(s) URL')
+        if not _public_host(parsed.hostname):raise ValueError('browser extraction blocks private, loopback, link-local, multicast, and reserved addresses')
         try:from playwright.async_api import async_playwright
         except Exception as e:raise RuntimeError('Install Playwright and browser binaries') from e
         async with async_playwright() as p:
-            b=await p.chromium.launch(headless=True);page=await b.new_page();await page.goto(url,wait_until='domcontentloaded',timeout=30000);await page.wait_for_timeout(wait_ms);r={'url':url,'title':await page.title(),'text':(await page.locator('body').inner_text())[:50000]};await b.close();return r
+            b=await p.chromium.launch(headless=True);page=await b.new_page()
+            async def guard(route):
+                target=urllib.parse.urlparse(route.request.url)
+                if target.scheme not in {'http','https'} or not target.hostname or not _public_host(target.hostname):await route.abort();return
+                await route.continue_()
+            await page.route('**/*',guard)
+            await page.goto(url,wait_until='domcontentloaded',timeout=30000);await page.wait_for_timeout(wait_ms);r={'url':page.url,'title':await page.title(),'text':(await page.locator('body').inner_text())[:50000]};await b.close();return r
