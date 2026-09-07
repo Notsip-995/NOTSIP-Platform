@@ -1,4 +1,4 @@
-from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry
+from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry,intellect,memory_service
 from .runtime_prod import oauth, media, jobs
 from .product_routes import attach as attach_product
 from .completion_routes import attach as attach_completion
@@ -12,11 +12,14 @@ from .voice_bridge import attach as attach_voice_bridge
 from .config_hardening import attach as attach_config_hardening
 from .maintenance_hardening import attach as attach_maintenance_hardening
 from .route_integrity import normalize as normalize_routes
-from .system_services import attach as attach_system_services
+from .system_services import attach as attach_system_services, _telemetry
 from .state_hardening import install as install_state_hardening
 from .calendar_service import attach as attach_calendar_service
 from .information_fusion import attach as attach_information_fusion
 from .event_reconstruction import attach as attach_event_reconstruction
+from .background import attach as attach_background
+from .health_analytics import HealthAnalytics
+from .health_routes import attach as attach_health_routes
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -35,6 +38,9 @@ install_state_hardening(store,jobs,app)
 attach_calendar_service(app,_require,DATA,settings.local_timezone)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
 attach_event_reconstruction(app,_require,store)
+_health=HealthAnalytics(DATA)
+attach_health_routes(app,_require,DATA)
+attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 normalize_routes(app)
 
 @app.on_event('startup')
