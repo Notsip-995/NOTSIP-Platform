@@ -22,7 +22,7 @@ attach_runtime_hardening(app,require_auth=_require,settings=settings,store=store
 attach_recovery_hardening(app,require_auth=_require,recovery=recovery,store=store)
 attach_setup_hardening(app)
 attach_approval_hardening(app,require_auth=_require,approvals=__import__('notsip.app',fromlist=['approvals']).approvals,registry=__import__('notsip.app',fromlist=['registry']).registry,audit_log=__import__('notsip.app',fromlist=['audit_log']).audit_log)
-attach_voice_bridge(app,events,agent)
+attach_voice_bridge(app,events,agent,native_voice)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 normalize_routes(app)
