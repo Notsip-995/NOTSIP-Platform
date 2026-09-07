@@ -2,6 +2,7 @@ from notsip.config import settings
 from notsip.provider import Provider
 from notsip.connectors import Web, Email
 from notsip.policy import Policy, Risk
+from notsip.security import SecretStore
 
 def test_provider_uses_saved_settings_live(monkeypatch):
     monkeypatch.setattr(settings, 'llm_base_url', 'https://primary.example/v1')
@@ -44,3 +45,10 @@ def test_public_setup_state_contains_presence_without_secret_values():
         assert state['secret_configured']['api_key'] is True
     finally:
         monkeypatch.undo()
+
+def test_secret_store_empty_value_clears_secret(tmp_path):
+    store=SecretStore(tmp_path)
+    store.set('NOTSIP_TEST_SECRET','value')
+    assert store.get('NOTSIP_TEST_SECRET')=='value'
+    store.set('NOTSIP_TEST_SECRET','')
+    assert store.get('NOTSIP_TEST_SECRET') is None
