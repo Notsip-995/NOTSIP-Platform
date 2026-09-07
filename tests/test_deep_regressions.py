@@ -73,3 +73,18 @@ def test_approval_execution_is_one_time(tmp_path):
 
 def test_database_url_is_secret():
     assert 'database_url' in SECRET_FIELDS
+
+
+def test_canonical_route_set_has_no_duplicates():
+    from notsip.core_runtime import app
+    seen = set()
+    duplicates = []
+    for route in app.routes:
+        methods = tuple(sorted(getattr(route, 'methods', set())))
+        if not methods:
+            continue
+        key = (getattr(route, 'path', ''), methods)
+        if key in seen:
+            duplicates.append(key)
+        seen.add(key)
+    assert not duplicates, duplicates
