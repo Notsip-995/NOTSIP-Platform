@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, socket, sys, webbrowser
+import json, os, socket, sys, webbrowser
 from pathlib import Path
 import uvicorn
 from notsip.config import settings
@@ -36,11 +36,22 @@ def _open_browser(url:str):
     except Exception:pass
 
 
+def _lock_info(guard:ProcessGuard):
+    try:return json.loads(guard.path.read_text(encoding='utf-8'))
+    except Exception:return {}
+
+
+def _set_lock_endpoint(guard:ProcessGuard,host:str,port:int):
+    try:
+        info=_lock_info(guard);info.update({'host':host,'port':port});guard.path.write_text(json.dumps(info),encoding='utf-8')
+    except Exception:pass
+
+
 def main()->None:
     guard=ProcessGuard(root=Path(settings.data_dir))
     if not guard.acquire():
-        port=settings.port
-        url=f'http://{host}:{port}/' if (host:=settings.host) else f'http://127.0.0.1:{port}/'
+        info=_lock_info(guard);host=str(info.get('host') or settings.host);port=int(info.get('port') or settings.port)
+        url=f'http://{host}:{port}/'
         print(f'NOTSIP is already running; opening {url}')
         _open_browser(url)
         if getattr(sys,'frozen',False):os._exit(0)
@@ -52,6 +63,7 @@ def main()->None:
             return
         settings.port=port
         os.environ['NOTSIP_EFFECTIVE_PORT']=str(port)
+        _set_lock_endpoint(guard,host,port)
         from notsip.core_runtime import app
         if getattr(sys,'frozen',False):
             import notsip.runtime_prod as runtime_prod
