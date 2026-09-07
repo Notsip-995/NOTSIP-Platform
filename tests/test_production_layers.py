@@ -1,10 +1,15 @@
 from pathlib import Path
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from notsip.security import SecretStore, pkce_pair
 from notsip.nodes import NodeRegistry, RecoveryManager
 from notsip.intelligence import Intelligence
 from notsip.store import Store
 from notsip.world import WorldModel
+from notsip.agent import Agent
+from notsip.policy import Policy
+from notsip.tools import Registry, Tool
+from notsip.config import settings
 from notsip.core_runtime import app
 
 def test_security_secret_roundtrip(tmp_path):
@@ -22,6 +27,12 @@ def test_node_lease_and_recovery(tmp_path,monkeypatch):
 
 def test_recovery_restore_applies_runtime_state(tmp_path):
     store=Store(tmp_path);store.task('old task');recovery=RecoveryManager(tmp_path);recovery.checkpoint({'tasks':[{'id':'restored','objective':'restored task','state':'PENDING','priority':1,'handler':'agent','data':{},'run_at':0,'interval_sec':None,'retries':0,'created':1,'updated':1,'error':''}],'devices':[],'world':{'entities':[],'relations':[],'facts':[]}});result=store.restore_runtime_state(recovery.latest());assert result['status']=='RESTORED';assert [x['id'] for x in store.tasks()] == ['restored']
+
+def test_agent_audit_paths_write_valid_records(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'llm_base_url','');monkeypatch.setattr(settings,'llm_model','');monkeypatch.setattr(settings,'llm_api_key','');monkeypatch.setattr(settings,'fallback_llm_base_url','');monkeypatch.setattr(settings,'fallback_llm_model','');monkeypatch.setattr(settings,'fallback_llm_api_key','');monkeypatch.setattr(settings,'autonomy_level',2)
+    store=Store(tmp_path);registry=Registry();world=WorldModel(store);provider=SimpleNamespace(enabled=False,fallback_enabled=False);agent=Agent(settings,store,Policy(2),registry,provider,world)
+    result=__import__('asyncio').run(agent.handle('status'));assert result['status']=='DEGRADED';rows=store.audit_recent(10);assert rows and len(rows[0])>=6
+    async_result=__import__('asyncio').run(agent.run_tool('missing',{}));assert async_result['status']=='FAILURE'
 
 def test_intelligence_helpers(tmp_path):
     store=Store(tmp_path);store.fact('The sky is blue','source-a','u1',.8);store.fact('The sky is blue','source-b','u2',.7);world=WorldModel(store);i=Intelligence(store,world);assert i.corroborate('sky')[0]['support']==2;assert len(i.plan('do something')['steps'])==5
