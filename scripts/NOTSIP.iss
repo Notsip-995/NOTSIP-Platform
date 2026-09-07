@@ -23,10 +23,6 @@ Name: "{app}\updates"
 Name: "{app}\runtime"
 Name: "{app}\source"
 
-[Registry]
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "NOTSIP_DATA_DIR"; ValueData: "{app}\data"; Flags: uninsdeletevalue
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "NOTSIP_REPO_ROOT"; ValueData: "{app}\source"; Flags: uninsdeletevalue
-
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "startup"; Description: "Start NOTSIP when you sign in to Windows"; Flags: unchecked
