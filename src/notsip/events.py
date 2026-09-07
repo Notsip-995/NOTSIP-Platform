@@ -8,10 +8,17 @@ class EventBus:
     def __init__(self): self.handlers={}; self.subscribers=[]
     def on(self,event_type,fn): self.handlers.setdefault(event_type,[]).append(fn)
     async def publish(self,event):
-        for fn in self.handlers.get(event.type,[]):
-            result=fn(event)
-            if asyncio.iscoroutine(result): await result
-        for q in list(self.subscribers): await q.put(event)
+        errors=[]
+        for fn in list(self.handlers.get(event.type,[])):
+            try:
+                result=fn(event)
+                if asyncio.iscoroutine(result): await result
+            except Exception as exc:
+                errors.append({'kind':'handler','error':str(exc),'event':event.type})
+        for q in list(self.subscribers):
+            try: await q.put(event)
+            except Exception as exc: errors.append({'kind':'subscriber','error':str(exc),'event':event.type})
+        return errors
     def subscribe(self): q=asyncio.Queue(); self.subscribers.append(q); return q
     def unsubscribe(self,q):
         if q in self.subscribers: self.subscribers.remove(q)
