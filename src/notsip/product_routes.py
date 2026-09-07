@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio, hashlib, json, os, secrets, time
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Header
 from fastapi.responses import RedirectResponse
 from .updater import UpdateManager
 
@@ -8,7 +8,7 @@ def _remove(app, paths):
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 
 def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store, agent, events, accounts, maintenance, DATA, native_voice):
-    _remove(app, ['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat'])
+    _remove(app, ['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
     updates=UpdateManager(DATA,settings)
     @app.get('/api/recovery/check')
     async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
@@ -89,9 +89,14 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
         command_id=str(payload.get('command_id',''))
         command=store.row('SELECT device_id FROM commands WHERE id=?',(command_id,))
         if not command or command['device_id']!=device_id:raise HTTPException(403,'command does not belong to authenticated device')
-        store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {})
+        ok=store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {},device_id)
+        if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
         return {'status':'RECORDED','device_id':device_id,'command_id':command_id}
     @app.post('/api/devices/heartbeat')
     async def device_heartbeat(device_id:str,token:str,capabilities:str=''):
         if not store.device_token_valid(device_id,token):raise HTTPException(401,'Invalid device token')
         store.heartbeat(device_id);return {'status':'ONLINE','device_id':device_id}
+    @app.get('/api/devices/{device_id}/commands')
+    async def device_commands(device_id:str,x_notsip_device_token:str=Header('',alias='X-NOTSIP-Device-Token')):
+        if not x_notsip_device_token or not store.device_token_valid(device_id,x_notsip_device_token):raise HTTPException(401,'Invalid device token')
+        return {'commands':store.pull_commands(device_id)}
