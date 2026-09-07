@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     perception_screen_enabled:bool=False; health_interval:int=Field(15,ge=5,le=3600); checkpoint_interval:int=Field(300,ge=30,le=86400); proactive_interval:int=Field(60,ge=15,le=86400); memory_maintenance_interval:int=Field(900,ge=60,le=604800)
     smtp_host:str=''; smtp_port:int=Field(587,ge=1,le=65535); imap_host:str=''; email_username:str=''; email_password:str=''; oauth_authorize_url:str=''; oauth_token_url:str=''; oauth_client_id:str=''; oauth_client_secret:str=''; oauth_redirect_uri:str=''; oauth_scopes:str=''
     android_poll_seconds:int=Field(3,ge=1,le=3600); node_lease_seconds:int=Field(90,ge=15,le=86400); node_shared_secret:str=''
-    database_url:str='sqlite:///data/notsip.db'; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'
+    database_url:str=''; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'
     log_level:Literal['DEBUG','INFO','WARNING','ERROR']='INFO'; log_max_bytes:int=Field(10485760,ge=1024,le=1073741824); log_backup_count:int=Field(5,ge=1,le=50); open_browser:bool=True; node_name:str='NOTSIP'
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore',validate_assignment=True)
     def ensure(self):
@@ -49,5 +49,7 @@ try:
         if not getattr(settings,_name,None):
             _v=_secret_store.get('NOTSIP_'+_name.upper())
             if _v:setattr(settings,_name,_v)
+    if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
 except Exception as exc:
     SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
+    if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
