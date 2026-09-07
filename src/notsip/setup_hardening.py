@@ -1,22 +1,31 @@
 from __future__ import annotations
 import importlib, copy
+from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
+def _redact_database_url(value):
+    try:
+        p=urlsplit(str(value))
+        if not p.scheme:return str(value)
+        if p.username or p.password:
+            host=p.hostname or ''
+            port=f':{p.port}' if p.port else ''
+            user=f'{p.username}:***@' if p.username else ''
+            return urlunsplit((p.scheme,f'{user}{host}{port}',p.path,p.query,p.fragment))
+        return str(value)
+    except Exception:
+        return '[configured]'
+
 def _public_state(mod):
     data=mod.config_store.load();saved=dict(data.get('settings') or {})
     safe={k:v for k,v in saved.items() if k not in SECRET_NAMES and not any(x in k.lower() for x in ('password','secret'))}
-    if 'database_url' in safe:
-        from urllib.parse import urlsplit,urlunsplit
-        try:
-            p=urlsplit(str(safe['database_url']))
-            if p.username or p.password:
-                host=p.hostname or '';port=f':{p.port}' if p.port else ''
-                safe['database_url']=urlunsplit((p.scheme,f'{p.username or ""}:***@{host}{port}' if p.username else f'{host}{port}',p.path,p.query,p.fragment))
-        except Exception:safe['database_url']='[configured]'
+    # database_url is protected at rest; expose only a redacted runtime value so
+    # the setup UI can restore the selected backend without revealing credentials.
+    safe['database_url']=_redact_database_url(getattr(mod.settings,'database_url',''))
     return {'version':data.get('version',0),'settings':safe,'secret_configured':{k:bool(getattr(mod.settings,k,'')) or bool(mod.auth.secrets.get('NOTSIP_'+k.upper(),'')) for k in SECRET_NAMES}}
 
 async def _require_after_setup(mod,request):
