@@ -12,17 +12,8 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         presence={k:bool(getattr(settings,k,None)) for k in secret_names}
         return {'settings':values,'secret_configured':presence}
 
-    @app.get('/api/voice/transcribe')
-    async def voice_transcribe(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
-        if not settings.stt_base_url or not settings.stt_model:
-            raise HTTPException(503, 'STT is not configured')
-        raw = await file.read()
-        if len(raw) > 30 * 1024 * 1024:
-            raise HTTPException(413, 'audio file too large')
-        return await media.transcribe(raw, file.content_type or 'audio/webm', language or settings.stt_language)
-
     @app.post('/api/voice/transcribe')
-    async def voice_transcribe_post(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
+    async def voice_transcribe(file: UploadFile = File(...), language: str = '', _: None = Depends(require_auth)):
         if not settings.stt_base_url or not settings.stt_model:
             raise HTTPException(503, 'STT is not configured')
         raw = await file.read()
