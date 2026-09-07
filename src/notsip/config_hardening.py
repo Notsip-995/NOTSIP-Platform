@@ -6,9 +6,20 @@ from fastapi.responses import JSONResponse
 SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
+def _redacted_config(mod):
+    data=mod.config_store.load()
+    safe={k:v for k,v in (data.get('settings') or {}).items() if k not in SECRET_NAMES and not any(x in k.lower() for x in ('password','secret','token','key'))}
+    safe['database_url']='[configured]' if getattr(mod.settings,'database_url','') else ''
+    return {'version':data.get('version',0),'settings':safe}
+
 def attach(app):
     mod=importlib.import_module('notsip.app')
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None)!='/api/config']
+
+    @app.get('/api/config')
+    async def config_get_hardened(request:Request):
+        await mod.require_auth(request)
+        return _redacted_config(mod)
 
     @app.post('/api/config')
     async def config_set_hardened(payload:dict,request:Request):
@@ -24,7 +35,6 @@ def attach(app):
             if key in settings_payload and not str(settings_payload[key] or '').strip():
                 settings_payload.pop(key,None)
         incoming['settings']=settings_payload
-        # Secrets bypass plain config persistence and are stored encrypted.
         db_url=settings_payload.pop('database_url',None)
         if db_url is not None and str(db_url).strip():
             mod.auth.secrets.set('NOTSIP_DATABASE_URL',str(db_url));mod.settings.database_url=str(db_url)
