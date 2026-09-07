@@ -13,11 +13,12 @@ class MediaEngine:
         return {'status':'SUCCESS','text':d.get('text',''),'provider':self.settings.stt_model,'path':str(p.relative_to(self.audio))}
     async def speak(self,text,voice=''):
         if not self.settings.tts_base_url or not self.settings.tts_model:raise RuntimeError('TTS provider not configured')
+        fmt='wav' if getattr(self.settings,'native_voice_enabled',False) else self.settings.tts_format
         headers={'Content-Type':'application/json'}
         if self.settings.tts_api_key:headers['Authorization']='Bearer '+self.settings.tts_api_key
-        body={'model':self.settings.tts_model,'input':text,'voice':voice or self.settings.tts_voice,'response_format':self.settings.tts_format}
+        body={'model':self.settings.tts_model,'input':text,'voice':voice or self.settings.tts_voice,'response_format':fmt}
         async with httpx.AsyncClient(timeout=120) as c:r=await c.post(self.settings.tts_base_url.rstrip('/')+'/audio/speech',headers=headers,json=body);r.raise_for_status();audio=r.content
-        p=self.audio/f'{uuid.uuid4()}.{self.settings.tts_format}';p.write_bytes(audio);return {'status':'SUCCESS','path':str(p.relative_to(self.audio)),'mime':'audio/'+self.settings.tts_format,'bytes':len(audio)}
+        p=self.audio/f'{uuid.uuid4()}.{fmt}';p.write_bytes(audio);return {'status':'SUCCESS','path':str(p.relative_to(self.audio)),'mime':'audio/'+fmt,'bytes':len(audio)}
     async def perceive(self,frame:bytes,prompt='Describe the visible scene and note only evidence that is actually visible.',mime='image/jpeg'):
         if not self.settings.vision_enabled:raise RuntimeError('vision disabled')
         p=self.frames/f'{uuid.uuid4()}.jpg';p.write_bytes(frame);result=await self.provider.vision(prompt,frame,mime);msg=result.get('choices',[{}])[0].get('message',{}).get('content','');return {'status':'SUCCESS','observation':msg,'frame':str(p.relative_to(self.root)),'timestamp':time.time()}
