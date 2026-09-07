@@ -19,7 +19,12 @@ class Policy:
     def decide(self,risk,destructive=False):
         level=self.current_level
         self.level=level
-        if risk==Risk.LOW:return Decision(True,False,'allowed')
-        if risk==Risk.MEDIUM:return Decision(level>=2,level<3,'approval required' if level<3 else 'allowed')
-        if risk==Risk.HIGH or destructive:return Decision(level>=4,True,'high-risk action requires autonomy level 4')
+        if risk==Risk.LOW:
+            return Decision(True,False,'allowed')
+        if risk==Risk.MEDIUM:
+            if level>=3:return Decision(True,False,'allowed')
+            return Decision(False,True,'medium-risk action requires autonomy level 3 or approval')
+        if risk==Risk.HIGH or destructive:
+            if level>=4:return Decision(True,False,'allowed at autonomy level 4')
+            return Decision(False,True,'high-risk action requires autonomy level 4 or approval')
         return Decision(False,True,'critical action blocked')
