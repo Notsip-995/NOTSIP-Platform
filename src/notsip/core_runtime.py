@@ -5,12 +5,14 @@ from .completion_routes import attach as attach_completion
 from .security_hardening import attach as attach_security_hardening
 from .runtime_hardening_routes import attach as attach_runtime_hardening
 from .recovery_hardening import attach as attach_recovery_hardening
+from .recovery_runtime import attach as attach_recovery_runtime
 from .setup_hardening import attach as attach_setup_hardening
 from .approval_hardening import attach as attach_approval_hardening
 from .voice_bridge import attach as attach_voice_bridge
 from .config_hardening import attach as attach_config_hardening
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
+attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events)
 attach_security_hardening(app)
