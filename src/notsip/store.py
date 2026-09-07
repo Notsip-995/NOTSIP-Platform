@@ -83,13 +83,11 @@ class Store:
     def audit_recent(self,n=200):return self._backend.audit_recent(n) if self._backend else self.rows('SELECT * FROM audit ORDER BY id DESC LIMIT ?',(n,))
     def create_pair_code(self,ttl=300):
         if self._backend:return self._backend.create_pair_code(ttl)
-        code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()+ttl));return code
+        code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()));return code
     def consume_pair_code(self,code):
         if self._backend:return self._backend.consume_pair_code(code)
         with self.lock,self.conn() as c:
-            r=c.execute('SELECT expires FROM pairing_codes WHERE code=?',(code.upper(),)).fetchone();ok=bool(r and r[0]>time.time());
-            if ok:c.execute('DELETE FROM pairing_codes WHERE code=?',(code.upper(),))
-            return ok
+            r=c.execute('DELETE FROM pairing_codes WHERE code=? AND expires>? RETURNING code',(code.upper(),time.time())).fetchone();return bool(r)
     def pair_device(self,id,name,platform,public_key,token):
         if self._backend:return self._backend.pair_device(id,name,platform,public_key,token)
         self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE','{}'))
