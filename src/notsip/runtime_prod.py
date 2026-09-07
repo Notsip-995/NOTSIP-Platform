@@ -37,7 +37,7 @@ reg('windows_exec','Execute PowerShell on Windows.','CONTROL_COMPUTER',Risk.HIGH
 reg('desktop_screenshot','Capture the primary Windows desktop.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'filename':{'type':'string'}}},win.screenshot)
 reg('open_target','Open a Windows URL, file, or application.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'target':{'type':'string'}},'required':['target']},open_target)
 reg('windows_list','List visible Windows UIA windows.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title_re':{'type':'string'}}},uia.windows)
-reg('windows_focus','Focus a Windows UIA window.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title':{'type':'string'},'title_re':{'type':'string'}}},uia.focus)
+reg('windows_focus','Focus a Windows UIA window.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title':{'type':'string'},'title_re':{'type':'string'}},'required':['title']},uia.focus)
 reg('windows_click','Click a Windows UIA control.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'control_type':{'type':'string'},'title':{'type':'string'},'title_re':{'type':'string'},'window_title':{'type':'string'},'window_re':{'type':'string'}},},uia.click)
 reg('windows_type','Type into a Windows UIA control.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'text':{'type':'string'},'control_type':{'type':'string'},'title':{'type':'string'},'title_re':{'type':'string'},'window_title':{'type':'string'},'window_re':{'type':'string'},'clear':{'type':'boolean'}},'required':['text']},uia.type_text)
 reg('windows_hotkey','Send a Windows hotkey sequence.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'keys':{'type':'array','items':{'type':'string'}}},'required':['keys']},lambda keys:uia.hotkey(*keys))
@@ -62,6 +62,16 @@ reg('make_plan','Build a model-independent execution plan.','INTELLIGENCE',Risk.
 reg('corroborate','Find supporting stored evidence.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'}},'required':['query']},intellect.corroborate)
 reg('find_contradictions','Find contradictory world relations.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'entity':{'type':'string'}}},intellect.contradictions)
 reg('trigger_candidates','Find memories that may warrant proactive follow-up.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{}},intellect.trigger_candidates)
+
+def android_command(device_id,action,payload=None):
+    x=store.row('SELECT id,status FROM devices WHERE id=?',(device_id,))
+    if not x:raise ValueError('Android/device is not paired')
+    if x.get('status')=='REVOKED':raise PermissionError('device is revoked')
+    allowed={'open_url','open_app','notify','click_text','make_call','send_sms'}
+    if action not in allowed:raise ValueError(f'unsupported Android action: {action}')
+    cid=store.queue_command(device_id,action,payload or {})
+    return {'status':'QUEUED','command_id':cid,'device_id':device_id,'action':action}
+reg('android_command','Queue an authorized command on a paired Android device; call/SMS are high-risk and require approval.','ANDROID_CONTROL',Risk.HIGH,{'type':'object','properties':{'device_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['device_id','action']},android_command,True)
 
 auth_token=settings.api_key
 async def require_auth(request:Request):
@@ -95,7 +105,7 @@ async def root():
 @app.get('/api/health')
 async def health(_:None=Depends(require_auth)):return {'status':'ok','identity':'NOTSIP','version':'0.9.0','llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'scheduler':True,'federation':True,'recovery':True}
 @app.get('/api/status')
-async def status(_:None=Depends(require_auth)):return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':store.devices(),'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts.model if False else settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
+async def status(_:None=Depends(require_auth)):return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':store.devices(),'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
 @app.get('/api/degraded')
 async def degraded(_:None=Depends(require_auth)):
     reasons=[]
@@ -168,4 +178,3 @@ async def event_ingest(payload:dict, x_notsip_signature:str=Header(default=''), 
     raw=json.dumps(payload,separators=(',',':'),sort_keys=True).encode();expected=hmac.new(settings.event_hmac_secret.encode(),raw,hashlib.sha256).hexdigest() if settings.event_hmac_secret else ''
     if settings.event_hmac_secret and not hmac.compare_digest(expected,x_notsip_signature):raise HTTPException(401,'invalid event signature')
     e=Event(payload.get('type','external'),payload);events.publish(e);return {'status':'ACCEPTED','event_id':str(uuid.uuid4())}
-__all__=['app']
