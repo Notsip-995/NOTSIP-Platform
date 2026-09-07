@@ -35,21 +35,17 @@ def test_web_email_and_policy_follow_saved_settings(monkeypatch):
     policy=Policy(0)
     assert policy.decide(Risk.HIGH, destructive=True).allowed
 
-def test_public_setup_state_contains_presence_without_secret_values():
+def test_public_setup_state_contains_presence_without_secret_values(tmp_path, monkeypatch):
     from notsip.setup_hardening import _public_state
     class Mod:
         config_store=type('C',(),{'load':lambda self:{'version':2,'settings':{'llm_model':'model-name'}}})()
         settings=settings
-        auth=type('A',(),{'secrets':SecretStore(__import__('pathlib').Path.cwd()/'tmp-notsip-audit')})()
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        monkeypatch.setattr(settings, 'api_key', 'super-secret')
-        state=_public_state(Mod)
-        assert state['settings']['llm_model']=='model-name'
-        assert 'api_key' not in state['settings']
-        assert state['secret_configured']['api_key'] is True
-    finally:
-        monkeypatch.undo()
+        auth=type('A',(),{'secrets':SecretStore(tmp_path/'secrets')})()
+    monkeypatch.setattr(settings, 'api_key', 'super-secret')
+    state=_public_state(Mod)
+    assert state['settings']['llm_model']=='model-name'
+    assert 'api_key' not in state['settings']
+    assert state['secret_configured']['api_key'] is True
 
 def test_secret_store_empty_value_clears_secret(tmp_path):
     store=SecretStore(tmp_path)
