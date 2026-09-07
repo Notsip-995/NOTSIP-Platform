@@ -1,12 +1,12 @@
 from __future__ import annotations
-import hashlib, json, os, shutil, subprocess, sys, time
+import hashlib, os, shutil, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
-        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
+        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/health';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
     @property
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
@@ -41,5 +41,5 @@ class UpdateManager:
         if not current.exists():raise FileNotFoundError(current)
         backup=self.dir/f'previous-{int(time.time())}.exe';shutil.copy2(current,backup)
         helper=self.dir/f'apply-{int(time.time())}.ps1'
-        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force "{new_exe}" "{current}"\nStart-Process "{current}"\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest "{self.health_url}" -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "startup returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force "{backup}" "{current}"; Start-Process "{current}"; exit 2 }}\n''',encoding='utf-8')
+        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force "{new_exe}" "{current}"\nStart-Process "{current}"\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest "{self.health_url}" -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force "{backup}" "{current}"; Start-Process "{current}"; exit 2 }}\n''',encoding='utf-8')
         subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True}
