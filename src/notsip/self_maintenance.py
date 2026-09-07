@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib, json, os, subprocess, sys, time
 from pathlib import Path
+from .config import settings as runtime_settings
 
 class SelfMaintenance:
     def __init__(self, repo_root: Path):
@@ -10,14 +11,10 @@ class SelfMaintenance:
     def frozen(self):
         return bool(getattr(sys, 'frozen', False))
 
-    def inventory(self):
-        files=[]
-        for p in self.root.rglob('*'):
-            if not p.is_file(): continue
-            rel=p.relative_to(self.root)
-            if any(part in {'.git','.venv','__pycache__','.pytest_cache','data','build','dist'} for part in rel.parts): continue
-            files.append({'path':str(rel).replace('\\','/'),'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
-        return sorted(files,key=lambda x:x['path'])
+    inventory = lambda self: sorted([
+        {'path':str(p.relative_to(self.root)).replace('\\','/'),'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+        for p in self.root.rglob('*') if p.is_file() and not any(part in {'.git','.venv','__pycache__','.pytest_cache','data','build','dist'} for part in p.relative_to(self.root).parts)
+    ], key=lambda x:x['path'])
 
     def read(self, path):
         p=(self.root/path).resolve()
@@ -30,8 +27,6 @@ class SelfMaintenance:
 
     def verify(self):
         if self.frozen:
-            # The frozen runtime cannot launch itself with `-m compileall` or pytest.
-            # Verify the durable source workspace directly instead.
             import py_compile
             failures=[]
             for p in self.root.rglob('*.py'):
@@ -49,8 +44,10 @@ class SelfMaintenance:
             raise ValueError('refusing patch containing likely secrets')
 
     def apply_patch(self, patch_text, confirmation):
+        enabled = bool(getattr(runtime_settings,'self_modify_enabled',False))
+        env_override = os.getenv('NOTSIP_SELF_MODIFY_ENABLED','').lower() in {'1','true','yes'}
         if confirmation != 'APPLY_SELF_CHANGE': raise PermissionError('explicit confirmation required')
-        if os.getenv('NOTSIP_SELF_MODIFY_ENABLED','false').lower() not in {'1','true','yes'}: raise PermissionError('self-modification is disabled')
+        if not enabled and not env_override: raise PermissionError('self-modification is disabled')
         self._safe_patch(patch_text)
         if self.frozen and not (self.root/'.git').exists():
             raise RuntimeError('installed self-maintenance requires a durable source checkout; source workspace is read/verify capable but binary replacement must use the signed updater')
