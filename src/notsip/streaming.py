@@ -31,10 +31,17 @@ async def _relay_stream(sock,settings):
             await asyncio.gather(producer(),consumer())
     except Exception as e:await sock.send_json({'type':'error','error':f'streaming STT failed: {e}'})
 
+def _ws_authenticated(sock,settings):
+    auth=sock.headers.get('authorization','')
+    token=auth[7:] if auth.startswith('Bearer ') else ''
+    if settings.auth_mode=='api_key':
+        return bool(settings.api_key and token and __import__('secrets').compare_digest(token,settings.api_key)) or not settings.api_key
+    return False
+
 def attach(app,media,settings,auth_token=''):
     @app.websocket('/ws/voice')
     async def voice(sock:WebSocket):
-        if auth_token and sock.headers.get('authorization')!='Bearer '+auth_token:await sock.close(code=4401);return
+        if not _ws_authenticated(sock,settings):await sock.close(code=4401);return
         await sock.accept()
         if settings.stt_stream_url:
             await _relay_stream(sock,settings);return
@@ -57,7 +64,7 @@ def attach(app,media,settings,auth_token=''):
 
     @app.websocket('/ws/perception')
     async def perception(sock:WebSocket):
-        if auth_token and sock.headers.get('authorization')!='Bearer '+auth_token:await sock.close(code=4401);return
+        if not _ws_authenticated(sock,settings):await sock.close(code=4401);return
         await sock.accept()
         try:
             while True:
