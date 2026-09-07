@@ -7,7 +7,7 @@ from .config import settings
 class Web:
     def __init__(self,key=''):self.key=key or ''
     @property
-    def _key(self):return settings.brave_api_key or ''
+    def _key(self):return settings.brave_api_key
     @property
     def enabled(self):return bool(self._key)
     async def search(self,q,count=5):
@@ -17,15 +17,15 @@ class Web:
 class Email:
     def __init__(self,smtp_host='',smtp_port=587,imap_host='',username='',password=''):self.smtp_host=smtp_host;self.smtp_port=int(smtp_port);self.imap_host=imap_host;self.username=username;self.password=password
     @property
-    def _username(self):return settings.email_username or ''
+    def _username(self):return settings.email_username
     @property
-    def _password(self):return settings.email_password or ''
+    def _password(self):return settings.email_password
     @property
-    def _smtp_host(self):return settings.smtp_host or ''
+    def _smtp_host(self):return settings.smtp_host
     @property
     def _smtp_port(self):return int(settings.smtp_port or 587)
     @property
-    def _imap_host(self):return settings.imap_host or ''
+    def _imap_host(self):return settings.imap_host
     @property
     def enabled(self):return bool(self._username and self._password and (self._smtp_host or self._imap_host))
     def send(self,to,subject,body):
