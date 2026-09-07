@@ -44,7 +44,11 @@ def attach(app):
     @app.get('/api/config')
     async def config_get_public(request:Request):
         await _require_after_setup(mod,request)
-        try:return await mod.config_get(None)
+        try:
+            data=await mod.config_get(None)
+            settings_data=data.get('settings',{}) if isinstance(data,dict) else {}
+            if isinstance(settings_data,dict) and 'database_url' in settings_data:settings_data['database_url']=_redact_database_url(settings_data['database_url'])
+            return data
         except Exception as exc:raise HTTPException(500,str(exc))
     @app.post('/api/config')
     async def config_set_with_session(payload:dict,request:Request):
@@ -56,8 +60,7 @@ def attach(app):
         database_url=settings_payload.pop('database_url',None)
         if database_url is not None:
             database_url=str(database_url).strip()
-            if not database_url:
-                database_url='sqlite:///data/notsip.db'
+            if not database_url:database_url='sqlite:///data/notsip.db'
             mod.auth.secrets.set('NOTSIP_DATABASE_URL',database_url);mod.settings.database_url=database_url
         for key in SECRET_NAMES:
             if key in settings_payload and not str(settings_payload[key] or '').strip():settings_payload.pop(key,None)
