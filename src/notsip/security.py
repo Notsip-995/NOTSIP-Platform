@@ -31,7 +31,9 @@ class SecretStore:
         try:self.path.chmod(0o600)
         except Exception:pass
     def get(self,name,default=None):return self.load().get(name,default)
-    def set(self,name,value):d=self.load();d[name]=value;self.save(d)
+    def set(self,name,value):
+        if value in ('',None):return self.delete(name)
+        d=self.load();d[name]=value;self.save(d);return True
     def delete(self,name):
         d=self.load()
         if name in d:
