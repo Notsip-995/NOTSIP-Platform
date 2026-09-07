@@ -1,10 +1,10 @@
-import asyncio
 import json
-from pathlib import Path
 
-from notsip.account_store import AccountStore
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from notsip.approval_hardening import attach as attach_approval
-from notsip.config import Settings
+from notsip.config import SECRET_FIELDS
 from notsip.product_layer import ApprovalStore, ConfigStore
 from notsip.store import Store
 
@@ -36,12 +36,34 @@ def test_command_result_is_device_bound(tmp_path):
     assert store.command_result(command_id, 'SUCCESS', {'ok': True}, 'a') is True
 
 
-def test_approval_is_one_time(tmp_path):
+def test_approval_execution_is_one_time(tmp_path):
     approvals = ApprovalStore(tmp_path)
-    item = approvals.request('calculator', 'test', {'tool': 'calculator', 'args': {'expr': '1+1'}})
-    assert approvals.decide(item['id'], True)['status'] == 'APPROVED'
-    assert approvals.decide(item['id'], True)['status'] == 'APPROVED'
+    item = approvals.request('calculator', 'test', {'tool': 'calculator', 'args': {}})
+    calls = {'n': 0}
+
+    class Tool:
+        def fn(self, **kwargs):
+            calls['n'] += 1
+            return {'status': 'SUCCESS'}
+
+    class Registry:
+        def get(self, name):
+            return Tool() if name == 'calculator' else None
+
+    app = FastAPI()
+    class Log:
+        def write(self, *args, **kwargs):
+            return None
+    async def require_auth(request):
+        return None
+    attach_approval(app, require_auth=require_auth, approvals=approvals, registry=Registry(), audit_log=Log())
+    with TestClient(app) as client:
+        first = client.post(f'/api/approvals/{item["id"]}', json={'approved': True, 'execute': True})
+        second = client.post(f'/api/approvals/{item["id"]}', json={'approved': True, 'execute': True})
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert calls['n'] == 1
 
 
 def test_database_url_not_marked_secret():
-    assert 'database_url' not in __import__('notsip.config', fromlist=['SECRET_FIELDS']).SECRET_FIELDS
+    assert 'database_url' not in SECRET_FIELDS
