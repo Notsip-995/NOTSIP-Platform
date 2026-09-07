@@ -93,8 +93,9 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
         if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
         return {'status':'RECORDED','device_id':device_id,'command_id':command_id}
     @app.post('/api/devices/heartbeat')
-    async def device_heartbeat(device_id:str,token:str,capabilities:str=''):
-        if not store.device_token_valid(device_id,token):raise HTTPException(401,'Invalid device token')
+    async def device_heartbeat(request:Request):
+        device_id=request.headers.get('X-NOTSIP-Device-ID','');token=request.headers.get('X-NOTSIP-Device-Token','')
+        if not device_id or not token or not store.device_token_valid(device_id,token):raise HTTPException(401,'device authentication required')
         store.heartbeat(device_id);return {'status':'ONLINE','device_id':device_id}
     @app.get('/api/devices/{device_id}/commands')
     async def device_commands(device_id:str,x_notsip_device_token:str=Header('',alias='X-NOTSIP-Device-Token')):
