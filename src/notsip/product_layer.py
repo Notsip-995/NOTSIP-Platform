@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, platform, shutil, socket, subprocess, sys, tempfile, time, uuid, zipfile
+import base64, binascii, hashlib, json, os, platform, shutil, socket, subprocess, sys, tempfile, time, uuid, zipfile
 from pathlib import Path
 APP_NAME='NOTSIP';CONFIG_VERSION=2
 
@@ -133,8 +133,15 @@ class ApprovalStore:
     def decide(self,aid,approved):
         d=self._load();x=d.get(aid)
         if not x:return None
+        if x.get('status')!='PENDING':return x
+        if float(x.get('expires',0))<=time.time():
+            x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
         x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
-    def pending(self):return [x for x in self._load().values() if x.get('status')=='PENDING' and x.get('expires',0)>time.time()]
+    def pending(self):
+        out=[];now=time.time()
+        for x in self._load().values():
+            if x.get('status')=='PENDING' and x.get('expires',0)>now:out.append(x)
+        return out
 
 class Diagnostics:
     def __init__(self,root,settings=None,store=None,provider=None,web=None,email=None,auth=None,nodes=None,recovery=None):self.root=Path(root);self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email;self.auth=auth;self.nodes=nodes;self.recovery=recovery
@@ -168,12 +175,15 @@ class Maintenance:
     def inventory(self):
         import hashlib;out=[]
         for p in self.root.rglob('*'):
-            if not p.is_file() or any(x in {'.git','.venv','__pycache__','.pytest_cache','data','dist','build','backups'} for x in p.parts):continue
-            out.append({'path':p.relative_to(self.root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size})
-        return sorted(out,key=lambda x:x['path'])
+            if p.is_file():
+                try:out.append({'path':str(p.relative_to(self.root)).replace('\\','/'),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size})
+                except Exception:pass
+        return out[:10000]
+    def read(self,path):
+        p=(self.root/path).resolve()
+        if self.root not in p.parents:raise ValueError('path outside repository')
+        return p.read_text(encoding='utf-8')
     def verify(self):
-        c=subprocess.run([sys.executable,'-m','compileall','-q','src'],cwd=self.root,capture_output=True,text=True,timeout=180);t=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=300);return {'compile_ok':c.returncode==0,'tests_ok':t.returncode==0,'compile_stderr':c.stderr[-4000:],'tests_stdout':t.stdout[-8000:]}
-
-class CapabilityProbe:
-    def __init__(self,settings,store,provider,web,email):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
-    def snapshot(self):return {'llm':self.provider.enabled,'fallback_llm':self.provider.fallback_enabled,'stt':bool(self.settings.stt_base_url and self.settings.stt_model),'tts':bool(self.settings.tts_base_url and self.settings.tts_model),'vision':bool(self.settings.vision_enabled),'web':self.web.enabled,'email':self.email.enabled,'android':bool(self.store.devices()),'windows':platform.system()=='Windows','self_maintenance':True}
+        if not (self.root/'.git').exists():return {'status':'UNAVAILABLE','reason':'durable Git checkout required','root':str(self.root)}
+        r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600)
+        return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
