@@ -27,8 +27,22 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun setDeviceId(value: String) = prefs.edit().putString("device", value).apply()
-    fun token(): String = secure.getString("token", "")
-    private fun setToken(value: String) = secure.putString("token", value)
+
+    fun token(): String {
+        val protected = secure.getString("token", "")
+        if (protected.isNotBlank()) return protected
+        val legacy = prefs.getString("token", "") ?: ""
+        if (legacy.isNotBlank()) {
+            secure.putString("token", legacy)
+            prefs.edit().remove("token").apply()
+        }
+        return legacy
+    }
+
+    private fun setToken(value: String) {
+        secure.putString("token", value)
+        prefs.edit().remove("token").apply()
+    }
 
     suspend fun pair(code: String) {
         val body = JSONObject()
