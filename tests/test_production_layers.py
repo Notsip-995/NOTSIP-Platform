@@ -28,6 +28,11 @@ def test_node_lease_and_recovery(tmp_path,monkeypatch):
 def test_recovery_restore_applies_runtime_state(tmp_path):
     store=Store(tmp_path);store.task('old task');recovery=RecoveryManager(tmp_path);recovery.checkpoint({'tasks':[{'id':'restored','objective':'restored task','state':'PENDING','priority':1,'handler':'agent','data':{},'run_at':0,'interval_sec':None,'retries':0,'created':1,'updated':1,'error':''}],'devices':[],'world':{'entities':[],'relations':[],'facts':[]}});result=store.restore_runtime_state(recovery.latest());assert result['status']=='RESTORED';assert [x['id'] for x in store.tasks()] == ['restored']
 
+def test_recovery_preserves_device_token_hash(tmp_path):
+    store=Store(tmp_path);token='device-secret';store.pair_device('android-1','Phone','android','',token)
+    snapshot={'tasks':[],'devices':store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices'),'world':{'entities':[],'relations':[],'facts':[]}}
+    result=store.restore_runtime_state(snapshot);assert result['status']=='RESTORED';assert store.device_token_valid('android-1',token);assert not store.device_token_valid('android-1','wrong-token')
+
 def test_agent_audit_paths_write_valid_records(tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'llm_base_url','');monkeypatch.setattr(settings,'llm_model','');monkeypatch.setattr(settings,'llm_api_key','');monkeypatch.setattr(settings,'fallback_llm_base_url','');monkeypatch.setattr(settings,'fallback_llm_model','');monkeypatch.setattr(settings,'fallback_llm_api_key','');monkeypatch.setattr(settings,'autonomy_level',2)
     store=Store(tmp_path);registry=Registry();world=WorldModel(store);provider=SimpleNamespace(enabled=False,fallback_enabled=False);agent=Agent(settings,store,Policy(2),registry,provider,world)
