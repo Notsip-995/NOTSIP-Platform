@@ -1,10 +1,12 @@
 from pathlib import Path
-import json, os, sys
+import json, os, sys, time
 from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
+CONFIG_LOAD_ERROR=''
+SECRET_LOAD_ERROR=''
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):
@@ -37,7 +39,8 @@ try:
         data=json.loads(cfg.read_text(encoding='utf-8')).get('settings',{})
         for k,v in data.items():
             if k not in SECRET_FIELDS and k in Settings.model_fields and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
-except Exception:pass
+except Exception as exc:
+    CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
 settings.ensure()
 try:
     from .security import SecretStore
@@ -46,4 +49,5 @@ try:
         if not getattr(settings,_name,None) or _name=='database_url':
             _v=_secret_store.get('NOTSIP_'+_name.upper())
             if _v:setattr(settings,_name,_v)
-except Exception:pass
+except Exception as exc:
+    SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
