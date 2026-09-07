@@ -4,6 +4,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+RESTART_KEYS={'host','port','data_dir','database_url'}
 
 def _public_state(mod):
     data=mod.config_store.load();saved=dict(data.get('settings') or {})
@@ -45,14 +46,20 @@ def attach(app):
     @app.post('/api/config')
     async def config_set_with_session(payload:dict,request:Request):
         await _require_after_setup(mod,request)
-        incoming=copy.deepcopy(payload)
-        settings_payload=dict(incoming.get('settings') or {})
+        incoming=copy.deepcopy(payload);settings_payload=dict(incoming.get('settings') or {})
+        clear_secrets=set(incoming.get('clear_secrets') or [])
+        unknown=clear_secrets-SECRET_NAMES
+        if unknown:raise HTTPException(400,f'unknown secret fields: {sorted(unknown)}')
+        for key in clear_secrets:
+            mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
         for key in SECRET_NAMES:
             if key in settings_payload and not str(settings_payload[key] or '').strip():
-                mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
                 settings_payload.pop(key,None)
         incoming['settings']=settings_payload
         data=await mod.config_set(incoming,None)
+        data['restart_required']=any(k in RESTART_KEYS for k in settings_payload)
+        if data['restart_required']:
+            data['restart_reason']='host, port, data directory, or database changes require a NOTSIP restart'
         response=JSONResponse(data)
         if mod.settings.auth_mode=='api_key' and mod.settings.api_key:
             token=mod.auth.mint_session({'mode':'api_key','sub':'primary-user'});response.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=mod.settings.session_ttl,path='/')
