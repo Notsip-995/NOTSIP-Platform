@@ -12,63 +12,51 @@ def _redact_database_url(value):
         p=urlsplit(str(value))
         if not p.scheme:return str(value)
         if p.username or p.password:
-            host=p.hostname or ''
-            port=f':{p.port}' if p.port else ''
-            user=f'{p.username}:***@' if p.username else ''
+            host=p.hostname or '';port=f':{p.port}' if p.port else '';user=f'{p.username}:***@' if p.username else ''
             return urlunsplit((p.scheme,f'{user}{host}{port}',p.path,p.query,p.fragment))
         return str(value)
-    except Exception:
-        return '[configured]'
+    except Exception:return '[configured]'
 
 def _public_state(mod):
     data=mod.config_store.load();saved=dict(data.get('settings') or {})
     safe={k:v for k,v in saved.items() if k not in SECRET_NAMES and not any(x in k.lower() for x in ('password','secret'))}
-    # database_url is protected at rest; expose only a redacted runtime value so
-    # the setup UI can restore the selected backend without revealing credentials.
     safe['database_url']=_redact_database_url(getattr(mod.settings,'database_url',''))
     return {'version':data.get('version',0),'settings':safe,'secret_configured':{k:bool(getattr(mod.settings,k,'')) or bool(mod.auth.secrets.get('NOTSIP_'+k.upper(),'')) for k in SECRET_NAMES}}
 
+def _local_oidc_recovery(mod,request):
+    host=getattr(getattr(request,'client',None),'host','') or ''
+    return host in {'127.0.0.1','::1'} and mod.settings.auth_mode=='oidc' and not mod.auth.oidc.configured
+
 async def _require_after_setup(mod,request):
-    if mod.config_store.path.exists():await mod.require_auth(request)
+    if mod.config_store.path.exists() and not _local_oidc_recovery(mod,request):await mod.require_auth(request)
 
 def attach(app):
     mod=importlib.import_module('notsip.app')
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/config','/api/config/public','/setup'}]
-
     @app.get('/setup',include_in_schema=False)
     async def setup_page(request:Request):
-        await _require_after_setup(mod,request)
-        p=mod.resource_root()/'setup.html'
+        await _require_after_setup(mod,request);p=mod.resource_root()/'setup.html'
         if not p.exists():raise HTTPException(404,'setup UI missing')
         return FileResponse(p)
-
     @app.get('/api/config/public')
     async def config_public(request:Request):
         await _require_after_setup(mod,request);return _public_state(mod)
-
     @app.get('/api/config')
     async def config_get_public(request:Request):
         await _require_after_setup(mod,request)
         try:return await mod.config_get(None)
         except Exception as exc:raise HTTPException(500,str(exc))
-
     @app.post('/api/config')
     async def config_set_with_session(payload:dict,request:Request):
         await _require_after_setup(mod,request)
-        incoming=copy.deepcopy(payload);settings_payload=dict(incoming.get('settings') or {})
-        clear_secrets=set(incoming.get('clear_secrets') or [])
+        incoming=copy.deepcopy(payload);settings_payload=dict(incoming.get('settings') or {});clear_secrets=set(incoming.get('clear_secrets') or [])
         unknown=clear_secrets-SECRET_NAMES
         if unknown:raise HTTPException(400,f'unknown secret fields: {sorted(unknown)}')
-        for key in clear_secrets:
-            mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
+        for key in clear_secrets:mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
         for key in SECRET_NAMES:
-            if key in settings_payload and not str(settings_payload[key] or '').strip():
-                settings_payload.pop(key,None)
-        incoming['settings']=settings_payload
-        data=await mod.config_set(incoming,None)
-        data['restart_required']=any(k in RESTART_KEYS for k in settings_payload)
-        if data['restart_required']:
-            data['restart_reason']='host, port, data directory, or database changes require a NOTSIP restart'
+            if key in settings_payload and not str(settings_payload[key] or '').strip():settings_payload.pop(key,None)
+        incoming['settings']=settings_payload;data=await mod.config_set(incoming,None);data['restart_required']=any(k in RESTART_KEYS for k in settings_payload)
+        if data['restart_required']:data['restart_reason']='host, port, data directory, or database changes require a NOTSIP restart'
         response=JSONResponse(data)
         if mod.settings.auth_mode=='api_key' and mod.settings.api_key:
             token=mod.auth.mint_session({'mode':'api_key','sub':'primary-user'});response.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=mod.settings.session_ttl,path='/')
