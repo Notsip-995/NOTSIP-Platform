@@ -30,7 +30,7 @@ On Windows, secrets are protected with DPAPI-backed key material and AES-GCM enc
 
 ## Self-awareness
 
-NOTSIP can inventory the repository, hash files, read its own source/configuration, compile/test itself, and—only when explicitly enabled and approved—apply a Git patch on a temporary branch. Changes are tested before commit and failed changes are rolled back.
+NOTSIP can inventory and hash its source workspace, read its own source/configuration, compile and test itself, and—only when explicitly enabled and approved—apply a Git patch on a durable Git checkout. Changes are tested before commit and failed changes are rolled back. A frozen installed build can inspect and verify its durable source workspace; replacement of the running binary is handled through the guarded update/rollback path rather than by rewriting the running PyInstaller bundle in place.
 
 ## Windows automation
 
@@ -42,7 +42,7 @@ The web UI records microphone input for STT, plays returned TTS audio, and captu
 
 ## Distributed nodes and recovery
 
-Nodes use device-scoped tokens and renewable leases. NOTSIP reconciles stale nodes, produces recovery plans, persists state checkpoints, and retries failed scheduled work with exponential backoff. Hardware-specific actions remain capability-gated.
+Nodes use device-scoped tokens and renewable leases. NOTSIP reconciles stale nodes, produces recovery plans, persists state checkpoints, restores checkpoint state into runtime storage, and retries failed scheduled work with exponential backoff. Hardware-specific actions remain capability-gated.
 
 ## Windows executable
 
