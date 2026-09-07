@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 
-def attach(app, events, agent):
+def attach(app, events, agent, native_voice=None):
     async def worker():
         q=events.subscribe()
         try:
@@ -12,7 +12,11 @@ def attach(app, events, agent):
                 if not text:continue
                 try:
                     result=await agent.handle(text)
-                    await events.publish(__import__('notsip.events',fromlist=['Event']).Event('voice.response',{'text':text,'result':result},'voice-bridge'))
+                    response={'text':text,'result':result}
+                    if native_voice is not None and getattr(native_voice,'running',False):
+                        spoken=str((result or {}).get('message') or (result or {}).get('response') or (result or {}).get('text') or '').strip() if isinstance(result,dict) else str(result or '').strip()
+                        if spoken:response['playback']=await native_voice.speak_response(spoken)
+                    await events.publish(__import__('notsip.events',fromlist=['Event']).Event('voice.response',response,'voice-bridge'))
                 except Exception as exc:
                     await events.publish(__import__('notsip.events',fromlist=['Event']).Event('voice.agent_error',{'text':text,'error':str(exc)},'voice-bridge'))
         finally:
