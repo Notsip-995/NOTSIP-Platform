@@ -1,6 +1,6 @@
 from __future__ import annotations
 import base64,binascii
-from fastapi import Depends,File,HTTPException,UploadFile
+from fastapi import Depends,File,Header,HTTPException,UploadFile
 from .events import Event
 
 def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
@@ -44,11 +44,12 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         try:return await oauth.mail(provider_name,account_id or None)
         except Exception as exc:raise HTTPException(503,str(exc))
     @app.post('/api/events/signed')
-    async def signed_event(payload:dict,signature:str,_:None=Depends(require_auth)):
+    async def signed_event(payload:dict,signature:str='',x_notsip_event_signature:str=Header('',alias='X-NOTSIP-Event-Signature'),_:None=Depends(require_auth)):
         import hashlib,hmac,json
         if not settings.event_hmac_secret:raise HTTPException(503,'event HMAC secret is not configured')
+        supplied=x_notsip_event_signature or signature
         raw=json.dumps(payload,separators=(',',':'),sort_keys=True).encode();expected=hmac.new(settings.event_hmac_secret.encode(),raw,hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected,signature):raise HTTPException(401,'invalid event signature')
+        if not supplied or not hmac.compare_digest(expected,supplied):raise HTTPException(401,'invalid event signature')
         event=Event(payload.get('type','signed.external'),payload,'signed-external')
         if events is not None:await events.publish(event)
         return {'status':'ACCEPTED','event':payload,'published':events is not None}
