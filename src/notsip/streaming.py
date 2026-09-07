@@ -51,6 +51,8 @@ def _ws_authenticated(sock,settings):
 def attach(app,media,settings,auth_token=''):
     @app.websocket('/ws/voice')
     async def voice(sock:WebSocket):
+        if not settings.voice_enabled:
+            await sock.close(code=4403);return
         if not _ws_authenticated(sock,settings):await sock.close(code=4401);return
         await sock.accept()
         if settings.stt_stream_url:
@@ -74,6 +76,7 @@ def attach(app,media,settings,auth_token=''):
 
     @app.websocket('/ws/perception')
     async def perception(sock:WebSocket):
+        if not settings.vision_enabled:await sock.close(code=4403);return
         if not _ws_authenticated(sock,settings):await sock.close(code=4401);return
         await sock.accept()
         try:
