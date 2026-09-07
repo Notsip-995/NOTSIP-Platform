@@ -66,16 +66,11 @@ class Store:
         tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or []
         with self.lock,self.conn() as c:
             c.execute('DELETE FROM commands');c.execute('DELETE FROM tasks');c.execute('DELETE FROM devices');c.execute('DELETE FROM entities');c.execute('DELETE FROM relations');c.execute('DELETE FROM facts')
-            for t in tasks:
-                c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error','')))
-            for d in devices:
-                c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),d.get('token_hash',''),d.get('last_seen'),d.get('status',''),d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
-            for e in world.get('entities') or []:
-                c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(?,?,?,?,?)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
-            for r in world.get('relations') or []:
-                c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?,?)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
-            for f in world.get('facts') or []:
-                c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(?,?,?,?,?,?,?)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
+            for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error','')))
+            for d in devices:c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),d.get('token_hash',''),d.get('last_seen'),d.get('status',''),d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
+            for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(?,?,?,?,?)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
+            for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?,?)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
+            for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(?,?,?,?,?,?,?)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
         return {'status':'RESTORED','tasks':len(tasks),'devices':len(devices),'entities':len(world.get('entities') or []),'relations':len(world.get('relations') or []),'facts':len(world.get('facts') or [])}
     def audit(self,*args):
         if self._backend:return self._backend.audit(*args)
@@ -83,7 +78,7 @@ class Store:
     def audit_recent(self,n=200):return self._backend.audit_recent(n) if self._backend else self.rows('SELECT * FROM audit ORDER BY id DESC LIMIT ?',(n,))
     def create_pair_code(self,ttl=300):
         if self._backend:return self._backend.create_pair_code(ttl)
-        code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()));return code
+        code=secrets.token_urlsafe(8).replace('-','').replace('_','')[:8].upper();self.exec('INSERT OR REPLACE INTO pairing_codes VALUES(?,?)',(code,time.time()+ttl));return code
     def consume_pair_code(self,code):
         if self._backend:return self._backend.consume_pair_code(code)
         with self.lock,self.conn() as c:
@@ -104,9 +99,14 @@ class Store:
     def pull_commands(self,device_id,limit=20):
         if self._backend:return self._backend.pull_commands(device_id,limit)
         with self.lock,self.conn() as c:
-            rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
-            if rows:
-                ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
+            c.execute('BEGIN IMMEDIATE')
+            try:
+                rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
+                if rows:
+                    ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
+                c.commit()
+            except Exception:
+                c.rollback();raise
             for r in rows:r['payload']=json.loads(r['payload'])
             return rows
     def command_result(self,cid,status,result,device_id=None):
