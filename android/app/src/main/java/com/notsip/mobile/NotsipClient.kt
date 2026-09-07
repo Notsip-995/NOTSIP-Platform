@@ -12,6 +12,7 @@ import java.util.UUID
 
 class NotsipClient(private val ctx: Context) {
     private val prefs = ctx.getSharedPreferences("notsip", Context.MODE_PRIVATE)
+    private val secure = SecurePrefs(ctx)
     private val http = OkHttpClient()
 
     fun baseUrl(): String = prefs.getString("base", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
@@ -26,7 +27,8 @@ class NotsipClient(private val ctx: Context) {
     }
 
     fun setDeviceId(value: String) = prefs.edit().putString("device", value).apply()
-    fun token(): String = prefs.getString("token", "") ?: ""
+    fun token(): String = secure.getString("token", "")
+    private fun setToken(value: String) = secure.putString("token", value)
 
     suspend fun pair(code: String) {
         val body = JSONObject()
@@ -36,7 +38,7 @@ class NotsipClient(private val ctx: Context) {
             .put("platform", "android")
             .toString()
         val response = JSONObject(request("POST", "/api/pair/consume", body))
-        prefs.edit().putString("token", response.getString("token")).apply()
+        setToken(response.getString("token"))
     }
 
     fun heartbeat() {
