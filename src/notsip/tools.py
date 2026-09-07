@@ -39,4 +39,7 @@ class Windows:
         t=self.workspace.path(filename);e=str(t).replace("'","''");cmd=f"Add-Type -AssemblyName System.Drawing;Add-Type -AssemblyName System.Windows.Forms;$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height;$g=[System.Drawing.Graphics]::FromImage($i);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);$i.Save('{e}',[System.Drawing.Imaging.ImageFormat]::Png);$g.Dispose();$i.Dispose()";r=self.exec(cmd,30)
         if r['status']!='SUCCESS':raise RuntimeError(r['stderr'] or 'screenshot failed')
         return {'status':'SUCCESS','path':str(t.relative_to(self.workspace.root)),'size':t.stat().st_size}
-def open_target(target):return {'status':'SUCCESS','opened':webbrowser.open(target),'target':target}
+def open_target(target):
+    try: opened=bool(webbrowser.open(target))
+    except Exception as exc: return {'status':'FAILURE','opened':False,'target':target,'error':str(exc)}
+    return {'status':'SUCCESS' if opened else 'UNKNOWN','opened':opened,'target':target,'note':'launch requested; target application/browser state was not independently verified'}
