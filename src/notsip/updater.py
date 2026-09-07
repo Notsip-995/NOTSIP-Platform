@@ -3,6 +3,7 @@ import hashlib, os, shutil, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
+from . import __version__
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
@@ -13,7 +14,13 @@ class UpdateManager:
     def current_exe(self):return Path(sys.executable).resolve() if self.frozen else None
     def _trusted_asset(self,url:str)->bool:
         p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ')
-        return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/')
+        return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.exe')
+    @staticmethod
+    def _version_tuple(value:str):
+        raw=str(value or '').strip().lower().lstrip('v')
+        parts=raw.split('.')
+        if len(parts)<2 or len(parts)>4 or any(not p.isdigit() for p in parts):return None
+        nums=[int(p) for p in parts];nums.extend([0]*(4-len(nums)));return tuple(nums)
     async def check(self):
         repo=getattr(self.settings,'github_repository','')
         if not repo:return {'available':False,'reason':'github_repository not configured'}
@@ -23,10 +30,11 @@ class UpdateManager:
         async with httpx.AsyncClient(timeout=20) as c:r=await c.get(url,headers=headers)
         if r.status_code==404:return {'available':False,'reason':'no published release'}
         if r.status_code in (401,403):return {'available':False,'reason':'GitHub release access denied','status_code':r.status_code}
-        r.raise_for_status();d=r.json()
-        return {'available':bool(d.get('tag_name')),'tag':d.get('tag_name'),'name':d.get('name'),'url':d.get('html_url'),'assets':[{'name':a['name'],'size':a['size'],'url':a['browser_download_url']} for a in d.get('assets',[])]}
+        r.raise_for_status();d=r.json();tag=d.get('tag_name','');current=self._version_tuple(__version__);latest=self._version_tuple(tag)
+        if not current or not latest:return {'available':False,'reason':'release version is not semantic','tag':tag}
+        return {'available':latest>current,'current_version':__version__,'tag':tag,'name':d.get('name'),'url':d.get('html_url'),'assets':[{'name':a['name'],'size':a['size'],'url':a['browser_download_url']} for a in d.get('assets',[]) if str(a.get('name','')).lower().endswith('.exe')]}
     async def download(self,asset_url:str,sha256:str=''):
-        if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path')
+        if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
         token=os.getenv('NOTSIP_GITHUB_TOKEN','');headers={'Accept':'application/octet-stream'}
         if token:headers['Authorization']='Bearer '+token
