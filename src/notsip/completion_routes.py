@@ -1,30 +1,41 @@
 from __future__ import annotations
 import base64,binascii
-from fastapi import Depends,File,Header,HTTPException,UploadFile
+from fastapi import Depends,File,Header,HTTPException,Request,UploadFile
 from .events import Event
 
 def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
+    async def require_user_or_device(request:Request):
+        try:
+            await require_auth(request);return {'kind':'user'}
+        except HTTPException as user_error:
+            device_id=request.headers.get('X-NOTSIP-Device-ID','').strip();token=request.headers.get('X-NOTSIP-Device-Token','').strip()
+            if device_id and token and store.device_token_valid(device_id,token):return {'kind':'device','device_id':device_id}
+            raise user_error
+
     @app.post('/api/voice/transcribe')
-    async def voice_transcribe(file:UploadFile=File(...),language:str='',_:None=Depends(require_auth)):
+    async def voice_transcribe(file:UploadFile=File(...),language:str='',_:dict=Depends(require_user_or_device)):
         if not settings.voice_enabled:raise HTTPException(503,'voice is disabled')
         if not settings.stt_base_url or not settings.stt_model:raise HTTPException(503,'STT is not configured')
         raw=await file.read()
         if len(raw)>30*1024*1024:raise HTTPException(413,'audio file too large')
         return await media.transcribe(raw,file.content_type or 'audio/webm',language or settings.stt_language)
+
     @app.post('/api/voice/speak')
-    async def voice_speak(payload:dict,_:None=Depends(require_auth)):
+    async def voice_speak(payload:dict,_:dict=Depends(require_user_or_device)):
         if not settings.voice_enabled:raise HTTPException(503,'voice is disabled')
         text=str(payload.get('text','')).strip()
         if not text:raise HTTPException(400,'text is required')
         if not settings.tts_base_url or not settings.tts_model:raise HTTPException(503,'TTS is not configured')
         return await media.speak(text,str(payload.get('voice') or settings.tts_voice))
+
     @app.post('/api/perception/frame')
-    async def perception_frame(payload:dict,_:None=Depends(require_auth)):
+    async def perception_frame(payload:dict,_:dict=Depends(require_user_or_device)):
         try:raw=base64.b64decode(str(payload.get('image_base64','')),validate=True)
         except (binascii.Error,ValueError):raise HTTPException(400,'invalid image_base64')
         if len(raw)>10*1024*1024:raise HTTPException(413,'image too large')
         if not settings.vision_enabled:raise HTTPException(503,'vision is disabled')
         result=await media.perceive(raw,str(payload.get('prompt') or 'Describe observable evidence only.'),str(payload.get('mime') or 'image/jpeg'));await store_fact_if_present(store,result,payload);return result
+
     @app.get('/api/self/inspect')
     async def self_inspect(_:None=Depends(require_auth)):return {'status':'SUCCESS','repository':str(maintenance.root),'files':maintenance.inventory()}
     @app.get('/api/self/read')
