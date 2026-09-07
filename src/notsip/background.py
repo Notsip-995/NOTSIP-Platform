@@ -3,13 +3,16 @@ import asyncio,time
 class BackgroundSupervisor:
     def __init__(self,store,nodes,recovery,intellect,events,memory=None,health_interval=15,checkpoint_interval=300,proactive_interval=60,memory_interval=900):
         self.store=store;self.nodes=nodes;self.recovery=recovery;self.intellect=intellect;self.events=events;self.memory=memory;self.health_interval=max(5,int(health_interval));self.checkpoint_interval=max(30,int(checkpoint_interval));self.proactive_interval=max(15,int(proactive_interval));self.memory_interval=max(60,int(memory_interval));self.running=True;self.next_checkpoint=0;self.next_proactive=0;self.next_memory=0
+    def recovery_devices(self):
+        try:return self.store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
+        except Exception:return self.store.devices()
     async def loop(self):
         while self.running:
             now=time.time()
             try:
                 node_state=self.nodes.reconcile()
                 if now>=self.next_checkpoint:
-                    self.recovery.checkpoint({'timestamp':now,'devices':self.store.devices(),'tasks':self.store.tasks(),'world':self.intellect.world.snapshot()});self.next_checkpoint=now+self.checkpoint_interval
+                    self.recovery.checkpoint({'timestamp':now,'devices':self.recovery_devices(),'tasks':self.store.tasks(),'world':self.intellect.world.snapshot()});self.next_checkpoint=now+self.checkpoint_interval
                 if now>=self.next_proactive:
                     candidates=self.intellect.trigger_candidates()
                     if candidates:await self.events.publish(__import__('notsip.events',fromlist=['Event']).Event('proactive.candidates',{'count':len(candidates),'candidates':candidates[:10]},'intelligence'))
