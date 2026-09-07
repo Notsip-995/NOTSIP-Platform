@@ -4,7 +4,7 @@ class BackgroundSupervisor:
     def __init__(self,store,nodes,recovery,intellect,events,memory=None,health_interval=15,checkpoint_interval=300,proactive_interval=60,memory_interval=900):
         self.store=store;self.nodes=nodes;self.recovery=recovery;self.intellect=intellect;self.events=events;self.memory=memory;self.health_interval=max(5,int(health_interval));self.checkpoint_interval=max(30,int(checkpoint_interval));self.proactive_interval=max(15,int(proactive_interval));self.memory_interval=max(60,int(memory_interval));self.running=True;self.next_checkpoint=0;self.next_proactive=0;self.next_memory=0
     def recovery_devices(self):
-        try:return self.store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
+        try:return self.store.rows('SELECT id,name,platform,public_key,last_seen,status,data FROM devices')
         except Exception:return self.store.devices()
     async def loop(self):
         while self.running:
