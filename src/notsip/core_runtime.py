@@ -26,4 +26,17 @@ attach_voice_bridge(app,events,agent)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 normalize_routes(app)
+
+@app.on_event('startup')
+async def start_configured_native_voice():
+    if getattr(settings, 'native_voice_enabled', False):
+        result=native_voice.start()
+        if result.get('status') not in {'STARTED','ALREADY_RUNNING','UNAVAILABLE'}:
+            raise RuntimeError(f'Unexpected native voice startup result: {result}')
+
+@app.on_event('shutdown')
+async def stop_configured_native_voice():
+    if getattr(native_voice, 'running', False):
+        native_voice.stop()
+
 __all__=['app']
