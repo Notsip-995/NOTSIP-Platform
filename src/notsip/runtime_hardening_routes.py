@@ -4,15 +4,26 @@ from fastapi import Depends, Header, HTTPException, Request
 from .events import Event
 
 def attach(app, *, require_auth, settings, store, events):
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/devices/result','/api/events'}]
+    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/devices/result','/api/devices/{device_id}/commands','/api/devices/heartbeat','/api/events'}]
+
+    def _device(request:Request):
+        device_id=request.headers.get('X-NOTSIP-Device-ID','').strip();token=request.headers.get('X-NOTSIP-Device-Token','').strip()
+        if not device_id or not token or not store.device_token_valid(device_id,token):raise HTTPException(401,'device authentication required')
+        return device_id
+
+    @app.post('/api/devices/heartbeat')
+    async def device_heartbeat(request:Request):
+        device_id=_device(request);store.heartbeat(device_id,'ONLINE');return {'status':'SUCCESS','device_id':device_id}
+
+    @app.get('/api/devices/{device_id}/commands')
+    async def device_commands(device_id:str,request:Request):
+        authenticated=_device(request)
+        if authenticated!=device_id:raise HTTPException(403,'device identity mismatch')
+        return {'commands':store.pull_commands(device_id)}
 
     @app.post('/api/devices/result')
     async def device_result(request: Request, payload: dict):
-        device_id=request.headers.get('X-NOTSIP-Device-ID','')
-        token=request.headers.get('X-NOTSIP-Device-Token','')
-        if not device_id or not token or not store.device_token_valid(device_id,token):
-            raise HTTPException(401,'device authentication required')
-        command_id=str(payload.get('command_id',''))
+        device_id=_device(request);command_id=str(payload.get('command_id',''))
         if not command_id or not store.row('SELECT id FROM commands WHERE id=? AND device_id=?',(command_id,device_id)):
             raise HTTPException(404,'command not found for authenticated device')
         ok=store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {},device_id)
