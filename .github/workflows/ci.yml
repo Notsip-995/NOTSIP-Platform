@@ -74,9 +74,12 @@ jobs:
             if(-not $ready){Write-Host '--- restart stdout ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.restart.stdout.log" -ErrorAction SilentlyContinue;Write-Host '--- restart stderr ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.restart.stderr.log" -ErrorAction SilentlyContinue;throw 'NOTSIP.exe did not restart'}
             $persisted=Invoke-WebRequest "$base/api/config/public" -UseBasicParsing -TimeoutSec 5
             if($persisted.Content -notmatch '"autonomy_level":1' -or $persisted.Content -notmatch '"vision_enabled":false' -or $persisted.Content -notmatch '"perception_enabled":false'){throw 'Configuration was not retained across restart'}
-            $p2=Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden -Wait
+            $p2=Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden
+            Start-Sleep -Seconds 2
+            if(-not $p2.HasExited){Stop-Process -Id $p2.Id -Force;throw 'Second NOTSIP.exe instance remained running'}
             if($p2.ExitCode -ne 0){throw "Second launch returned $($p2.ExitCode)"}
-            if($p.HasExited){throw 'First NOTSIP.exe instance exited unexpectedly'}
+            $live=Invoke-WebRequest "$base/api/health" -UseBasicParsing -TimeoutSec 5
+            if($live.StatusCode -ne 200){throw 'Existing NOTSIP service was not left healthy after duplicate launch'}
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
       - name: Build installer
         shell: pwsh
