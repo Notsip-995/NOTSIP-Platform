@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64, ctypes, hashlib, json, os, secrets, time
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 class SecretStore:
     def __init__(self,root:Path):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.path=self.root/'secrets.enc';self._key=self._load_or_create_key()
     def _dpapi(self,data,decrypt=False):
@@ -36,9 +37,28 @@ class SecretStore:
         d=self.load();d[name]=value;self.save(d);return True
     def delete(self,name):
         d=self.load()
-        if name in d:
-            d.pop(name,None);self.save(d)
+        if name in d:d.pop(name,None);self.save(d)
         return True
+
+class DurableState(dict):
+    def __init__(self,secrets_store,prefix='session:'):
+        super().__init__();self._store=secrets_store;self._prefix=prefix
+    def __setitem__(self,key,value):
+        super().__setitem__(key,value)
+        if str(key).startswith('oidc:'):self._store.set(self._prefix+str(key),value)
+    def get(self,key,default=None):
+        if key in self:return super().get(key,default)
+        if str(key).startswith('oidc:'):return self._store.get(self._prefix+str(key),default)
+        return default
+    def pop(self,key,default=None):
+        if key in self:out=super().pop(key)
+        else:
+            out=self._store.get(self._prefix+str(key),default) if str(key).startswith('oidc:') else default
+        if str(key).startswith('oidc:'):self._store.delete(self._prefix+str(key))
+        return out
+    def __contains__(self,key):
+        return dict.__contains__(self,key) or (str(key).startswith('oidc:') and self._store.get(self._prefix+str(key),None) is not None)
+
 class OIDCProvider:
     PRESETS={'google':'https://accounts.google.com','microsoft':'https://login.microsoftonline.com/common/v2.0'}
     PROFILE_SCOPES={'google':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly','microsoft':'openid profile email offline_access User.Read Calendars.Read Mail.Read','generic':'openid profile email'}
@@ -73,11 +93,13 @@ class OIDCProvider:
         if iss!=expected:raise ValueError('OIDC issuer validation failed')
         if nonce and claims.get('nonce')!=nonce:raise ValueError('OIDC nonce validation failed')
         return claims
+
 def pkce_pair():
     v=secrets.token_urlsafe(64);c=base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b'=').decode();return v,c
+
 class AuthManager:
     def __init__(self,settings,root:Path):
-        self.settings=settings;self.secrets=SecretStore(root);self.sessions={};self.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes)
+        self.settings=settings;self.secrets=SecretStore(root);self.sessions=DurableState(self.secrets);self.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes)
         if self.oidc.client_id:self.secrets.set('oidc:client_id',self.oidc.client_id)
     @property
     def mode(self):return self.settings.auth_mode
