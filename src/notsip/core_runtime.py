@@ -16,6 +16,7 @@ from .system_services import attach as attach_system_services
 from .state_hardening import install as install_state_hardening
 from .calendar_service import attach as attach_calendar_service
 from .information_fusion import attach as attach_information_fusion
+from .event_reconstruction import attach as attach_event_reconstruction
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -33,6 +34,7 @@ attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
 attach_calendar_service(app,_require,DATA,settings.local_timezone)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
+attach_event_reconstruction(app,_require,store)
 normalize_routes(app)
 
 @app.on_event('startup')
