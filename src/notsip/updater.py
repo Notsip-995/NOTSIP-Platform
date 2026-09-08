@@ -7,7 +7,7 @@ from . import __version__
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
-        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/healthz';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
+        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/health';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
     @property
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
@@ -17,8 +17,7 @@ class UpdateManager:
         return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.exe')
     @staticmethod
     def _version_tuple(value:str):
-        raw=str(value or '').strip().lower().lstrip('v')
-        parts=raw.split('.')
+        raw=str(value or '').strip().lower().lstrip('v');parts=raw.split('.')
         if len(parts)<2 or len(parts)>4 or any(not p.isdigit() for p in parts):return None
         nums=[int(p) for p in parts];nums.extend([0]*(4-len(nums)));return tuple(nums)
     async def check(self):
