@@ -1,19 +1,12 @@
 from __future__ import annotations
-import json
-import threading
-import time
+import json,threading,time
 from functools import wraps
 
 class ToolExecutionGate:
-    """Central guard used by Tool.fn so every invocation observes policy."""
-    _policy=None
-    _approvals=None
-    _lock=threading.RLock()
-
+    """Central guard used by Tool.fn so every invocation observes policy and approval state."""
+    _policy=None;_approvals=None;_lock=threading.RLock()
     @classmethod
-    def configure(cls,policy,approvals):
-        cls._policy=policy;cls._approvals=approvals
-
+    def configure(cls,policy,approvals):cls._policy=policy;cls._approvals=approvals
     @classmethod
     def _approved(cls,name,args):
         approvals=cls._approvals
@@ -30,7 +23,6 @@ class ToolExecutionGate:
                 if not candidates:return False
                 item=min(candidates,key=lambda x:float(x.get('decided',0)));item['status']='EXECUTING';item['execution_claimed']=now;approvals._save(data);return item['id']
             except Exception:return False
-
     @classmethod
     def wrap_registry(cls,registry):
         for tool in registry.all():
@@ -38,9 +30,7 @@ class ToolExecutionGate:
             original=tool.fn
             @wraps(original)
             def guarded(*args,__tool=tool,__original=original,**kwargs):
-                approved=bool(kwargs.pop('_notsip_approved',False))
-                grant=True if approved else cls._approved(__tool.name,args[0] if len(args)==1 and isinstance(args[0],dict) else kwargs)
-                policy=cls._policy
+                approved=bool(kwargs.pop('_notsip_approved',False));grant=True if approved else cls._approved(__tool.name,args[0] if len(args)==1 and isinstance(args[0],dict) else kwargs);policy=cls._policy
                 if policy is None:raise RuntimeError('NOTSIP tool policy gate is not configured')
                 d=policy.decide(__tool.risk,__tool.destructive,__tool.capability,approved=bool(grant))
                 if not d.allowed:
@@ -48,12 +38,14 @@ class ToolExecutionGate:
                     raise PermissionError(d.reason)
                 try:result=__original(*args,**kwargs)
                 except Exception as exc:
-                    if grant and grant is not True:cls._finish_approval(grant,False,str(exc))
+                    if grant and grant is not True:cls._finish_approval(grant,'FAILED',str(exc),None)
                     raise
-                if grant and grant is not True:cls._finish_approval(grant,True,'')
+                if grant and grant is not True:
+                    status=result.get('status') if isinstance(result,dict) else 'SUCCESS'
+                    outcome={'SUCCESS':'EXECUTED','FAILURE':'FAILED','UNKNOWN':'UNKNOWN','PARTIAL_SUCCESS':'PARTIAL_SUCCESS'}.get(str(status).upper(),'EXECUTED')
+                    cls._finish_approval(grant,outcome,'' if outcome=='EXECUTED' else str(result.get('error','')) if isinstance(result,dict) else '')
                 return result
             tool.fn=guarded;tool._notsip_original_fn=original;tool._notsip_guarded=True
-
     @classmethod
     def _release_approval(cls,approval_id,reason):
         approvals=cls._approvals
@@ -63,16 +55,15 @@ class ToolExecutionGate:
                 data=approvals._load();item=data.get(approval_id)
                 if item and item.get('status')=='EXECUTING':item['status']='APPROVED';item['execution_claimed']=None;item['execution_blocked']=reason;approvals._save(data)
             except Exception:return
-
     @classmethod
-    def _finish_approval(cls,approval_id,success,error=''):
+    def _finish_approval(cls,approval_id,status,error=''):
         approvals=cls._approvals
         if approvals is None:return
         with cls._lock:
             try:
                 data=approvals._load();item=data.get(approval_id)
                 if item and item.get('status')=='EXECUTING':
-                    item['status']='EXECUTED' if success else 'FAILED';item['executed']=time.time()
+                    item['status']=status;item['executed']=time.time()
                     if error:item['execution_error']=error
                     approvals._save(data)
             except Exception:return
