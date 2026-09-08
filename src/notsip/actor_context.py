@@ -1,6 +1,7 @@
 from __future__ import annotations
 from contextvars import ContextVar
 from fastapi import Request
+import secrets
 
 _current_actor: ContextVar[str]=ContextVar('notsip_actor',default='primary-user')
 
@@ -25,7 +26,8 @@ def attach_actor_middleware(app,auth):
                 session=auth.sessions.get(cookie,{}) or {};actor=_safe_actor(session.get('claims') or {})
             elif auth.mode!='oidc' and request.headers.get('authorization','').startswith('Bearer '):
                 bearer=request.headers.get('authorization','')[7:]
-                if getattr(auth.settings,'api_key','') and bearer==auth.settings.api_key:actor='primary-user'
+                configured=str(getattr(auth.settings,'api_key','') or '')
+                if configured and secrets.compare_digest(bearer,configured):actor='primary-user'
             request.state.notsip_actor=actor;token=set_actor(actor);return await call_next(request)
         finally:
             if token is not None:reset_actor(token)
