@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from notsip.security import SecretStore, pkce_pair
 from notsip.nodes import NodeRegistry, RecoveryManager
@@ -53,6 +55,25 @@ def test_intelligence_does_not_count_same_source_as_independent(tmp_path):
     assert f['sources']==['same-source','second-source']
     assert f['best_source_confidence']==.9
     assert f['corroboration_score']==.7
+
+def test_agent_clock_uses_configured_timezone(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'local_timezone','Africa/Kigali')
+    store=Store(tmp_path);agent=Agent(settings,store,Policy(2),Registry(),SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store))
+    result=__import__('asyncio').run(agent.handle('what time is it'))
+    assert result['status']=='SUCCESS'
+    assert 'Africa/Kigali' in result['response']
+    assert 'UTC' in result['response']
+    result=__import__('asyncio').run(agent.handle('what time is it in Tokyo'))
+    assert result['status']=='SUCCESS'
+    assert 'JST' in result['response']
+
+def test_agent_clock_context_exposes_utc_and_timezone(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'local_timezone','Africa/Kigali')
+    store=Store(tmp_path);agent=Agent(settings,store,Policy(2),Registry(),SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store))
+    ctx=agent.context('hello')
+    assert ctx['timezone']=='Africa/Kigali'
+    assert datetime.fromisoformat(ctx['utc_time']).tzinfo is not None
+
 
 def test_production_routes_are_assembled():
     paths={r.path for r in app.routes};expected={'/api/voice/transcribe','/api/voice/speak','/api/perception/frame','/api/federation/register','/api/federation/nodes','/api/recovery/checkpoint','/api/integrations/{provider_name}/calendar','/api/update/check','/api/sessions','/api/memory/maintain','/api/diagnostics','/api/backups/{name}/restore'};assert expected <= paths
