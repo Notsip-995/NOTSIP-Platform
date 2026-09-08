@@ -84,14 +84,17 @@ async def config_get(_:None=Depends(require_auth)):
     data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
     for k,v in requested.items():
         if k in allowed:setattr(settings,k,v)
         elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
     config_store.save({k:getattr(settings,k) for k in allowed})
-    global provider,web,emailc,policy,nodes,diagnostics,probes,auth_token
+    global provider,web,emailc,policy,diagnostics,probes,auth_token
     provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes=NodeRegistry(store,settings.node_shared_secret)
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level)
+    # Keep the original shared NodeRegistry instance so route closures across the
+    # application observe the new federation secret immediately.
+    nodes.secret=settings.node_shared_secret
     agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
     diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
     audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
