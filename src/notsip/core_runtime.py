@@ -72,6 +72,8 @@ attach_session_hardening(app,_require,agent,DATA)
 attach_task_hardening(app,_require,store,jobs)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
+@app.get('/healthz',include_in_schema=False)
+async def healthz():return {'status':'ok','identity':'NOTSIP','version':__import__('notsip').__version__}
 normalize_routes(app)
 
 @app.on_event('startup')
