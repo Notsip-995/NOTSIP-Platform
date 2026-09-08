@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
 CONFIG_LOAD_ERROR='';SECRET_LOAD_ERROR=''
-DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2}
+DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'WRITE_CALENDAR':2,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'DELETE_FILES':4,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2}
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
