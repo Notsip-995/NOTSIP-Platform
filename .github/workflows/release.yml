@@ -38,6 +38,10 @@ jobs:
           if (-not $signtool) { throw 'signtool.exe was not found on the Windows runner.' }
           & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_PFX_PASSWORD /tr https://timestamp.digicert.com /td SHA256 dist\NOTSIP.exe Output\NOTSIP-Setup.exe
           if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed with exit code $LASTEXITCODE" }
+          foreach ($target in @('dist\NOTSIP.exe','Output\NOTSIP-Setup.exe')) {
+            $sig = Get-AuthenticodeSignature $target
+            if ($sig.Status -ne 'Valid') { throw "Authenticode verification failed for $target: $($sig.Status)" }
+          }
       - name: Generate Windows SHA-256 manifests
         shell: pwsh
         run: |
@@ -69,7 +73,18 @@ jobs:
         with: {distribution: temurin, java-version: '17'}
       - uses: gradle/actions/setup-gradle@v4
         with: {gradle-version: '8.13'}
-      - name: Build signed release when signing secrets exist, otherwise debug
+      - name: Require signing material for tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for value in "$ANDROID_KEYSTORE_BASE64" "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD"; do
+            if [ -z "$value" ]; then echo 'Tagged Android releases require complete keystore/signing secrets.'; exit 1; fi
+          done
+      - name: Build Android artifacts
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -81,36 +96,28 @@ jobs:
           else
             gradle -p android assembleDebug --no-daemon
           fi
+      - name: Require release artifacts for tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          test -s android/app/build/outputs/apk/release/app-release.apk
+          test -s android/app/build/outputs/bundle/release/app-release.aab
       - name: Publish signed Android assets
-        if: startsWith(github.ref, 'refs/tags/v') && env.ANDROID_KEYSTORE_BASE64 != ''
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/bundle/release/app-release.aab
-      - name: Publish debug Android asset
-        if: startsWith(github.ref, 'refs/tags/v') && env.ANDROID_KEYSTORE_BASE64 == ''
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: android/app/build/outputs/apk/debug/app-debug.apk
-      - name: Upload signed Android artifacts
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: Upload Android release artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: NOTSIP-Android-release
           path: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/bundle/release/app-release.aab
-      - name: Upload debug Android artifact
-        if: env.ANDROID_KEYSTORE_BASE64 == ''
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: Upload development debug artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: NOTSIP-Android-debug
