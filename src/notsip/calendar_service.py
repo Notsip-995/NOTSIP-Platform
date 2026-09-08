@@ -57,7 +57,7 @@ def attach(app,require_auth,root,timezone,agent=None,registry=None):
         registry.add(Tool('calendar_update','Modify an authorized calendar event and report conflicts.','WRITE_CALENDAR',Risk.MEDIUM,{'type':'object','properties':{'event_id':{'type':'string'},'title':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'description':{'type':'string'},'location':{'type':'string'},'reminder_minutes':{'type':'integer'}},'required':['event_id']},update_tool))
         registry.add(Tool('calendar_delete','Delete an authorized calendar event; confirmation is required.','WRITE_CALENDAR',Risk.HIGH,{'type':'object','properties':{'event_id':{'type':'string'}},'required':['event_id']},delete_tool,True));ToolExecutionGate.wrap_registry(registry)
     @app.get('/api/calendar/events')
-    async def calendar_list(start:str='',end:str',_:None=Depends(require_auth)):return {'events':store.list(start or None,end or None)}
+    async def calendar_list(start:str='',end:str='',_:None=Depends(require_auth)):return {'events':store.list(start or None,end or None)}
     def require_agent():
         if agent is None:raise HTTPException(503,'calendar mutation service is not configured')
     @app.post('/api/calendar/events')
