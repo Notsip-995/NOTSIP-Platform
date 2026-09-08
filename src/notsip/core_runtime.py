@@ -36,6 +36,7 @@ from .windows_hardening import attach as attach_windows_hardening
 from .distributed_failover import attach as attach_distributed_failover
 from .oidc_hardening import attach as attach_oidc_hardening
 from .audit_hardening import attach as attach_audit_hardening
+from .audit_scope_hardening import attach as attach_audit_scope_hardening
 from .notification_hardening import attach as attach_notification_hardening
 from .notifications import NotificationStore
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
@@ -83,6 +84,7 @@ attach_windows_hardening(registry,__import__('notsip.app',fromlist=['win']).win)
 attach_distributed_failover(events,store)
 attach_oidc_hardening(app,auth,accounts,settings)
 attach_audit_hardening(app,_require,audit_log)
+attach_audit_scope_hardening(app,_require,store,audit_log)
 notifications=NotificationStore(DATA,store)
 attach_notification_hardening(app,events,notifications,_require)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
