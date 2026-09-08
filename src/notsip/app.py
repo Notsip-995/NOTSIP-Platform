@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid, inspect, copy
+import json, os, socket, time, uuid, inspect, copy, secrets
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -22,10 +22,41 @@ from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
+
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
-if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize security-sensitive configuration changes; no changes are applied until the caller completes the approval flow.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'keys':{'type':'array'},'settings':{'type':'object'}},'required':['keys','settings']},lambda keys,settings:{'status':'SUCCESS','authorized_keys':list(keys)}))
+
+CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
+CONFIG_HIGH_RISK={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint',*CONFIG_SECRET_NAMES}
+
+def _rebuild_runtime_after_config():
+    global provider,web,emailc,policy,diagnostics,probes,auth_token
+    provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
+    auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
+
+def _apply_config(requested):
+    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url'}};snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url'}};secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
+    try:
+        for k,v in requested.items():
+            if k in allowed:setattr(settings,k,v)
+            elif k in CONFIG_SECRET_NAMES:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
+        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+    except Exception as exc:
+        for k,v in snapshot.items():setattr(settings,k,v)
+        for k,v in secret_snapshot.items():
+            if v is None:auth.secrets.delete('NOTSIP_'+k.upper())
+            else:auth.secrets.set('NOTSIP_'+k.upper(),v)
+        _rebuild_runtime_after_config();raise RuntimeError(f'configuration rejected: {exc}') from exc
+
+def _config_admin(pending_id,keys):
+    pending=auth.secrets.get('config:pending:'+str(pending_id))
+    if not isinstance(pending,dict):raise RuntimeError('pending configuration change not found or expired')
+    try:return _apply_config(pending)
+    finally:auth.secrets.delete('config:pending:'+str(pending_id))
+
+if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize and apply security-sensitive configuration changes from an encrypted pending record.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'pending_id':{'type':'string'},'keys':{'type':'array'}},'required':['pending_id','keys']},_config_admin,True))
 if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
 if registry.get('native_voice_start') is None:registry.add(Tool('native_voice_start','Start the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.start()))
 if registry.get('native_voice_stop') is None:registry.add(Tool('native_voice_stop','Stop the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.stop()))
@@ -75,7 +106,7 @@ async def production_security(request:Request,call_next):
 @app.post('/api/login')
 async def api_login(payload:dict):
     if not settings.api_key:raise HTTPException(503,'API key authentication is disabled; local access is open')
-    if not __import__('secrets').compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
+    if not secrets.compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
     token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=not str(settings.host) in {'127.0.0.1','::1','localhost'},max_age=settings.session_ttl);return r
 @app.post('/api/logout')
 async def api_logout(request:Request):
@@ -91,27 +122,19 @@ async def config_get(_:None=Depends(require_auth)):
     data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret','token'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','flight_planning_token'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token'}
-    high_risk={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','node_shared_secret'}
-    denied=sorted(set(requested)&high_risk)
-    if denied:
-        result=await agent.run_tool('config_admin',{'keys':denied,'settings':{k:requested[k] for k in denied}})
-        if result.get('status')!='SUCCESS':return result
-    snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','node_shared_secret','database_url'}}
-    try:
-        for k,v in requested.items():
-            if k in denied:continue
-            if k in allowed:setattr(settings,k,v)
-            elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
-        settings.ensure()
-    except Exception as exc:
-        for k,v in snapshot.items():setattr(settings,k,v)
-        raise HTTPException(400,f'configuration rejected: {exc}')
-    config_store.save({k:getattr(settings,k) for k in allowed})
-    global provider,web,emailc,policy,diagnostics,probes,auth_token
-    provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
-    auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc);audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+    requested=dict(payload.get('settings') or {})
+    if not requested:raise HTTPException(400,'settings are required')
+    unknown=set(requested)-set(settings.__class__.model_fields)
+    if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
+    sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
+    if sensitive:
+        pending_id=uuid.uuid4().hex
+        auth.secrets.set('config:pending:'+pending_id,requested)
+        result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
+        if result.get('status')=='FAILURE':auth.secrets.delete('config:pending:'+pending_id)
+        return result
+    try:return _apply_config(requested)
+    except RuntimeError as exc:raise HTTPException(400,str(exc))
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
@@ -182,3 +205,4 @@ async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth
 async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
 @app.post('/api/federation/{node_id}/revoke')
 async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
+__all__=['app']
