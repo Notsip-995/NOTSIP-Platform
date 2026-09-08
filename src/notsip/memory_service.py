@@ -18,14 +18,12 @@ class MemoryService:
     def consolidate(self,limit=200):
         rows=self.store.rows('SELECT id,kind,content,weight,source,provenance,ts FROM memories WHERE user_id=? ORDER BY weight DESC,ts DESC LIMIT ?',(self.user_id,limit));seen=set();kept=[];duplicates=[]
         for r in rows:
-            key=' '.join(str(r['content']).lower().split())
+            key=(r['kind'],' '.join(str(r['content']).lower().split()))
             if key in seen:
-                duplicates.append(r['id'])
-                continue
+                duplicates.append(r['id']);continue
             seen.add(key);kept.append(r)
         for memory_id in duplicates:self.store.exec('DELETE FROM memories WHERE id=? AND user_id=?',(memory_id,self.user_id))
         if duplicates:
-            # Rebuild SQLite FTS rows when available. PostgreSQL has no FTS shadow table.
             try:self.store.exec('DELETE FROM memory_fts WHERE rowid NOT IN (SELECT id FROM memories)',())
             except Exception:pass
         return {'status':'SUCCESS','examined':len(rows),'unique':len(kept),'duplicates_removed':len(duplicates)}
