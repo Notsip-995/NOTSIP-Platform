@@ -1,34 +1,34 @@
 from __future__ import annotations
-import asyncio, base64, hashlib, hmac, json, secrets, time
+import asyncio,base64,hashlib,hmac,json,secrets,time
 from pathlib import Path
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel, Field
+from fastapi import Depends,FastAPI,File,Header,HTTPException,Request,UploadFile,WebSocket,WebSocketDisconnect
+from fastapi.responses import FileResponse,JSONResponse,RedirectResponse,Response
+from pydantic import BaseModel,Field
 from .config import settings
 from .store import Store
-from .policy import Policy, Risk
+from .policy import Policy,Risk
 from .provider import Provider
-from .tools import Registry, Tool, Workspace, Windows, calc, open_target
-from .connectors import Web, Email, Calendar, Browser
+from .tools import Registry,Tool,Workspace,Windows,calc,open_target
+from .connectors import Web,Email,Calendar,Browser
 from .world import WorldModel
 from .jobs import Scheduler
 from .android_bridge import Pairing
 from .agent import Agent
-from .events import Event, EventBus
+from .events import Event,EventBus
 from .self_maintenance import SelfMaintenance
 from .windows_automation import WindowsAutomation
 from .media import MediaEngine
-from .nodes import NodeRegistry, RecoveryManager
+from .nodes import NodeRegistry,RecoveryManager
 from .intelligence import Intelligence
-from .security import AuthManager, pkce_pair
+from .security import AuthManager,pkce_pair
 from .oauth_services import OAuthService
 
-settings.ensure(); DATA=Path(settings.data_dir).resolve(); ROOT=Path(__file__).resolve().parents[2]; WS=Workspace(DATA/'workspace')
-store=Store(DATA, settings.database_url); policy=Policy(settings.autonomy_level); registry=Registry(); events=EventBus(); provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-world=WorldModel(store); jobs=Scheduler(store); win=Windows(WS); uia=WindowsAutomation(); web=Web(settings.brave_api_key); browser=Browser(); emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password); calendarc=Calendar(); pairing=Pairing(store)
-agent=Agent(settings,store,policy,registry,provider,world); maint=SelfMaintenance(ROOT); media=MediaEngine(settings,provider,DATA); nodes=NodeRegistry(store,settings.node_shared_secret); recovery=RecoveryManager(DATA); intellect=Intelligence(store,world); auth=AuthManager(settings,DATA); oauth=OAuthService(auth.secrets)
+settings.ensure();DATA=Path(settings.data_dir).resolve();ROOT=Path(__file__).resolve().parents[2];WS=Workspace(DATA/'workspace')
+store=Store(DATA,settings.database_url);policy=Policy(settings.autonomy_level);registry=Registry();events=EventBus();provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
+world=WorldModel(store);jobs=Scheduler(store);win=Windows(WS);uia=WindowsAutomation();web=Web(settings.brave_api_key);browser=Browser();emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);calendarc=Calendar();pairing=Pairing(store)
+agent=Agent(settings,store,policy,registry,provider,world);maint=SelfMaintenance(ROOT);media=MediaEngine(settings,provider,DATA);nodes=NodeRegistry(store,settings.node_shared_secret);recovery=RecoveryManager(DATA);intellect=Intelligence(store,world);auth=AuthManager(settings,DATA);oauth=OAuthService(auth.secrets)
 
-def reg(name,desc,cap,risk,schema,fn,destructive=False): registry.add(Tool(name,desc,cap,risk,schema,fn,destructive))
+def reg(name,desc,cap,risk,schema,fn,destructive=False):registry.add(Tool(name,desc,cap,risk,schema,fn,destructive))
 reg('calculator','Safe arithmetic.','COMPUTE',Risk.LOW,{'type':'object','properties':{'expr':{'type':'string'}},'required':['expr']},calc)
 reg('list_files','List authorized workspace files.','READ_FILES',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'}}},lambda query='':{'status':'SUCCESS','files':WS.list(query)})
 reg('read_file','Read authorized workspace text.','READ_FILES',Risk.LOW,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:{'status':'SUCCESS','content':WS.read(path)})
@@ -36,9 +36,9 @@ reg('write_file','Write authorized workspace text.','WRITE_FILES',Risk.MEDIUM,{'
 reg('windows_exec','Execute PowerShell on Windows.','CONTROL_COMPUTER',Risk.HIGH,{'type':'object','properties':{'command':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':180}},'required':['command']},win.exec,True)
 reg('desktop_screenshot','Capture the primary Windows desktop.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'filename':{'type':'string'}}},win.screenshot)
 reg('open_target','Open a Windows URL, file, or application.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'target':{'type':'string'}},'required':['target']},open_target)
-reg('windows_list','List visible Windows UIA windows.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title_re':{'type':'string'}}},uia.windows)
+reg('windows_list','List visible Windows UIA windows.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title_re':{'type':'string'}},},uia.windows)
 reg('windows_focus','Focus a Windows UIA window.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'title':{'type':'string'},'title_re':{'type':'string'}},'required':['title']},uia.focus)
-reg('windows_click','Click a Windows UIA control.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'control_type':{'type':'string'},'title':{'type':'string'},'title_re':{'type':'string'},'window_title':{'type':'string'},'window_re':{'type':'string'}},},uia.click)
+reg('windows_click','Click a Windows UIA control.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'control_type':{'type':'string'},'title':{'type':'string'},'title_re':{'type':'string'},'window_title':{'type':'string'},'window_re':{'type':'string'}}},uia.click)
 reg('windows_type','Type into a Windows UIA control.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'text':{'type':'string'},'control_type':{'type':'string'},'title':{'type':'string'},'title_re':{'type':'string'},'window_title':{'type':'string'},'window_re':{'type':'string'},'clear':{'type':'boolean'}},'required':['text']},uia.type_text)
 reg('windows_hotkey','Send a Windows hotkey sequence.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'keys':{'type':'array','items':{'type':'string'}}},'required':['keys']},lambda keys:uia.hotkey(*keys))
 async def web_search(query,count=5):
@@ -49,7 +49,7 @@ async def web_search(query,count=5):
 reg('web_search','Search live public web.','INTERNET_SEARCH',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'count':{'type':'integer'}},'required':['query']},web_search)
 reg('browser_extract','Extract visible text from a public web page.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'url':{'type':'string'}},'required':['url']},browser.extract)
 reg('email_send','Send email through configured SMTP.','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'to':{'type':'string'},'subject':{'type':'string'},'body':{'type':'string'}},'required':['to','subject','body']},emailc.send,True)
-reg('email_search','Search configured mailbox.','READ_EMAIL',Risk.LOW,{'type':'object','properties':{'mailbox':{'type':'string'},'criteria':{'type':'string'},'limit':{'type':'integer'}},},emailc.search)
+reg('email_search','Search configured mailbox.','READ_EMAIL',Risk.LOW,{'type':'object','properties':{'mailbox':{'type':'string'},'criteria':{'type':'string'},'limit':{'type':'integer'}}},emailc.search)
 reg('calendar_parse','Parse local ICS.','READ_CALENDAR',Risk.LOW,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:{'status':'SUCCESS','events':calendarc.parse(WS.path(path))})
 reg('voice_transcribe','Transcribe an audio file via STT.','MEDIA',Risk.LOW,{'type':'object','properties':{'path':{'type':'string'},'language':{'type':'string'}},'required':['path']},lambda path,language='':media.transcribe(WS.path(path).read_bytes(),'audio/webm',language or settings.stt_language))
 reg('voice_speak','Generate speech with TTS.','MEDIA',Risk.LOW,{'type':'object','properties':{'text':{'type':'string'},'voice':{'type':'string'}},'required':['text']},media.speak)
@@ -76,9 +76,8 @@ reg('android_command','Queue an authorized command on a paired Android device; c
 auth_token=settings.api_key
 async def require_auth(request:Request):
     if auth.mode=='oidc':
-        cookie=request.cookies.get('notsip_session'); bearer=request.headers.get('authorization','')
+        cookie=request.cookies.get('notsip_session')
         if cookie and auth.validate_session(cookie):return
-        if bearer.startswith('Bearer ') and settings.api_key and bearer[7:]==settings.api_key:return
         raise HTTPException(401,'OIDC authentication required')
     if auth_token and request.headers.get('authorization')!='Bearer '+auth_token:raise HTTPException(401,'Unauthorized')
 
@@ -147,34 +146,3 @@ async def run_task(task_id:str,_:None=Depends(require_auth)):
     store.task_update(task_id,state='PENDING',run_at=0);return {'status':'QUEUED','task_id':task_id}
 @app.get('/api/pair/code')
 async def pair_code(_:None=Depends(require_auth)):return {'code':pairing.create_code()}
-@app.post('/api/pair/consume')
-async def pair_consume(body:PairIn):
-    token=pairing.consume(body.code,body.device_id,body.name,body.platform,body.public_key)
-    if not token:raise HTTPException(400,'Invalid or expired pairing code')
-    return {'paired':True,'device_id':body.device_id,'token':token}
-@app.get('/api/devices')
-async def devices(_:None=Depends(require_auth)):return {'devices':store.devices()}
-@app.get('/api/devices/{device_id}/commands')
-async def commands(device_id:str,token:str):
-    if not store.device_token_valid(device_id,token):raise HTTPException(401,'Invalid device token')
-    return {'commands':store.pull_commands(device_id)}
-@app.post('/api/devices/{device_id}/commands')
-async def queue_command(device_id:str,body:QueueCommand,_:None=Depends(require_auth)):
-    if not store.row('SELECT id FROM devices WHERE id=?',(device_id,)):raise HTTPException(404,'Device not paired')
-    return {'command_id':store.queue_command(device_id,body.action,body.payload),'status':'QUEUED'}
-@app.get('/api/devices/{device_id}')
-async def device_info(device_id:str,_:None=Depends(require_auth)):
-    x=store.row('SELECT id,name,platform,last_seen,status,data FROM devices WHERE id=?',(device_id,))
-    if not x:raise HTTPException(404,'Device not found')
-    return x
-@app.post('/api/devices/heartbeat')
-async def device_heartbeat(device_id:str,token:str,capabilities:str='',_ :None=Depends(lambda:None)):
-    if not store.device_token_valid(device_id,token):raise HTTPException(401,'Invalid device token')
-    store.heartbeat(device_id);return {'status':'ONLINE'}
-@app.post('/api/devices/result')
-async def device_result(body:ResultIn):store.command_result(body.command_id,body.status,body.result);return {'status':'RECORDED'}
-@app.post('/api/events')
-async def event_ingest(payload:dict, x_notsip_signature:str=Header(default=''), _ :None=Depends(require_auth)):
-    raw=json.dumps(payload,separators=(',',':'),sort_keys=True).encode();expected=hmac.new(settings.event_hmac_secret.encode(),raw,hashlib.sha256).hexdigest() if settings.event_hmac_secret else ''
-    if settings.event_hmac_secret and not hmac.compare_digest(expected,x_notsip_signature):raise HTTPException(401,'invalid event signature')
-    e=Event(payload.get('type','external'),payload);events.publish(e);return {'status':'ACCEPTED','event_id':str(uuid.uuid4())}
