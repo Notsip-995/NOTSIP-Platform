@@ -8,12 +8,12 @@ SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fal
 CONFIG_LOAD_ERROR=''
 SECRET_LOAD_ERROR=''
 DEFAULT_CAPABILITY_LEVELS={
-    'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,
-    'READ_CALENDAR':1,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,
-    'WRITE_FILES':2,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,
-    'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,
-    'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CONTROL_ROBOTICS':4,
-    'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2,
+    'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,
+    'READ_CALENDAR':1,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,
+    'WRITE_FILES':2,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,
+    'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,
+    'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,
+    'ACCESS_MICROPHONE':2,
 }
 
 def _default_data_dir():
@@ -48,8 +48,7 @@ try:
         data=json.loads(cfg.read_text(encoding='utf-8')).get('settings',{})
         for k,v in data.items():
             if k in Settings.model_fields and k not in SECRET_FIELDS and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
-except Exception as exc:
-    CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
+except Exception as exc:CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
 settings.ensure()
 try:
     from .security import SecretStore
