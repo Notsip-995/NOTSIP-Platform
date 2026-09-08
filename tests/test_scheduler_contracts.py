@@ -68,3 +68,21 @@ def test_task_idempotency_is_scoped_by_actor(tmp_path):
     assert by_id[other]['actor']=='actor-b'
     assert by_id[first]['idempotency_key']=='same-key'
     assert by_id[other]['idempotency_key']=='same-key'
+
+
+def test_legacy_task_idempotency_is_only_reused_by_same_actor(tmp_path):
+    from notsip.jobs import Scheduler
+    from notsip.store import Store
+
+    store=Store(tmp_path)
+    legacy_id=store.task('legacy','agent',0,{'actor':'actor-a','requester':'actor-a','idempotency_key':'legacy-key'},time.time(),'','legacy-key')
+    scheduler=Scheduler(store)
+    same_actor=scheduler.create('legacy','agent',actor='actor-a',idempotency_key='legacy-key')
+    other_actor=scheduler.create('legacy','agent',actor='actor-b',idempotency_key='legacy-key')
+
+    assert same_actor==legacy_id
+    assert other_actor!=legacy_id
+    rows=store.tasks()
+    actors=[(row['id'],json.loads(row['data']).get('actor')) for row in rows]
+    assert (legacy_id,'actor-a') in actors
+    assert (other_actor,'actor-b') in actors
