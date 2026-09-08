@@ -11,6 +11,7 @@ from .approval_hardening import attach as attach_approval_hardening
 from .voice_bridge import attach as attach_voice_bridge
 from .config_hardening import attach as attach_config_hardening
 from .maintenance_hardening import attach as attach_maintenance_hardening
+from .communication_hardening import attach as attach_communication_hardening
 from .route_integrity import normalize as normalize_routes
 from .system_services import attach as attach_system_services, _telemetry
 from .state_hardening import install as install_state_hardening
@@ -112,6 +113,7 @@ attach_database_router(app,_require,agent,registry)
 _threat=ThreatAssessor()
 if registry.get('assess_threat') is None:registry.add(Tool('assess_threat','Assess supplied security indicators without performing containment.','SECURITY_MONITORING',Risk.LOW,{'type':'object','properties':{'indicators':{'type':'array','items':{'type':'object'}}}},_threat.assess))
 ToolExecutionGate.wrap_registry(registry)
+attach_communication_hardening(registry)
 @app.post('/api/security/threat-assessment')
 async def threat_assessment(payload:dict,_:None=Depends(_require)):
     indicators=payload.get('indicators') or []
