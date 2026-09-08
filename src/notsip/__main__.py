@@ -3,7 +3,7 @@ import json, os, socket, sys, webbrowser
 from pathlib import Path
 import uvicorn
 from notsip.config import settings
-from notsip.product_layer import ProcessGuard
+from notsip.launcher_guard import LauncherProcessGuard
 
 
 def _is_notsip_listener(host:str,port:int)->bool:
@@ -45,21 +45,23 @@ def _open_browser(url:str):
     except Exception:pass
 
 
-def _lock_info(guard:ProcessGuard):
+def _lock_info(guard:LauncherProcessGuard):
     try:return json.loads(guard.path.read_text(encoding='utf-8'))
     except Exception:return {}
 
 
-def _set_lock_endpoint(guard:ProcessGuard,host:str,port:int):
+def _set_lock_endpoint(guard:LauncherProcessGuard,host:str,port:int):
     try:
         info=_lock_info(guard);info.update({'host':host,'port':port});guard.path.write_text(json.dumps(info),encoding='utf-8')
     except Exception:pass
 
 
 def main()->None:
-    guard=ProcessGuard(root=Path(settings.data_dir))
+    guard=LauncherProcessGuard(root=Path(settings.data_dir))
     if not guard.acquire():
-        info=_lock_info(guard);host=str(info.get('host') or settings.host);port=int(info.get('port') or settings.port)
+        info=_lock_info(guard)
+        if not info:raise RuntimeError('NOTSIP instance lock exists but is unreadable; refusing to start a duplicate instance')
+        host=str(info.get('host') or settings.host);port=int(info.get('port') or settings.port)
         url=f'http://{host}:{port}/'
         print(f'NOTSIP is already running; opening {url}')
         _open_browser(url)
@@ -92,7 +94,6 @@ def main()->None:
         print(f'NOTSIP listening at {url}')
         if settings.open_browser:_open_browser(url)
         uvicorn.run(app,host=host,port=port,log_level=settings.log_level.lower())
-    finally:
-        guard.release()
+    finally:guard.release()
 
 if __name__=='__main__':main()
