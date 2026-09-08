@@ -48,3 +48,23 @@ def test_scheduler_persists_unverified_outcome():
     data=json.loads(payload)
     assert data['verification']['verified'] is False
     assert data['verification']['status']=='UNVERIFIED'
+
+
+def test_task_idempotency_is_scoped_by_actor(tmp_path):
+    from notsip.jobs import Scheduler
+    from notsip.store import Store
+
+    store=Store(tmp_path)
+    scheduler=Scheduler(store)
+    first=scheduler.create('same request','agent',actor='actor-a',idempotency_key='same-key')
+    repeat=scheduler.create('same request','agent',actor='actor-a',idempotency_key='same-key')
+    other=scheduler.create('same request','agent',actor='actor-b',idempotency_key='same-key')
+
+    assert first==repeat
+    assert other!=first
+    rows=store.tasks()
+    by_id={row['id']:json.loads(row['data']) for row in rows}
+    assert by_id[first]['actor']=='actor-a'
+    assert by_id[other]['actor']=='actor-b'
+    assert by_id[first]['idempotency_key']=='same-key'
+    assert by_id[other]['idempotency_key']=='same-key'
