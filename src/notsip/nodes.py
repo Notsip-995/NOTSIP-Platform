@@ -53,27 +53,34 @@ class NodeRegistry:
 class RecoveryManager:
     def __init__(self,root:Path):self.root=Path(root);self.dir=self.root/'recovery';self.dir.mkdir(parents=True,exist_ok=True)
     def checkpoint(self,state):
-        name=f'checkpoint-{int(time.time())}-{uuid.uuid4().hex[:8]}.json';p=self.dir/name;payload=json.dumps(state,indent=2,sort_keys=True);digest=hashlib.sha256(payload.encode()).hexdigest();tmp=p.with_suffix('.tmp');tmp.write_text(payload,encoding='utf-8');tmp.replace(p);p.with_suffix('.sha256').write_text(digest+'  '+name+'\n',encoding='utf-8');return str(p.relative_to(self.root))
-    def _files(self):return sorted(self.dir.glob('checkpoint-*.json'))
+        name=f'checkpoint-{int(time.time())}-{uuid.uuid4().hex[:8]}.json';p=self.dir/name;payload=json.dumps(state,indent=2,sort_keys=True);digest=hashlib.sha256(payload.encode()).hexdigest();tmp=p.with_suffix('.tmp');tmp.write_text(payload,encoding='utf-8');tmp.replace(p);side=p.with_suffix('.sha256');tmp_side=side.with_suffix('.tmp');tmp_side.write_text(digest+'  '+name+'\n',encoding='utf-8');tmp_side.replace(side);return str(p.relative_to(self.root))
+    def _files(self):return sorted(self.dir.glob('checkpoint-*.json'),key=lambda p:p.stat().st_mtime,reverse=True)
     def latest_path(self):
-        files=self._files();return files[-1] if files else None
+        files=self._files();return files[0] if files else None
     def _load_verified(self,p):
         raw=p.read_text(encoding='utf-8');side=p.with_suffix('.sha256')
         if not side.exists():raise RuntimeError('recovery checkpoint integrity manifest is missing')
         expected=side.read_text(encoding='utf-8').split()[0].strip().lower();actual=hashlib.sha256(raw.encode()).hexdigest().lower()
         if expected!=actual:raise RuntimeError('recovery checkpoint integrity verification failed')
         return json.loads(raw)
+    def latest_verified(self):
+        invalid=[]
+        for p in self._files():
+            try:return p,self._load_verified(p),invalid
+            except Exception as exc:invalid.append({'path':str(p.relative_to(self.root)),'reason':str(exc)})
+        if invalid:raise RuntimeError('no verified recovery checkpoint is available')
+        return None,None,[]
     def latest(self):
-        p=self.latest_path();return self._load_verified(p) if p else None
-    def verify_latest(self):
         p=self.latest_path()
-        if not p:return {'valid':False,'reason':'no recovery checkpoint available'}
-        try:x=self._load_verified(p)
-        except Exception as exc:return {'valid':False,'reason':str(exc),'path':str(p.relative_to(self.root))}
-        return {'valid':True,'path':str(p.relative_to(self.root)),'has_tasks':'tasks' in x,'has_devices':'devices' in x,'has_commands':'commands' in x,'has_world':'world' in x}
+        return self._load_verified(p) if p else None
+    def verify_latest(self):
+        files=self._files()
+        if not files:return {'valid':False,'reason':'no recovery checkpoint available'}
+        p,verified,invalid=self.latest_verified()
+        if p is None:return {'valid':False,'reason':'no verified recovery checkpoint is available','invalid_candidates':invalid}
+        return {'valid':True,'path':str(p.relative_to(self.root)),'has_tasks':'tasks' in verified,'has_devices':'devices' in verified,'has_commands':'commands' in verified,'has_world':'world' in verified,'invalid_newer_candidates':invalid}
     def restore_state(self):
-        x=self.latest();
-        if not x:raise RuntimeError('no recovery checkpoint available')
-        verification=self.verify_latest()
-        if not verification.get('valid'):raise RuntimeError(verification.get('reason','recovery checkpoint failed verification'))
-        return {'status':'RECOVERABLE','state':x,'verification':verification}
+        p,state,invalid=self.latest_verified()
+        if not p:raise RuntimeError('no recovery checkpoint available')
+        verification={'valid':True,'path':str(p.relative_to(self.root)),'invalid_newer_candidates':invalid,'has_tasks':'tasks' in state,'has_devices':'devices' in state,'has_commands':'commands' in state,'has_world':'world' in state}
+        return {'status':'RECOVERABLE','state':state,'verification':verification}
