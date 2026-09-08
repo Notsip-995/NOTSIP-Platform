@@ -158,7 +158,6 @@ class Store:
             return rows
     def command_result(self,cid,status,result,device_id=None):
         if self._backend:return self._backend.command_result(cid,status,result,device_id)
+        if not device_id:return False
         with self.lock,self.conn() as c:
-            if device_id is None:cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=?',(status,json.dumps(result),time.time(),cid))
-            else:cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=?',(status,json.dumps(result),time.time(),cid,device_id))
-            return cur.rowcount==1
+            cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=?',(status,json.dumps(result),time.time(),cid,device_id));return cur.rowcount==1
