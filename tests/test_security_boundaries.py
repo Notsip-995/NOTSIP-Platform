@@ -12,7 +12,6 @@ from notsip.world import WorldModel
 from notsip.config import settings
 import asyncio
 
-
 def test_public_host_rejects_private_and_loopback_literals():
     for host in ('127.0.0.1','localhost','10.0.0.1','192.168.1.1','169.254.169.254','::1'): assert _public_host(host) is False
 
@@ -32,7 +31,10 @@ def test_approved_tool_can_elevate_noncritical_capability(tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':3});registry=Registry();store=Store(tmp_path);calls=[];registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},lambda value:calls.append(value) or {'status':'SUCCESS'}));agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store));pending=asyncio.run(agent.run_tool('dangerous',{'value':'approved-value'}));assert pending['status']=='PARTIAL_SUCCESS';agent.approvals.decide(pending['approval_id'],True);result=registry.get('dangerous').fn(value='approved-value');assert result['status']=='SUCCESS';assert calls==['approved-value'];assert agent.approvals._load()[pending['approval_id']]['status']=='EXECUTED'
 
 def test_approved_tool_args_must_match_exactly(tmp_path,monkeypatch):
-    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':2});registry=Registry();store=Store(tmp_path);calls=[];registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},lambda value:calls.append(value) or {'status':'SUCCESS'}));agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store));pending=asyncio.run(agent.run_tool('dangerous',{'value':'approved-value'}));agent.approvals.decide(pending['approval_id'],True);result=registry.get('dangerous').fn(value='different-value');assert result is not None if False else True
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':2});registry=Registry();store=Store(tmp_path);calls=[];registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},lambda value:calls.append(value) or {'status':'SUCCESS'}));agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store));pending=asyncio.run(agent.run_tool('dangerous',{'value':'approved-value'}));agent.approvals.decide(pending['approval_id'],True)
+    try:registry.get('dangerous').fn(value='different-value')
+    except PermissionError:pass
+    else:raise AssertionError('mismatched arguments must not consume approval')
     assert calls==[]
 
 def test_failed_approved_action_is_not_left_executing(tmp_path,monkeypatch):
