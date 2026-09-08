@@ -11,11 +11,12 @@ from .compute_planner import ComputePlanner
 from .uncertainty_engine import UncertaintyEngine
 from .connectors import Browser
 from .information_services import WeatherService,NewsService,RoadNavigationService,FlightPlanningService,ExternalInformationUnavailable
+from .communication_service import CommunicationService
 
 
 def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=None):
     decomposer=TaskDecomposer();predictor=PredictiveMaintenance();priority=EventPriorityEngine();router=ResourceRouter(store);robots=RobotGateway(store,router);retrieval=RetrievalRouter();uncertainty=UncertaintyEngine();settings=settings or getattr(agent,'settings',None);profile=agent.profile
-    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute);browser=Browser();weather=WeatherService();news=NewsService(getattr(settings,'brave_api_key',''));navigation=RoadNavigationService();flight=FlightPlanningService(getattr(settings,'flight_planning_url',''),getattr(settings,'flight_planning_token',''))
+    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute);browser=Browser();weather=WeatherService();news=NewsService(getattr(settings,'brave_api_key',''));navigation=RoadNavigationService();flight=FlightPlanningService(getattr(settings,'flight_planning_url',''),getattr(settings,'flight_planning_token',''));communications=CommunicationService(profile,store)
     @app.get('/api/intelligence/decompose')
     async def decompose(objective:str,_:None=Depends(require_auth)):return decomposer.decompose(objective)
     @app.post('/api/intelligence/priority')
@@ -47,11 +48,13 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
     @app.get('/api/information/route')
     async def route_information(olat:float,olon:float,dlat:float,dlon:float,profile_name:str='driving',_:None=Depends(require_auth)):return await navigation.route(olat,olon,dlat,dlon,profile_name)
     @app.post('/api/information/flight-plan')
-    async def flight_plan(payload:dict,_:None=Depends(require_auth)):
-        try:return await agent.run_tool('flight_plan',{'payload':payload or {}})
-        except Exception as exc:
-            if 'aviation/flight planning provider is not configured' in str(exc):return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
-            raise
+    async def flight_plan(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('flight_plan',{'payload':payload or {}})
+    @app.get('/api/contacts')
+    async def contacts(_:None=Depends(require_auth)):return {'status':'SUCCESS','contacts':communications.contacts()}
+    @app.post('/api/communications/sms')
+    async def send_sms(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('send_sms',{'name':str(payload.get('name','')),'text':str(payload.get('text','')),'device_id':str(payload.get('device_id',''))})
+    @app.post('/api/communications/notify')
+    async def notify_contact(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('notify_contact',{'name':str(payload.get('name','')),'text':str(payload.get('text','')),'device_id':str(payload.get('device_id',''))})
     @app.get('/api/profile')
     async def profile_get(_:None=Depends(require_auth)):return profile.load()
     @app.patch('/api/profile')
@@ -101,6 +104,8 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('news_search','Retrieve current news with source/publication metadata when configured.','READ_NEWS',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'count':{'type':'integer'}},'required':['query']},news.search))
         registry.add(Tool('route_navigation','Plan a road route without controlling a vehicle.','NAVIGATION',Risk.LOW,{'type':'object','properties':{'origin_lat':{'type':'number'},'origin_lon':{'type':'number'},'dest_lat':{'type':'number'},'dest_lon':{'type':'number'},'profile':{'type':'string'}},'required':['origin_lat','origin_lon','dest_lat','dest_lon']},navigation.route))
         registry.add(Tool('flight_plan','Generate an authorized flight plan through the configured aviation provider without aircraft control.','FLIGHT_PLANNING',Risk.HIGH,{'type':'object','properties':{'payload':{'type':'object'}},'required':['payload']},flight.plan))
+        registry.add(Tool('send_sms','Send an SMS to a known contact through an authorized Android device. Sending is queued and delivery is not claimed.','ANDROID_CONTROL',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'},'text':{'type':'string'},'device_id':{'type':'string'}},'required':['name','text']},communications.sms,True))
+        registry.add(Tool('notify_contact','Send an in-app notification to a known contact context through an authorized Android device.','ANDROID_CONTROL',Risk.MEDIUM,{'type':'object','properties':{'name':{'type':'string'},'text':{'type':'string'},'device_id':{'type':'string'}},'required':['name','text']},communications.notify))
         registry.add(Tool('select_resource','Select a healthy authorized execution node.','CONTROL_SERVER',Risk.MEDIUM,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},router.select))
         registry.add(Tool('remote_compute','Submit authorized compute work to the configured remote compute provider.','COMPUTE',Risk.MEDIUM,{'type':'object','properties':{'job_type':{'type':'string'},'payload':{'type':'object'}},'required':['job_type']},remote_compute.submit))
         registry.add(Tool('remote_sensing','Query the configured lawful remote-sensing provider.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'params':{'type':'object'}}},remote_sensing.query))
@@ -109,4 +114,4 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('biometric_latest','Read authorized biometric telemetry; never a medical diagnosis.','ACCESS_CAMERA',Risk.MEDIUM,{'type':'object','properties':{}},biometrics.latest))
         registry.add(Tool('robot_command','Queue an authorized command for a connected robot and await device verification.','CONTROL_ROBOTICS',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['node_id','action']},lambda node_id,action,payload=None:robots.command(node_id,action,payload),True))
         ToolExecutionGate=__import__('notsip.execution_gate',fromlist=['ToolExecutionGate']).ToolExecutionGate;ToolExecutionGate.wrap_registry(registry)
-    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'retrieval':retrieval,'compute':compute,'uncertainty':uncertainty,'profile':profile,'browser':browser,'weather':weather,'news':news,'navigation':navigation,'flight':flight,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
+    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'retrieval':retrieval,'compute':compute,'uncertainty':uncertainty,'profile':profile,'browser':browser,'weather':weather,'news':news,'navigation':navigation,'flight':flight,'communications':communications,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
