@@ -6,7 +6,6 @@ try:
     from psycopg.rows import dict_row
 except Exception:
     psycopg=None;dict_row=None
-
 class PostgreSQLStore:
     def __init__(self,root,url):
         if psycopg is None:raise RuntimeError('PostgreSQL mode requires psycopg[binary]')
@@ -15,8 +14,13 @@ class PostgreSQLStore:
     def conn(self):
         with psycopg.connect(self.url,row_factory=dict_row) as c:yield c
     def init(self):
-        sql='''CREATE TABLE IF NOT EXISTS messages(id BIGSERIAL PRIMARY KEY,role TEXT,content TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS memories(id BIGSERIAL PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight DOUBLE PRECISION,source TEXT,provenance TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS relations(id BIGSERIAL PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence DOUBLE PRECISION,source TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence DOUBLE PRECISION,retrieved DOUBLE PRECISION,metadata TEXT);CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at DOUBLE PRECISION,interval_sec DOUBLE PRECISION,retries INTEGER,created DOUBLE PRECISION,updated DOUBLE PRECISION,error TEXT);CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen DOUBLE PRECISION,status TEXT,data TEXT);CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created DOUBLE PRECISION,updated DOUBLE PRECISION,result TEXT);'''
-        with self.conn() as c:c.execute(sql);c.commit()
+        sql='''CREATE TABLE IF NOT EXISTS messages(id BIGSERIAL PRIMARY KEY,role TEXT,content TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS memories(id BIGSERIAL PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight DOUBLE PRECISION,source TEXT,provenance TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS relations(id BIGSERIAL PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence DOUBLE PRECISION,source TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence DOUBLE PRECISION,retrieved DOUBLE PRECISION,metadata TEXT);CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at DOUBLE PRECISION,interval_sec DOUBLE PRECISION,retries INTEGER,created DOUBLE PRECISION,updated DOUBLE PRECISION,error TEXT,idempotency_key TEXT DEFAULT '');CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen DOUBLE PRECISION,status TEXT,data TEXT);CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created DOUBLE PRECISION,updated DOUBLE PRECISION,result TEXT);'''
+        with self.conn() as c:
+            c.execute(sql)
+            cols={r['column_name'] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='tasks'").fetchall()}
+            if 'idempotency_key' not in cols:c.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT DEFAULT ''")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(idempotency_key) WHERE idempotency_key <> ''")
+            c.commit()
     def exec(self,sql,args=()):
         q=sql.replace('INSERT OR REPLACE','INSERT').replace('VALUES(?,?)','VALUES(%s,%s)');q=q.replace('?', '%s')
         with self.conn() as c:c.execute(q,args);c.commit()
@@ -37,8 +41,17 @@ class PostgreSQLStore:
     def fact(self,statement,source,url='',confidence=.5,metadata=None):
         fid=str(uuid.uuid4());self.exec('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s)',(fid,statement,source,url,confidence,time.time(),json.dumps(metadata or {})));return fid
     def facts(self,n=100):return self.rows('SELECT * FROM facts ORDER BY retrieved DESC LIMIT %s',(n,))
-    def task(self,objective,state='PENDING',priority=0,handler='',data=None,run_at=None,interval_sec=None):
-        tid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(tid,objective,state,priority,handler,json.dumps(data or {}),run_at,interval_sec,0,now,now,''));return tid
+    def task(self,objective,state='PENDING',priority=0,handler='',data=None,run_at=None,interval_sec=None,idempotency_key=''):
+        tid=str(uuid.uuid4());now=time.time();payload=json.dumps(data or {})
+        with self.conn() as c:
+            try:
+                row=c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(idempotency_key) WHERE idempotency_key <> %s DO NOTHING RETURNING id',(tid,objective,state,priority,handler,payload,run_at,interval_sec,0,now,now,'',idempotency_key or '',idempotency_key or '')).fetchone()
+                if row:c.commit();return row['id']
+                existing=c.execute('SELECT id FROM tasks WHERE idempotency_key=%s',(idempotency_key,)).fetchone();c.commit()
+                if existing:return existing['id']
+                raise RuntimeError('task idempotency conflict could not be resolved')
+            except Exception:
+                c.rollback();raise
     def tasks(self,state=None):
         q='SELECT * FROM tasks';args=()
         if state:q+=' WHERE state=%s';args=(state,)
@@ -52,18 +65,11 @@ class PostgreSQLStore:
     def restore_runtime_state(self,state):
         tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or []
         with self.conn() as c:
-            # Device tokens are intentionally omitted from normal checkpoints. Preserve
-            # existing token hashes for matching device IDs so recovery does not silently
-            # invalidate every paired node on PostgreSQL deployments.
             existing_tokens={r['id']:r['token_hash'] for r in c.execute('SELECT id,token_hash FROM devices').fetchall()}
             for table in ('commands','tasks','devices','entities','relations','facts'):c.execute(f'DELETE FROM {table}')
-            for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error','')))
-            repair=[]
+            for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error',''),t.get('idempotency_key','') or ''))
             for d in devices:
-                device_id=d.get('id','');token_hash=d.get('token_hash') or existing_tokens.get(device_id,'')
-                status=d.get('status','') if token_hash else 'REPAIR_REQUIRED'
-                if not token_hash:repair.append(device_id)
-                c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(device_id,d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
+                device_id=d.get('id','');token_hash=d.get('token_hash') or existing_tokens.get(device_id,'');status=d.get('status','') if token_hash else 'REPAIR_REQUIRED';c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(device_id,d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
             for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(%s,%s,%s,%s,%s)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
             for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(%s,%s,%s,%s,%s,%s,%s)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
             for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
