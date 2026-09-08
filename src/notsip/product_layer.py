@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64,binascii,hashlib,json,os,platform,shutil,socket,subprocess,sys,tempfile,time,uuid,zipfile,threading
 from pathlib import Path
+from .actor_context import current_actor
 APP_NAME='NOTSIP';CONFIG_VERSION=2
 
 def resource_root()->Path:
@@ -148,21 +149,26 @@ class ApprovalStore:
         try:return json.loads(self.path.read_text())
         except Exception:return {}
     def _save(self,d):tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(d,indent=2,sort_keys=True));os.replace(tmp,self.path)
-    def request(self,action,reason,context=None,ttl=900):
+    @staticmethod
+    def _actor(context,actor=None):return str(actor or (context or {}).get('actor') or current_actor()).strip() or 'primary-user'
+    def request(self,action,reason,context=None,ttl=900,actor=None):
         with self.lock:
-            d=self._load();aid=uuid.uuid4().hex;d[aid]={'id':aid,'action':action,'reason':reason,'context':context or {},'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
-    def decide(self,aid,approved):
+            d=self._load();aid=uuid.uuid4().hex;ctx=dict(context or {});ctx['actor']=self._actor(ctx,actor);d[aid]={'id':aid,'action':action,'reason':reason,'context':ctx,'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
+    def decide(self,aid,approved,actor=None):
         with self.lock:
             d=self._load();x=d.get(aid)
             if not x:return None
+            expected=self._actor(x.get('context') or {},actor)
+            if expected!=current_actor():return None
             if x.get('status')!='PENDING':return x
             if float(x.get('expires',0))<=time.time():x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
             x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
-    def pending(self):
+    def pending(self,actor=None):
+        actor=self._actor({},actor)
         with self.lock:
             out=[];now=time.time()
             for x in self._load().values():
-                if x.get('status')=='PENDING' and x.get('expires',0)>now:out.append(x)
+                if x.get('status')=='PENDING' and x.get('expires',0)>now and self._actor(x.get('context') or {},actor)==actor:out.append(x)
             return out
 
 class Diagnostics:
