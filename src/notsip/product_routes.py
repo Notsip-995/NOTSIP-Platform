@@ -13,6 +13,8 @@ def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getatt
 def _checkpoint_devices(store):return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
 def _checkpoint_commands(store):return store.rows('SELECT id,device_id,action,payload,status,created,updated,result FROM commands')
 def _active_account_key():return 'oidc:active_account:'+current_actor()
+def _require_primary():
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
 
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
@@ -24,17 +26,21 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     if agent.registry.get('oauth_revoke') is None:agent.registry.add(Tool('oauth_revoke','Revoke an authorized external OAuth account without weakening other connected accounts.','MANAGE_ACCOUNTS',Risk.HIGH,{'type':'object','properties':{'account_id':{'type':'string'}},'required':['account_id']},lambda account_id:oauth_service.revoke(accounts.get(account_id,{}).get('provider',''),account_id),True))
     ToolExecutionGate.wrap_registry(agent.registry)
     @app.get('/api/recovery/check')
-    async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
+    async def recovery_check(_:None=Depends(require_auth)):
+        _require_primary();return recovery.verify_latest()
     @app.get('/api/recovery/state')
-    async def recovery_state(_:None=Depends(require_auth)):return recovery.restore_state()
+    async def recovery_state(_:None=Depends(require_auth)):
+        _require_primary();return recovery.restore_state()
     @app.get('/api/federation/challenge')
     async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):
+        _require_primary()
         if not settings.node_shared_secret:raise HTTPException(503,'federation shared secret is not configured')
         return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce),'algorithm':'HMAC-SHA256'}
     @app.post('/api/federation/register')
     async def federation_register(payload:dict,_:None=Depends(require_auth)):
+        _require_primary()
         if not settings.node_shared_secret:raise HTTPException(503,'federation shared secret is not configured')
-        try:return nodes.register(str(payload['node_id']),str(payload['name']),str(payload.get('platform','unknown')),list(payload.get('capabilities',[])),str(payload.get('public_key','')),str(payload.get('nonce','')),str(payload.get('signature','')))
+        try:return nodes.register(str(payload['node_id']),str(payload['name']),str(payload.get('platform','unknown')),list(payload.get('capabilities',[])),str(payload.get('public_key','')),str(payload.get('nonce','')),str(payload.get('signature','')),owner='primary-user')
         except PermissionError as exc:raise HTTPException(401,str(exc))
     @app.post('/api/federation/{node_id}/heartbeat')
     async def federation_heartbeat(node_id:str,payload:dict):
@@ -42,21 +48,26 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         try:return {'status':'SUCCESS','lease':nodes.heartbeat(node_id,str(payload.get('token','')),list(payload.get('capabilities',[])),payload.get('health') or {},str(payload.get('nonce','')),str(payload.get('signature','')))}
         except PermissionError as exc:raise HTTPException(401,str(exc))
     @app.post('/api/federation/{node_id}/rotate')
-    async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
+    async def federation_rotate(node_id:str,_:None=Depends(require_auth)):
+        _require_primary();return await agent.run_tool('federation_rotate',{'node_id':node_id})
     @app.post('/api/federation/{node_id}/revoke')
-    async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
+    async def federation_revoke(node_id:str,_:None=Depends(require_auth)):
+        _require_primary();return await agent.run_tool('federation_revoke',{'node_id':node_id})
     @app.post('/api/recovery/checkpoint')
     async def checkpoint(_:None=Depends(require_auth)):
-        state={'tasks':store.tasks(),'devices':_checkpoint_devices(store),'commands':_checkpoint_commands(store),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()};return {'status':'SUCCESS','path':recovery.checkpoint(state)}
+        _require_primary();state={'tasks':store.tasks(),'devices':_checkpoint_devices(store),'commands':_checkpoint_commands(store),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()};return {'status':'SUCCESS','path':recovery.checkpoint(state)}
     @app.get('/api/recovery/latest')
-    async def latest_checkpoint(_:None=Depends(require_auth)):return {'checkpoint':recovery.latest(),'verified':recovery.verify_latest()}
+    async def latest_checkpoint(_:None=Depends(require_auth)):
+        _require_primary();return {'checkpoint':recovery.latest(),'verified':recovery.verify_latest()}
     @app.post('/api/recovery/restore')
     async def restore(_:None=Depends(require_auth)):
-        result=await agent.run_tool('recovery_restore',{});return {'status':result.get('status','SUCCESS'),'result':result,'restart_required':result.get('status') in {'SUCCESS','PARTIAL_SUCCESS'},'action':'restart_runtime_to_rebuild_in_memory_state'}
+        _require_primary();result=await agent.run_tool('recovery_restore',{});return {'status':result.get('status','SUCCESS'),'result':result,'restart_required':result.get('status') in {'SUCCESS','PARTIAL_SUCCESS'},'action':'restart_runtime_to_rebuild_in_memory_state'}
     @app.get('/api/update/check')
-    async def update_check(_:None=Depends(require_auth)):return await updates.check()
+    async def update_check(_:None=Depends(require_auth)):
+        return await updates.check()
     @app.post('/api/update/download')
     async def update_download(payload:dict,_:None=Depends(require_auth)):
+        _require_primary()
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
         asset_url=str(payload.get('asset_url',''));expected_repo=f"https://github.com/{settings.github_repository}/releases/"
         if not asset_url.startswith(expected_repo):raise HTTPException(400,'update asset must originate from configured GitHub repository')
@@ -65,6 +76,7 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         return await updates.download(asset_url,expected_sha)
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
+        _require_primary()
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
         candidate=__import__('pathlib').Path(str(payload.get('path',''))).resolve();update_dir=updates.dir.resolve()
         if update_dir not in candidate.parents or candidate.suffix.lower()!='.exe' or not candidate.is_file():raise HTTPException(400,'update path must point to a downloaded EXE inside NOTSIP updates directory')
