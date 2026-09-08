@@ -10,6 +10,7 @@ from .execution_gate import ToolExecutionGate
 class Agent:
     SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. Prefer real tool execution when authorized. State uncertainty clearly.'''
     CITY_TIMEZONES={'tokyo':'Asia/Tokyo','london':'Europe/London','new york':'America/New_York','los angeles':'America/Los_Angeles','paris':'Europe/Paris','berlin':'Europe/Berlin','kigali':'Africa/Kigali','kampala':'Africa/Kampala','nairobi':'Africa/Nairobi','dubai':'Asia/Dubai','singapore':'Asia/Singapore','sydney':'Australia/Sydney'}
+    WEEKDAYS={'monday':0,'tuesday':1,'wednesday':2,'thursday':3,'friday':4,'saturday':5,'sunday':6}
     def __init__(self,settings,store,policy,registry,provider,world):
         self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
     @property
@@ -32,8 +33,16 @@ class Agent:
             try:tz=ZoneInfo(tz_name)
             except ZoneInfoNotFoundError:return None
             target=utc.astimezone(tz);return f"It is {target.strftime('%A, %Y-%m-%d %H:%M:%S %Z')} in {place.title()}."
-        if s in {'tomorrow','what is tomorrow','what date is tomorrow','tomorrow date'}:
-            target=local+timedelta(days=1);return f"Tomorrow is {target.strftime('%A, %Y-%m-%d')}."
+        if s in {'tomorrow','what is tomorrow','what date is tomorrow','tomorrow date'}:target=local+timedelta(days=1);return f"Tomorrow is {target.strftime('%A, %Y-%m-%d')}."
+        if s in {'yesterday','what was yesterday','what date was yesterday'}:target=local-timedelta(days=1);return f"Yesterday was {target.strftime('%A, %Y-%m-%d')}."
+        if s in {'tonight','what is tonight'}:return f"Tonight is {local.strftime('%A, %Y-%m-%d')} in {self.settings.local_timezone}."
+        m=re.fullmatch(r'(?:what is |what date is )?next (monday|tuesday|wednesday|thursday|friday|saturday|sunday)\??',s)
+        if m:
+            delta=(self.WEEKDAYS[m.group(1)]-local.weekday())%7 or 7;target=local+timedelta(days=delta);return f"Next {m.group(1).title()} is {target.strftime('%A, %Y-%m-%d')}."
+        m=re.fullmatch(r'(?:what was |what date was )?last (monday|tuesday|wednesday|thursday|friday|saturday|sunday)\??',s)
+        if m:
+            delta=(local.weekday()-self.WEEKDAYS[m.group(1)])%7 or 7;target=local-timedelta(days=delta);return f"Last {m.group(1).title()} was {target.strftime('%A, %Y-%m-%d')}."
+        if s in {'in two weeks','two weeks from now','what date is in two weeks'}:target=local+timedelta(weeks=2);return f"In two weeks it will be {target.strftime('%A, %Y-%m-%d')}."
         return None
     async def handle(self,text):
         self.store.message('user',text);self.conversations.append(self.session_id,'user',text)
