@@ -1,6 +1,6 @@
 from __future__ import annotations
 from fastapi import Depends, HTTPException
-from .business_admin import BusinessAdminAdapter, BusinessAdminUnavailable
+from .business_admin import BusinessAdminAdapter
 from .policy import Risk
 from .tools import Tool
 
@@ -15,8 +15,7 @@ def attach(app,require_auth,agent,registry,settings):
     ToolExecutionGate.wrap_registry(registry)
     @app.get('/api/business/query')
     async def business_query(operation:str='status',params:dict|None=None,_:None=Depends(require_auth)):
-        try:return await adapter.query(operation,params or {})
-        except BusinessAdminUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+        return await agent.run_tool('business_query',{'operation':operation,'params':params or {}})
     @app.post('/api/business/action')
     async def business_action(payload:dict,_:None=Depends(require_auth)):
         operation=str(payload.get('operation','')).strip()
