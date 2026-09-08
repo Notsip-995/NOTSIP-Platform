@@ -7,14 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
 CONFIG_LOAD_ERROR=''
 SECRET_LOAD_ERROR=''
-DEFAULT_CAPABILITY_LEVELS={
-    'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,
-    'READ_CALENDAR':1,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,
-    'WRITE_FILES':2,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,
-    'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,
-    'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,
-    'ACCESS_MICROPHONE':2,
-}
+DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2}
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
@@ -22,8 +15,7 @@ def _default_data_dir():
 
 class Settings(BaseSettings):
     host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str=_default_data_dir(); local_timezone:str='Africa/Kigali'; max_tool_rounds:int=Field(10,ge=1,le=100)
-    autonomy_level:int=Field(2,ge=0,le=4); self_modify_enabled:bool=False
-    capability_levels:dict[str,int]=Field(default_factory=lambda:dict(DEFAULT_CAPABILITY_LEVELS))
+    autonomy_level:int=Field(2,ge=0,le=4); self_modify_enabled:bool=False; capability_levels:dict[str,int]=Field(default_factory=lambda:dict(DEFAULT_CAPABILITY_LEVELS))
     api_key:str=''; event_hmac_secret:str=''; pairing_secret:str=''; auth_mode:Literal['api_key','oidc']='api_key'; session_ttl:int=Field(43200,ge=300,le=2592000)
     oidc_provider:str='generic'; oidc_issuer:str=''; oidc_client_id:str=''; oidc_client_secret:str=''; oidc_redirect_uri:str=''; oidc_scopes:str=''
     llm_base_url:str=''; llm_api_key:str=''; llm_model:str=''; fallback_llm_base_url:str=''; fallback_llm_api_key:str=''; fallback_llm_model:str=''
@@ -34,7 +26,7 @@ class Settings(BaseSettings):
     perception_screen_enabled:bool=False; health_interval:int=Field(15,ge=5,le=3600); checkpoint_interval:int=Field(300,ge=30,le=86400); proactive_interval:int=Field(60,ge=15,le=86400); memory_maintenance_interval:int=Field(900,ge=60,le=604800)
     smtp_host:str=''; smtp_port:int=Field(587,ge=1,le=65535); imap_host:str=''; email_username:str=''; email_password:str=''; oauth_authorize_url:str=''; oauth_token_url:str=''; oauth_client_id:str=''; oauth_client_secret:str=''; oauth_redirect_uri:str=''; oauth_scopes:str=''
     android_poll_seconds:int=Field(3,ge=1,le=3600); node_lease_seconds:int=Field(90,ge=15,le=86400); node_shared_secret:str=''
-    database_url:str=''; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'
+    database_url:str=''; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'; windows_publisher_thumbprint:str=''
     log_level:Literal['DEBUG','INFO','WARNING','ERROR']='INFO'; log_max_bytes:int=Field(10485760,ge=1024,le=1073741824); log_backup_count:int=Field(5,ge=1,le=50); open_browser:bool=True; node_name:str='NOTSIP'
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore',validate_assignment=True)
     def ensure(self):
