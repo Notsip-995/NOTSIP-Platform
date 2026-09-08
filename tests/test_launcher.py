@@ -32,3 +32,15 @@ def test_loopback_bind_allows_local_setup_without_auth(monkeypatch):
     monkeypatch.setattr(launcher.settings, "auth_mode", "api_key")
     for host in ("127.0.0.1", "localhost", "::1"):
         launcher._validate_bind_security(host)
+
+
+def test_launcher_process_guard_refuses_corrupt_existing_lock(tmp_path):
+    from notsip.launcher_guard import LauncherProcessGuard
+
+    path=Path(tmp_path)/'runtime'/'instance.lock'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text('{corrupt',encoding='utf-8')
+    guard=LauncherProcessGuard(root=tmp_path)
+    with pytest.raises(RuntimeError,match='instance lock is corrupt'):
+        guard.acquire()
+    assert path.exists()
