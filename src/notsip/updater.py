@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib,json,os,shutil,subprocess,sys,time,uuid
+import hashlib,json,os,re,shutil,subprocess,sys,time,uuid
 from pathlib import Path
 from urllib.parse import urljoin,urlparse
 import httpx
@@ -17,8 +17,10 @@ class UpdateManager:
     @staticmethod
     def _trusted_redirect(url:str)->bool:
         p=urlparse(str(url));host=(p.hostname or '').lower();return p.scheme=='https' and host in {'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
+    def _trusted_manifest(self,url:str)->bool:
+        p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ');return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.sha256')
     def _managed_update_path(self,new_exe:Path)->Path:
-        path=Path(new_exe).resolve();
+        path=Path(new_exe).resolve()
         try:path.relative_to(self.dir)
         except ValueError:raise ValueError('self-update executable must reside in the managed updates directory') from None
         if path.suffix.lower()!='.exe':raise ValueError('self-update executable must be an EXE')
@@ -45,6 +47,36 @@ class UpdateManager:
             if not name.lower().endswith('.exe'):continue
             sha_asset=by_name.get(name+'.sha256');assets.append({'name':name,'size':a['size'],'url':a['browser_download_url'],'sha256_url':sha_asset.get('browser_download_url') if sha_asset else None,'publisher_thumbprint_required':bool(getattr(self.settings,'windows_publisher_thumbprint',''))})
         return {'available':latest>current,'current_version':__version__,'tag':tag,'name':d.get('name'),'url':d.get('html_url'),'assets':assets}
+    async def _fetch_manifest_sha(self,url:str,expected_name:str):
+        if not self._trusted_manifest(url):raise ValueError('update SHA-256 manifest is not from the configured GitHub release path')
+        token=os.getenv('NOTSIP_GITHUB_TOKEN','');current=url
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False) as c:
+            for _ in range(6):
+                headers={'Accept':'text/plain'}
+                if token and urlparse(current).netloc.lower()=='github.com':headers['Authorization']='Bearer '+token
+                response=await c.get(current,headers=headers)
+                if response.is_redirect:
+                    location=response.headers.get('location','').strip()
+                    if not location:raise ValueError('update SHA-256 manifest redirect did not provide a destination')
+                    destination=urljoin(current,location)
+                    if not self._trusted_redirect(destination):raise ValueError(f'untrusted update SHA-256 manifest redirect destination: {destination}')
+                    current=destination;continue
+                response.raise_for_status();text=response.text;break
+            else:raise ValueError('too many update SHA-256 manifest redirects')
+        match=re.search(r'\b([0-9a-fA-F]{64})\b(?:\s+\*?([^\s]+))?',text)
+        if not match:raise ValueError('update SHA-256 manifest does not contain a valid digest')
+        digest=match.group(1).lower();name=str(match.group(2) or '').lstrip('*')
+        if name and Path(name).name.lower()!=Path(expected_name).name.lower():raise ValueError('update SHA-256 manifest names a different artifact')
+        return digest
+    async def download_release_asset(self,asset_name='NOTSIP.exe'):
+        release=await self.check();name=Path(str(asset_name or '')).name
+        asset=next((a for a in release.get('assets',[]) if a.get('name')==name),None)
+        if not release.get('available'):return {'status':'NO_UPDATE','release':release}
+        if asset is None:raise ValueError(f'trusted latest release does not contain {name}')
+        sha_url=asset.get('sha256_url')
+        if not sha_url:raise ValueError(f'trusted latest release does not publish a SHA-256 manifest for {name}')
+        digest=await self._fetch_manifest_sha(sha_url,name)
+        result=await self.download(asset['url'],digest);result.update({'release_tag':release.get('tag'),'asset_name':name,'manifest_url':sha_url});return result
     async def download(self,asset_url:str,sha256:str=''):
         if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
