@@ -23,3 +23,14 @@ def test_microsoft_revocation_never_claims_provider_success_without_supported_op
     outcome=asyncio.run(OAuthService(secrets,accounts).revoke('microsoft',a['id']))
     assert outcome['status']=='PROVIDER_REVOCATION_UNAVAILABLE'
     assert accounts.get(a['id'])['status']=='CONNECTED'
+
+
+def test_oauth_refresh_preserves_existing_refresh_token(tmp_path):
+    secrets=SecretStore(tmp_path);accounts=AccountStore(secrets)
+    a=accounts.upsert('google','subject-a','a@example.com')
+    accounts.save_tokens(a['id'],{'access_token':'old-access','refresh_token':'long-lived-refresh','expires_at':10})
+    accounts.save_tokens(a['id'],{'access_token':'new-access','expires_at':20})
+    tokens=accounts.tokens(a['id'])
+    assert tokens['access_token']=='new-access'
+    assert tokens['refresh_token']=='long-lived-refresh'
+    assert tokens['expires_at']==20
