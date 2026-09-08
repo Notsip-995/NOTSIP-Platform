@@ -73,8 +73,7 @@ class AuditLog:
         lines=self.path.read_text(encoding='utf-8').splitlines()
         for line in reversed(lines):
             if not line.strip():continue
-            try:
-                row=json.loads(line);digest=str(row.get('digest',''))
+            try:row=json.loads(line);digest=str(row.get('digest',''))
             except json.JSONDecodeError as exc:raise RuntimeError('audit log is corrupt; refusing to append') from exc
             if len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest.lower()):raise RuntimeError('audit log contains an invalid digest; refusing to append')
             return digest
@@ -196,7 +195,7 @@ class Diagnostics:
         if self.store:
             try:self.store.row('SELECT 1');checks['database']={'ok':True,'detail':'connected'}
             except Exception as e:checks['database']={'ok':False,'detail':str(e)}
-        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'};checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'};checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'};checks['vision']={'ok':bool(s and s.vision_enabled),'detail':'enabled' if s and s.vision_enabled else 'disabled'};checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'};checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'};checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'};checks['browser']={'ok':bool(getattr(s,'browser_enabled',True)),'detail':'enabled' if getattr(s,'browser_enabled',True) else 'disabled'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'};checks['scheduler']={'ok':True,'detail':'durable scheduler available'};checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'};checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'};checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
+        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'};checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'};checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'};checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'};checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'};checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'};checks['browser']={'ok':bool(s and getattr(s,'browser_enabled',True)),'detail':'enabled' if s and getattr(s,'browser_enabled',True) else 'disabled'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'};checks['scheduler']={'ok':True,'detail':'durable scheduler available'};checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'};checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'};checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
         core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']]
         return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
 
@@ -205,19 +204,7 @@ class CapabilityProbe:
     def __init__(self,settings=None,store=None,provider=None,web=None,email=None):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
     def snapshot(self):
         s=self.settings
-        checks={
-            'llm': bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),
-            'web_search': bool(self.web and self.web.enabled),
-            'email': bool(self.email and self.email.enabled),
-            'android': bool(self.store and self.store.devices()),
-            'windows_uia': platform.system()=='Windows',
-            'database': bool(self.store),
-            'stt': bool(s and s.stt_base_url and s.stt_model),
-            'tts': bool(s and s.tts_base_url and s.tts_model),
-            'vision': bool(s and s.vision_enabled),
-            'browser': bool(getattr(s,'browser_enabled',True)),
-            'federation': bool(getattr(s,'node_lease_seconds',0)),
-        }
+        checks={'llm':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'web_search':bool(self.web and self.web.enabled),'email':bool(self.email and self.email.enabled),'android':bool(self.store and self.store.devices()),'windows_uia':platform.system()=='Windows','database':bool(self.store),'stt':bool(s and s.stt_base_url and s.stt_model),'tts':bool(s and s.tts_base_url and s.tts_model),'vision':bool(s and s.vision_enabled),'browser':bool(getattr(s,'browser_enabled',True)),'federation':bool(getattr(s,'node_lease_seconds',0))}
         return {'capabilities':checks,'available':[k for k,v in checks.items() if v],'unavailable':[k for k,v in checks.items() if not v],'timestamp':time.time()}
 
 class Maintenance:
@@ -237,3 +224,6 @@ class Maintenance:
         if not (self.root/'.git').exists():return {'status':'UNAVAILABLE','reason':'durable Git checkout required','root':str(self.root)}
         r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600)
         return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
+    def apply_patch(self,patch_text,confirmation):
+        from .self_maintenance import SelfMaintenance
+        return SelfMaintenance(self.root).apply_patch(patch_text,confirmation)
