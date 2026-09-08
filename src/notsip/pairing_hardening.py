@@ -1,8 +1,11 @@
 from __future__ import annotations
-import secrets
+import json,secrets,time
 from fastapi import Depends,HTTPException,Request
 from pydantic import BaseModel
 from .actor_context import current_actor
+
+_ALLOWED_COMMAND_STATUSES={'SUCCESS','FAILURE','PARTIAL_SUCCESS','UNKNOWN'}
+MAX_COMMAND_RESULT_BYTES=1024*1024
 
 class PairIn(BaseModel):
     code:str
@@ -12,13 +15,15 @@ class PairIn(BaseModel):
     public_key:str=''
 
 
+def _placeholder(store):return '%s' if getattr(store,'_backend',None) else '?'
+
 def _device_auth(store,request:Request,device_id:str|None=None):
     did=(device_id or request.headers.get('X-NOTSIP-Device-ID','')).strip()
     token=request.headers.get('X-NOTSIP-Device-Token','').strip()
     if not did or not token or not store.device_token_valid(did,token):raise HTTPException(401,'device authentication required')
-    row=store.row('SELECT status FROM devices WHERE id=?',(did,))
+    row=store.row(f'SELECT status FROM devices WHERE id={_placeholder(store)}',(did,))
     if not row:raise HTTPException(404,'device not found')
-    if str(row.get('status'))=='REVOKED':raise HTTPException(403,'device is revoked')
+    if str(row.get('status')).upper()=='REVOKED':raise HTTPException(403,'device is revoked')
     return did
 
 
@@ -38,13 +43,12 @@ def attach(app,require_auth,store,pairing,auth=None):
 
     @app.get('/api/pair/code')
     async def pair_code(_:None=Depends(require_auth)):
-        actor=current_actor();code=store.create_pair_code();secret_store.set('pairing:owner:'+code,{'actor':actor,'created_at':__import__('time').time()});return {'code':code,'actor':actor,'expires_in':300}
+        actor=current_actor();code=store.create_pair_code();secret_store.set('pairing:owner:'+code,{'actor':actor,'created_at':time.time(),'expires_at':time.time()+300});return {'code':code,'actor':actor,'expires_in':300}
 
     @app.post('/api/pair/consume')
     async def pair_consume(body:PairIn,request:Request,_:None=Depends(require_auth)):
-        code=body.code.strip().upper();record=secret_store.get('pairing:owner:'+code)
-        actor=current_actor()
-        if not isinstance(record,dict) or str(record.get('actor'))!=actor:raise HTTPException(403,'pairing code is not owned by current actor')
+        code=body.code.strip().upper();record=secret_store.get('pairing:owner:'+code);actor=current_actor();expires=float(record.get('expires_at',0)) if isinstance(record,dict) else 0
+        if not isinstance(record,dict) or str(record.get('actor'))!=actor or expires<=time.time():raise HTTPException(403,'pairing code is not owned by current actor or has expired')
         existing_owner=store.device_owner(body.device_id)
         if existing_owner is not None and existing_owner!=actor:raise HTTPException(409,'device_id is already owned by another actor')
         if not store.consume_pair_code(code):raise HTTPException(400,'invalid or expired pairing code')
@@ -57,22 +61,24 @@ def attach(app,require_auth,store,pairing,auth=None):
         return {'commands':store.pull_commands(did)}
 
     @app.post('/api/devices/heartbeat')
-    async def device_heartbeat(device_id:str,token:str):
-        row=store.row('SELECT status FROM devices WHERE id=?',(device_id,))
-        if not row or not store.device_token_valid(device_id,token):raise HTTPException(401,'invalid device authentication')
-        if str(row.get('status'))=='REVOKED':raise HTTPException(403,'device is revoked')
-        store.heartbeat(device_id);return {'status':'ONLINE'}
+    async def device_heartbeat(request:Request):
+        did=_device_auth(store,request)
+        store.heartbeat(did);return {'status':'ONLINE','device_id':did}
 
     @app.post('/api/devices/result')
     async def device_result(body:dict,request:Request):
-        did=_device_auth(store,request)
-        command_id=str(body.get('command_id','')).strip()
+        did=_device_auth(store,request);command_id=str(body.get('command_id','')).strip()
         if not command_id:raise HTTPException(400,'command_id is required')
-        command=store.row('SELECT device_id,status FROM commands WHERE id=?',(command_id,))
+        p=_placeholder(store);command=store.row(f'SELECT device_id,status FROM commands WHERE id={p}',(command_id,))
         if not command:raise HTTPException(404,'command not found')
         if str(command.get('device_id'))!=did:raise HTTPException(403,'command does not belong to authenticated device')
-        status=str(command.get('status',''))
-        if status!='DELIVERED':return {'status':'ALREADY_RECORDED','command_id':command_id,'command_status':status}
+        command_status=str(command.get('status','')).upper()
+        if command_status!='DELIVERED':return {'status':'ALREADY_RECORDED','command_id':command_id,'command_status':command_status}
+        status=str(body.get('status') or 'SUCCESS').upper()
+        if status not in _ALLOWED_COMMAND_STATUSES:raise HTTPException(400,'invalid command result status')
         result=body.get('result') or {}
-        store.command_result(command_id,str(body.get('status') or 'SUCCESS'),result)
+        if not isinstance(result,dict):raise HTTPException(400,'command result must be an object')
+        if len(json.dumps(result,separators=(',',':'),default=str).encode('utf-8'))>MAX_COMMAND_RESULT_BYTES:raise HTTPException(413,'command result exceeds maximum size')
+        ok=store.command_result(command_id,status,result,did)
+        if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
         return {'status':'RECORDED','command_id':command_id,'device_id':did}
