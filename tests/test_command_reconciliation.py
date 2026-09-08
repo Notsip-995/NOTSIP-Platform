@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 
 
 def test_stale_delivered_command_becomes_unknown_not_pending(tmp_path):
@@ -21,3 +22,13 @@ def test_stale_delivered_command_becomes_unknown_not_pending(tmp_path):
     command = store.row('SELECT status,result FROM commands WHERE id=?', (command_id,))
     assert command['status'] == 'UNKNOWN'
     assert json.loads(command['result'])['verified'] is False
+
+
+def test_reconciliation_source_handles_orphaned_commands_for_both_backends():
+    sqlite=Path('src/notsip/store.py').read_text(encoding='utf-8')
+    postgres=Path('src/notsip/postgres_store.py').read_text(encoding='utf-8')
+    for text in (sqlite,postgres):
+        assert 'LEFT JOIN devices' in text
+        assert 'd.id IS NULL' in text
+        assert "status='UNKNOWN'" in text
+        assert 'device was removed, revoked' in text
