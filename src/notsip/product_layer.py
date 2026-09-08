@@ -70,10 +70,14 @@ class AuditLog:
     def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
     def _last_hash(self):
         if not self.path.exists():return '0'*64
-        try:
-            for line in reversed(self.path.read_text(encoding='utf-8').splitlines()):
-                if line.strip():return str(json.loads(line).get('digest','0'*64))
-        except Exception:return '0'*64
+        lines=self.path.read_text(encoding='utf-8').splitlines()
+        for line in reversed(lines):
+            if not line.strip():continue
+            try:
+                row=json.loads(line);digest=str(row.get('digest',''))
+            except json.JSONDecodeError as exc:raise RuntimeError('audit log is corrupt; refusing to append') from exc
+            if len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest.lower()):raise RuntimeError('audit log contains an invalid digest; refusing to append')
+            return digest
         return '0'*64
     def write(self,event,**fields):
         with self.lock:
@@ -146,8 +150,11 @@ class BackupManager:
 class ApprovalStore:
     def __init__(self,root):self.path=Path(root)/'runtime'/'approvals.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
     def _load(self):
-        try:return json.loads(self.path.read_text())
-        except Exception:return {}
+        if not self.path.exists():return {}
+        try:data=json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError) as exc:raise RuntimeError('approval store is corrupt; refusing to treat it as empty') from exc
+        if not isinstance(data,dict):raise RuntimeError('approval store has invalid structure')
+        return data
     def _save(self,d):tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(d,indent=2,sort_keys=True));os.replace(tmp,self.path)
     @staticmethod
     def _actor(context,actor=None):return str(actor or (context or {}).get('actor') or current_actor()).strip() or 'primary-user'
