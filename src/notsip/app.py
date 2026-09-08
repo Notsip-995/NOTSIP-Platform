@@ -22,12 +22,12 @@ from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
-
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
 CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
 CONFIG_HIGH_RISK={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint',*CONFIG_SECRET_NAMES}
+CONFIG_RUNTIME_UNSUPPORTED={'data_dir','database_url'}
 
 def _rebuild_runtime_after_config():
     global provider,web,emailc,policy,diagnostics,probes,auth_token
@@ -37,7 +37,7 @@ def _rebuild_runtime_after_config():
     auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
 
 def _apply_config(requested):
-    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url'}};snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url'}};secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
+    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url','data_dir'}};snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url','data_dir'}};secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
     try:
         for k,v in requested.items():
             if k in allowed:setattr(settings,k,v)
@@ -125,6 +125,8 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
     if not requested:raise HTTPException(400,'settings are required')
     unknown=set(requested)-set(settings.__class__.model_fields)
     if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
+    unsupported=sorted(set(requested)&CONFIG_RUNTIME_UNSUPPORTED)
+    if unsupported:raise HTTPException(409,f"runtime cannot safely switch {unsupported}; use explicit restart/migration procedure")
     sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
     if sensitive:
         pending_id=uuid.uuid4().hex;auth.secrets.set('config:pending:'+pending_id,requested);result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
