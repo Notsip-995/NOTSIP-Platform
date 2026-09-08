@@ -54,7 +54,12 @@ class ToolExecutionGate:
         with cls._lock:
             data=approvals._load();now=time.time();canonical=json.dumps(args,sort_keys=True,separators=(',',':'),default=str);candidates=[]
             for item in data.values():
-                if item.get('status')!='APPROVED' or float(item.get('decided',0))+60<now:continue
+                if item.get('status')!='APPROVED':continue
+                expires=item.get('expires')
+                if expires is None:
+                    decided=float(item.get('decided',0))
+                    expires=decided+60
+                if float(expires)<=now:continue
                 context=item.get('context') or {}
                 if context.get('tool')!=name or context.get('actor','primary-user')!=actor:continue
                 expected=json.dumps(context.get('args') or {},sort_keys=True,separators=(',',':'),default=str)
