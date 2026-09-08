@@ -1,11 +1,13 @@
 from __future__ import annotations
 from fastapi import Depends,HTTPException
+from .actor_context import current_actor
 from .recovery_state_hardening import restore as restore_user_state,validate as validate_user_state
 
 def attach(app, *, require_auth, recovery, store):
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None)!='/api/recovery/restore']
     @app.post('/api/recovery/restore')
     async def restore(payload:dict,_:None=Depends(require_auth)):
+        if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required for recovery restore')
         if not bool(payload.get('confirm')):raise HTTPException(400,'explicit confirmation required')
         state=recovery.latest()
         if not state:raise HTTPException(404,'no recovery checkpoint available')
@@ -23,4 +25,5 @@ def attach(app, *, require_auth, recovery, store):
             if token_hash and store.row('SELECT id FROM devices WHERE id=?',(device_id,)) and not (current or {}).get('token_hash',''):
                 store.exec("UPDATE devices SET token_hash=?,status=CASE WHEN status='REPAIR_REQUIRED' THEN 'ONLINE' ELSE status END WHERE id=?",(token_hash,device_id));repaired.append(device_id)
         if isinstance(result,dict) and repaired:result['devices_repaired']=repaired
-        return {'status':'RESTORED','checkpoint':state,'result':result}
+        summary={k:result.get(k,0) for k in ('tasks','devices','commands','entities','relations','facts','devices_requiring_repair','devices_repaired','restored_files') if k in result}
+        return {'status':'RESTORED','result':summary,'checkpoint_timestamp':state.get('timestamp') or state.get('created_at')}
