@@ -103,11 +103,14 @@ class NotsipClient(private val ctx: Context) {
         return JSONObject(request("POST", "/api/perception/frame", body, null, deviceHeaders()))
     }
 
+    private fun isLoopback(host: String): Boolean =
+        host == "127.0.0.1" || host == "localhost" || host == "::1"
+
     private fun requireConfiguredUrl() {
         val url = baseUrl().toHttpUrlOrNull() ?: throw IllegalArgumentException("Configure a valid NOTSIP server URL first")
-        require(url.pathSegments.size <= 1 || url.encodedPath == "/") { "NOTSIP server URL must not contain a path" }
+        require(url.encodedPath.isEmpty() || url.encodedPath == "/") { "NOTSIP server URL must not contain a path" }
         if (url.scheme != "https") {
-            require(url.host == "127.0.0.1" || url.host == "localhost" || url.host == "[::1]") {
+            require(url.scheme == "http" && isLoopback(url.host)) {
                 "HTTPS is required for remote NOTSIP servers"
             }
         }
@@ -124,7 +127,7 @@ class NotsipClient(private val ctx: Context) {
         require(url.query.isEmpty() && url.fragment.isEmpty()) { "Server URL must not contain query or fragment" }
         require(url.encodedPath.isEmpty() || url.encodedPath == "/") { "Server URL must not contain a path" }
         if (url.scheme != "https") {
-            require(url.scheme == "http" && (url.host == "127.0.0.1" || url.host == "localhost" || url.host == "[::1]")) {
+            require(url.scheme == "http" && isLoopback(url.host)) {
                 "HTTPS is required for remote NOTSIP servers"
             }
         }
