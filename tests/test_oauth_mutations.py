@@ -14,7 +14,7 @@ class FakeResponse:
 
 
 class FakeClient:
-    calls=[]
+    def __init__(self,*args,**kwargs):self.calls=[]
     async def __aenter__(self):return self
     async def __aexit__(self,*args):return False
     async def request(self,method,url,headers=None,**kwargs):
@@ -42,15 +42,16 @@ def test_microsoft_calendar_mutation_is_account_scoped_and_uses_patch(tmp_path,m
     assert fake.calls[0][0]=='PATCH'
     assert fake.calls[0][1].endswith('/me/calendar/events/event-1')
     assert fake.calls[0][2]['Authorization']=='Bearer token-a'
-    assert 'subject' not in fake.calls[0][3]['json'] or fake.calls[0][3]['json']['subject']=='Updated'
+    assert fake.calls[0][3]['json']['subject']=='Updated'
     assert accounts.tokens(b['id'])['access_token']=='token-b'
 
 
-def test_google_mail_send_does_not_require_delivery_claim(tmp_path,monkeypatch):
+def test_google_mail_send_reports_provider_acceptance_not_delivery(tmp_path,monkeypatch):
     secrets=SecretStore(tmp_path);accounts=AccountStore(secrets);a=accounts.upsert('google','subject','user@example.com',scopes='openid profile email https://www.googleapis.com/auth/gmail.send')
     accounts.save_tokens(a['id'],{'access_token':'token'})
     fake=FakeClient();monkeypatch.setattr('notsip.oauth_services.httpx.AsyncClient',lambda *args,**kwargs:fake)
     result=asyncio.run(OAuthService(secrets,accounts).send_mail('google','to@example.com','s','body',a['id']))
     assert result['provider_status']==201
-    assert result['status']=='SUCCESS'
-    assert 'delivered' not in result
+    assert result['status']=='PARTIAL_SUCCESS'
+    assert result['verified'] is False
+    assert 'recipient delivery was not independently verified' in result['note']
