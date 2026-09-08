@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib,json,secrets,sqlite3,threading,time,uuid
+import hashlib,json,os,secrets,sqlite3,threading,time,uuid
 from pathlib import Path
 class Store:
     def __init__(self,root,database_url=''):
