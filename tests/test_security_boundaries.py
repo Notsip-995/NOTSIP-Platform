@@ -48,3 +48,10 @@ def test_failed_approved_action_is_not_left_executing(tmp_path,monkeypatch):
 
 def test_approved_action_returning_failure_marks_approval_failed(tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':2});registry=Registry();store=Store(tmp_path);registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},lambda value:{'status':'FAILURE','error':'provider rejected'}));agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store));pending=asyncio.run(agent.run_tool('dangerous',{'value':'x'}));agent.approvals.decide(pending['approval_id'],True);result=registry.get('dangerous').fn(value='x');assert result['status']=='FAILURE';assert agent.approvals._load()[pending['approval_id']]['status']=='FAILED'
+
+def test_oidc_mode_does_not_accept_api_key_as_actor_identity():
+    runtime=Path('src/notsip/runtime_prod.py').read_text(encoding='utf-8')
+    actor=Path('src/notsip/actor_context.py').read_text(encoding='utf-8')
+    assert "if auth.mode=='oidc':" in runtime
+    assert "bearer[7:]==settings.api_key:return" not in runtime
+    assert "auth.mode!='oidc'" in actor
