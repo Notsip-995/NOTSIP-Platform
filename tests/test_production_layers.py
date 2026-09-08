@@ -1,7 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from notsip.security import SecretStore, pkce_pair
 from notsip.nodes import NodeRegistry, RecoveryManager
@@ -11,6 +10,7 @@ from notsip.world import WorldModel
 from notsip.agent import Agent
 from notsip.policy import Policy
 from notsip.tools import Registry, Tool
+from notsip.memory_service import MemoryService
 from notsip.config import settings
 from notsip.core_runtime import app
 
@@ -56,6 +56,14 @@ def test_intelligence_does_not_count_same_source_as_independent(tmp_path):
     assert f['best_source_confidence']==.9
     assert f['corroboration_score']==.7
 
+def test_memory_consolidation_removes_duplicates(tmp_path):
+    store=Store(tmp_path);memory=MemoryService(store,'u')
+    memory.remember('Important fact',weight=.8);memory.remember(' important   fact ',weight=.6);memory.remember('Other fact',weight=.7)
+    result=memory.consolidate()
+    assert result['examined']==3 and result['unique']==2 and result['duplicates_removed']==1
+    rows=store.rows('SELECT content FROM memories WHERE user_id=? ORDER BY weight DESC',('u',))
+    assert [r['content'] for r in rows]==['Important fact','Other fact']
+
 def test_agent_clock_uses_configured_timezone(tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'local_timezone','Africa/Kigali')
     store=Store(tmp_path);agent=Agent(settings,store,Policy(2),Registry(),SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store))
@@ -73,7 +81,6 @@ def test_agent_clock_context_exposes_utc_and_timezone(tmp_path,monkeypatch):
     ctx=agent.context('hello')
     assert ctx['timezone']=='Africa/Kigali'
     assert datetime.fromisoformat(ctx['utc_time']).tzinfo is not None
-
 
 def test_production_routes_are_assembled():
     paths={r.path for r in app.routes};expected={'/api/voice/transcribe','/api/voice/speak','/api/perception/frame','/api/federation/register','/api/federation/nodes','/api/recovery/checkpoint','/api/integrations/{provider_name}/calendar','/api/update/check','/api/sessions','/api/memory/maintain','/api/diagnostics','/api/backups/{name}/restore'};assert expected <= paths
