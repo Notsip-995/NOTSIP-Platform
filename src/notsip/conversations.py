@@ -7,9 +7,16 @@ class ConversationStore:
     def __init__(self,root,user_id='primary-user'):
         self.path=Path(root)/'runtime'/'conversations.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.user_id=user_id
     def _load(self):
-        try:return json.loads(self.path.read_text(encoding='utf-8'))
-        except Exception:return {'sessions':{}}
+        if not self.path.exists():return {'sessions':{}}
+        try:
+            data=json.loads(self.path.read_text(encoding='utf-8'))
+        except Exception as exc:
+            raise RuntimeError(f'conversation state is unreadable: {exc}') from exc
+        if not isinstance(data,dict) or not isinstance(data.get('sessions'),dict):
+            raise RuntimeError('conversation state is structurally invalid')
+        return data
     def _save(self,d):
+        if not isinstance(d,dict) or not isinstance(d.get('sessions'),dict):raise ValueError('conversation state is structurally invalid')
         t=self.path.with_suffix('.tmp');t.write_text(json.dumps(d,sort_keys=True,ensure_ascii=False));t.replace(self.path)
     def _owned(self,s):
         return bool(s and s.get('user_id')==self.user_id)
