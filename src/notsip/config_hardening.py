@@ -3,7 +3,7 @@ import copy,importlib,uuid
 from fastapi import HTTPException,Request
 from fastapi.responses import JSONResponse
 
-SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}
+SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}
 RUNTIME_UNSUPPORTED={'data_dir','database_url'}
 
 def _redacted_config(mod):
@@ -32,8 +32,7 @@ def attach(app):
             if not _is_loopback(request):raise HTTPException(403,'initial NOTSIP setup is local-only')
             for key in list(requested):
                 if key in SECRET_NAMES and not str(requested[key] or '').strip():requested.pop(key,None)
-            try:
-                result=mod._apply_config(requested,bootstrap=True)
+            try:result=mod._apply_config(requested,bootstrap=True)
             except RuntimeError as exc:raise HTTPException(400,str(exc))
         else:
             await mod.require_auth(request)
