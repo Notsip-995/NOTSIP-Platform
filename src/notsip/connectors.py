@@ -74,8 +74,7 @@ class OAuth:
 def _public_host(host):
     try:
         if host.lower() in {'localhost','localhost.localdomain'}:return False
-        addrs=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)
-        return bool(addrs) and all(not (ipaddress.ip_address(a[4][0]).is_private or ipaddress.ip_address(a[4][0]).is_loopback or ipaddress.ip_address(a[4][0]).is_link_local or ipaddress.ip_address(a[4][0]).is_multicast or ipaddress.ip_address(a[4][0]).is_reserved) for a in addrs)
+        addrs=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM);return bool(addrs) and all(not (ipaddress.ip_address(a[4][0]).is_private or ipaddress.ip_address(a[4][0]).is_loopback or ipaddress.ip_address(a[4][0]).is_link_local or ipaddress.ip_address(a[4][0]).is_multicast or ipaddress.ip_address(a[4][0]).is_reserved) for a in addrs)
     except Exception:return False
 
 def _browser_executable():
@@ -85,35 +84,49 @@ def _browser_executable():
         found=shutil.which(name)
         if found:return found
     if platform.system()=='Windows':
-        candidates=[
-            Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Google/Chrome/Application/chrome.exe',
-            Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Google/Chrome/Application/chrome.exe',
-            Path(os.getenv('LOCALAPPDATA',''))/'Google/Chrome/Application/chrome.exe',
-            Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Microsoft/Edge/Application/msedge.exe',
-            Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Microsoft/Edge/Application/msedge.exe'
-        ]
+        candidates=[Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Google/Chrome/Application/chrome.exe',Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Google/Chrome/Application/chrome.exe',Path(os.getenv('LOCALAPPDATA',''))/'Google/Chrome/Application/chrome.exe',Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Microsoft/Edge/Application/msedge.exe',Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Microsoft/Edge/Application/msedge.exe']
         for p in candidates:
             if p.is_file():return str(p)
     return ''
 class Browser:
-    async def extract(self,url,wait_ms=1000):
+    async def _page(self,url):
         if not settings.browser_enabled:raise RuntimeError('browser automation is disabled')
         parsed=urllib.parse.urlparse(url)
-        if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser extraction requires a public http(s) URL')
-        if not _public_host(parsed.hostname):raise ValueError('browser extraction blocks private, loopback, link-local, multicast, and reserved addresses')
+        if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser automation requires a public http(s) URL')
+        if not _public_host(parsed.hostname):raise ValueError('browser automation blocks private, loopback, link-local, multicast, and reserved addresses')
         try:from playwright.async_api import async_playwright
         except Exception as e:raise RuntimeError('Playwright is unavailable in this installation') from e
-        async with async_playwright() as p:
-            launch={}
-            executable=_browser_executable()
-            if executable:launch['executable_path']=executable
-            try:b=await p.chromium.launch(headless=True,**launch)
-            except Exception as exc:
-                raise RuntimeError('No usable Chromium-compatible browser is installed; install Google Chrome/Edge or set NOTSIP_BROWSER_EXECUTABLE') from exc
-            page=await b.new_page()
-            async def guard(route):
-                target=urllib.parse.urlparse(route.request.url)
-                if target.scheme not in {'http','https'} or not target.hostname or not _public_host(target.hostname):await route.abort();return
-                await route.continue_()
-            await page.route('**/*',guard)
-            await page.goto(url,wait_until='domcontentloaded',timeout=30000);await page.wait_for_timeout(wait_ms);r={'url':page.url,'title':await page.title(),'text':(await page.locator('body').inner_text())[:50000]};await b.close();return r
+        p=await async_playwright().start();launch={};executable=_browser_executable()
+        if executable:launch['executable_path']=executable
+        try:b=await p.chromium.launch(headless=True,**launch)
+        except Exception as exc:await p.stop();raise RuntimeError('No usable Chromium-compatible browser is installed; install Chrome/Edge or set NOTSIP_BROWSER_EXECUTABLE') from exc
+        page=await b.new_page()
+        async def guard(route):
+            target=urllib.parse.urlparse(route.request.url)
+            if target.scheme not in {'http','https'} or not target.hostname or not _public_host(target.hostname):await route.abort();return
+            await route.continue_()
+        await page.route('**/*',guard)
+        return p,b,page
+    async def extract(self,url,wait_ms=1000):
+        p,b,page=await self._page(url)
+        try:
+            await page.goto(url,wait_until='domcontentloaded',timeout=30000);await page.wait_for_timeout(wait_ms);return {'status':'SUCCESS','url':page.url,'title':await page.title(),'text':(await page.locator('body').inner_text())[:50000],'verified':True}
+        finally:await b.close();await p.stop()
+    async def interact(self,url,actions,wait_ms=300):
+        p,b,page=await self._page(url);results=[]
+        try:
+            await page.goto(url,wait_until='domcontentloaded',timeout=30000)
+            for index,action in enumerate(actions or []):
+                if not isinstance(action,dict):results.append({'index':index,'status':'FAILURE','error':'action must be an object'});break
+                kind=str(action.get('type','')).lower();selector=str(action.get('selector',''))
+                if not selector:results.append({'index':index,'status':'FAILURE','error':'selector is required'});break
+                try:
+                    locator=page.locator(selector).first
+                    if kind=='click':await locator.click(timeout=10000)
+                    elif kind in {'fill','type'}:await locator.fill(str(action.get('value','')),timeout=10000)
+                    elif kind=='select':await locator.select_option(str(action.get('value','')),timeout=10000)
+                    else:raise ValueError(f'unsupported browser action: {kind}')
+                    await page.wait_for_timeout(wait_ms);visible=await locator.is_visible();results.append({'index':index,'type':kind,'selector':selector,'status':'SUCCESS' if visible else 'UNKNOWN','verified':visible})
+                except Exception as exc:results.append({'index':index,'type':kind,'selector':selector,'status':'FAILURE','error':str(exc),'verified':False});break
+            return {'status':'SUCCESS' if results and all(r['status']=='SUCCESS' for r in results) else 'PARTIAL_SUCCESS' if any(r['status']=='SUCCESS' for r in results) else 'FAILURE','url':page.url,'title':await page.title(),'actions':results,'verified':all(r.get('verified',False) for r in results)}
+        finally:await b.close();await p.stop()
