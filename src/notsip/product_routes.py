@@ -1,5 +1,5 @@
 from __future__ import annotations
-import secrets,time
+import json,secrets,time
 from fastapi import Depends,HTTPException,Request
 from fastapi.responses import RedirectResponse
 from .updater import UpdateManager
@@ -8,6 +8,9 @@ from .tools import Tool
 from .execution_gate import ToolExecutionGate
 from .oauth_services import OAuthService
 from .actor_context import current_actor
+
+_ALLOWED_COMMAND_STATUSES={'SUCCESS','FAILURE','PARTIAL_SUCCESS','UNKNOWN'}
+MAX_COMMAND_RESULT_BYTES=1024*1024
 
 def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 def _checkpoint_devices(store):return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
@@ -118,7 +121,12 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         if not _device_token_allowed(store,device_id,device_token):raise HTTPException(401,'device authentication required')
         command_id=str(payload.get('command_id',''));placeholder='%s' if getattr(store,'_backend',None) else '?';command=store.row(f'SELECT device_id FROM commands WHERE id={placeholder}',(command_id,))
         if not command or command['device_id']!=device_id:raise HTTPException(403,'command does not belong to authenticated device')
-        ok=store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {},device_id)
+        status=str(payload.get('status','UNKNOWN')).upper()
+        if status not in _ALLOWED_COMMAND_STATUSES:raise HTTPException(400,'invalid command result status')
+        result_payload=payload.get('result') or {}
+        if not isinstance(result_payload,dict):raise HTTPException(400,'command result must be an object')
+        if len(json.dumps(result_payload,separators=(',',':'),default=str).encode('utf-8'))>MAX_COMMAND_RESULT_BYTES:raise HTTPException(413,'command result exceeds maximum size')
+        ok=store.command_result(command_id,status,result_payload,device_id)
         if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
         return {'status':'RECORDED','device_id':device_id,'command_id':command_id}
     @app.post('/api/devices/heartbeat')
