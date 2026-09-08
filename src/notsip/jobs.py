@@ -1,5 +1,4 @@
-from __future__ import annotations
-import asyncio,inspect,json,os,socket,time,uuid
+import asyncio,inspect,json,os,socket,time,uuid,hashlib
 from .actor_context import current_actor,set_actor,reset_actor
 
 class Scheduler:
@@ -13,10 +12,13 @@ class Scheduler:
             if started and now-started>self.reclaim_after:
                 data.update({'recovered_from':data.get('worker_id'),'recovered_at':now,'state':'PENDING'});self.store.task_update(task['id'],state='PENDING',run_at=now,data=json.dumps(data),error='reclaimed after worker timeout')
     def register(self,name,fn):self.handlers[name]=fn
+    @staticmethod
+    def _storage_idempotency_key(actor,key):
+        return hashlib.sha256(f'{actor}\0{key}'.encode('utf-8')).hexdigest()
     def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key='',actor=None):
         delay=max(0.0,float(delay or 0));interval=None if interval is None else float(interval)
         if interval is not None and not 5<=interval<=30*86400:raise ValueError('interval must be between 5 seconds and 30 days')
-        priority=max(0,min(4,int(priority or 0)));payload=dict(data or {});payload.setdefault('actor',str(actor or current_actor()));payload.setdefault('requester',payload.get('actor'));payload.setdefault('state','PENDING');payload.setdefault('result',{});payload.setdefault('verification',{});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('max_retries',self.max_retries);payload.setdefault('idempotency_key',key);return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,key)
+        priority=max(0,min(4,int(priority or 0)));payload=dict(data or {});actor_id=str(actor or payload.get('actor') or current_actor()).strip() or 'primary-user';payload.setdefault('actor',actor_id);payload.setdefault('requester',payload.get('actor'));payload.setdefault('state','PENDING');payload.setdefault('result',{});payload.setdefault('verification',{});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('idempotency_key',key);payload.setdefault('max_retries',self.max_retries);storage_key=self._storage_idempotency_key(actor_id,key) if idempotency_key else key;return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,storage_key)
     async def _publish(self,event_type,payload):
         if self.events is None:return []
         try:
@@ -51,7 +53,7 @@ class Scheduler:
             if inspect.isawaitable(result):result=await result
             status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS';payload['finished_at']=time.time();payload['last_result']=result;self._outcome_metadata(payload,result,status)
             if status=='CONTINUE':
-                payload['state']='PENDING';self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
+                payload['state']='PENDING';self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor});
                 if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
                 return {'status':'CONTINUE','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
             if status in {'UNKNOWN','PARTIAL_SUCCESS'}:self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
