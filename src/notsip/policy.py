@@ -22,13 +22,11 @@ class Policy:
         return max(0,min(4,int(raw)))
     def decide(self,risk,destructive=False,capability='',approved=False):
         level=self.current_level;self.level=level;required=self.capability_level(capability) if capability else 0
-        if capability and level<required:
-            return Decision(False,True,f'capability {capability} requires autonomy level {required} (current {level})',capability,required)
         if approved:
             if risk==Risk.CRITICAL:return Decision(False,True,'critical action remains blocked even after approval',capability,required)
             return Decision(True,False,'explicit approval granted',capability,required)
-        if risk==Risk.LOW:
-            return Decision(True,False,'allowed',capability,required)
+        if capability and level<required:return Decision(False,True,f'capability {capability} requires autonomy level {required} (current {level})',capability,required)
+        if risk==Risk.LOW:return Decision(True,False,'allowed',capability,required)
         if risk==Risk.MEDIUM:
             if level>=3:return Decision(True,False,'allowed',capability,required)
             return Decision(False,True,'medium-risk action requires autonomy level 3 or approval',capability,required)
