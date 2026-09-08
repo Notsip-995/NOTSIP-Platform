@@ -44,13 +44,17 @@ class Settings(BaseSettings):
         for name in ('workspace','screenshots','audio','perception','recovery','runtime','backups','updates'):(root/name).mkdir(parents=True,exist_ok=True)
 
 settings=Settings()
-try:
-    cfg=Path(settings.data_dir)/'config.json'
-    if cfg.exists():
-        data=json.loads(cfg.read_text(encoding='utf-8')).get('settings',{})
+cfg=Path(settings.data_dir)/'config.json'
+if cfg.exists():
+    try:
+        raw=json.loads(cfg.read_text(encoding='utf-8'))
+        if not isinstance(raw,dict) or not isinstance(raw.get('settings',{}),dict):raise ValueError('persisted configuration must contain an object-valued settings field')
+        data=raw['settings']
         for k,v in data.items():
             if k in Settings.model_fields and k not in SECRET_FIELDS and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
-except Exception as exc:CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
+    except Exception as exc:
+        CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
+        raise RuntimeError(f'failed to load persisted NOTSIP configuration: {CONFIG_LOAD_ERROR}') from exc
 try:
     Path(settings.data_dir).mkdir(parents=True,exist_ok=True)
     from .security import SecretStore
