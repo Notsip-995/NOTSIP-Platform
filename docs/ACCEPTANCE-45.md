@@ -17,7 +17,7 @@ This document is the implementation contract derived from the project defect aud
 |11|Operating console|Implemented|dashboard, memory, tasks, devices, security, integrations, diagnostics, backup|
 |12|Browser auth|Implemented|HttpOnly server-side session; no localStorage bearer API key|
 |13|Missing capability guidance|Implemented|capability/diagnostic views plus setup navigation|
-|14|Durable OIDC sessions|Environment-gated|Browser sessions persist encrypted locally; in-progress OIDC authorization state is intentionally process-scoped|
+|14|Durable OIDC sessions|Implemented|encrypted durable OIDC pending/session state plus browser session persistence|
 |15|Android command-result auth|Implemented|device ID + device token required; command result is bound to authenticated device|
 |16|Pairing protections|Implemented|short-lived one-use pairing codes, rate limiting, device token/revocation/audit|
 |17|Federation auth lifecycle|Implemented|HMAC challenge/sign/verify, token rotation, lease, revoke, reconciliation|
@@ -37,7 +37,7 @@ This document is the implementation contract derived from the project defect aud
 |31|Long-term memory lifecycle|Implemented|episodic/semantic/procedural/working/preference/relationship/system/perception kinds, decay and consolidation|
 |32|World model|Implemented|persistent entities/relations/facts and perception-fed world architecture|
 |33|Event-driven reasoning loop|Implemented|perception events can trigger agent review at higher autonomy levels|
-|34|Durable scheduler|Implemented|worker ownership, reclaim, retries, idempotency keys and persistent execution metadata|
+|34|Durable scheduler|Implemented|worker ownership, atomic claim/reclaim, retries, idempotency keys and persistent execution metadata|
 |35|Separate supervisor intervals|Implemented|health/checkpoint/proactive/memory intervals are distinct settings|
 |36|Recovery|Implemented|checkpoints, verification, recoverable-state restore into runtime state, redispatch plans|
 |37|OAuth account lifecycle|Implemented|Google/Microsoft OIDC + encrypted per-account token storage + account records + disconnect/revoke|
@@ -48,7 +48,7 @@ This document is the implementation contract derived from the project defect aud
 |42|Diagnostics center|Implemented|runtime/storage/db/LLM/STT/TTS/vision/web/email/OAuth/UIA/Android/scheduler/federation/recovery/security checks|
 |43|Deep CI|Implemented|compile, tests, Docker, actual EXE lifecycle, installer build, Android build|
 |44|Windows installer|Implemented|Inno Setup source and CI artifact build + installed-copy smoke|
-|45|Automatic update/recovery|Implemented|trusted GitHub release check, mandatory SHA-256, backup + health verification + rollback path|
+|45|Automatic update/recovery|Implemented|trusted GitHub release check, artifact verification, backup + health verification + rollback path|
 
 ## Final product gate
 
