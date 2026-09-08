@@ -16,13 +16,18 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     async def recovery_state(_:None=Depends(require_auth)):return recovery.restore_state()
     @app.get('/api/federation/challenge')
     async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):
+        if not settings.node_shared_secret:raise HTTPException(503,'federation shared secret is not configured')
         return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce),'algorithm':'HMAC-SHA256'}
     @app.post('/api/federation/register')
     async def federation_register(payload:dict,_:None=Depends(require_auth)):
-        return nodes.register(str(payload['node_id']),str(payload['name']),str(payload.get('platform','unknown')),list(payload.get('capabilities',[])),str(payload.get('public_key','')),str(payload.get('nonce','')),str(payload.get('signature','')))
+        if not settings.node_shared_secret:raise HTTPException(503,'federation shared secret is not configured')
+        try:return nodes.register(str(payload['node_id']),str(payload['name']),str(payload.get('platform','unknown')),list(payload.get('capabilities',[])),str(payload.get('public_key','')),str(payload.get('nonce','')),str(payload.get('signature','')))
+        except PermissionError as exc:raise HTTPException(401,str(exc))
     @app.post('/api/federation/{node_id}/heartbeat')
     async def federation_heartbeat(node_id:str,payload:dict):
-        return {'status':'SUCCESS','lease':nodes.heartbeat(node_id,str(payload.get('token','')),list(payload.get('capabilities',[])),payload.get('health') or {},str(payload.get('nonce','')),str(payload.get('signature','')))}
+        if not settings.node_shared_secret:raise HTTPException(503,'federation shared secret is not configured')
+        try:return {'status':'SUCCESS','lease':nodes.heartbeat(node_id,str(payload.get('token','')),list(payload.get('capabilities',[])),payload.get('health') or {},str(payload.get('nonce','')),str(payload.get('signature','')))}
+        except PermissionError as exc:raise HTTPException(401,str(exc))
     @app.post('/api/federation/{node_id}/rotate')
     async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return nodes.rotate(node_id)
     @app.post('/api/federation/{node_id}/revoke')
@@ -48,15 +53,11 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
-        candidate=__import__('pathlib').Path(str(payload.get('path',''))).resolve()
-        update_dir=updates.dir.resolve()
+        candidate=__import__('pathlib').Path(str(payload.get('path',''))).resolve();update_dir=updates.dir.resolve()
         if update_dir not in candidate.parents or candidate.suffix.lower()!='.exe' or not candidate.is_file():raise HTTPException(400,'update path must point to a downloaded EXE inside NOTSIP updates directory')
         result=updates.install_and_verify(candidate)
-        async def stop_after_response():
-            await asyncio.sleep(1.0)
-            os._exit(0)
-        asyncio.create_task(stop_after_response())
-        return result
+        async def stop_after_response():await asyncio.sleep(1.0);os._exit(0)
+        asyncio.create_task(stop_after_response());return result
     @app.get('/api/oauth/status')
     async def oauth_status(_:None=Depends(require_auth)):return {'mode':auth.mode,'provider':settings.oidc_provider,'configured':auth.oidc.configured,'issuer':auth.oidc.issuer,'client_id_configured':bool(auth.oidc.client_id),'accounts':accounts.list()}
     @app.get('/api/oauth/login')
@@ -89,8 +90,7 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     async def device_result(payload:dict, request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
         if not device_id or not store.device_token_valid(device_id,device_token):raise HTTPException(401,'device authentication required')
-        command_id=str(payload.get('command_id',''))
-        command=store.row('SELECT device_id FROM commands WHERE id=?',(command_id,))
+        command_id=str(payload.get('command_id',''));command=store.row('SELECT device_id FROM commands WHERE id=?',(command_id,))
         if not command or command['device_id']!=device_id:raise HTTPException(403,'command does not belong to authenticated device')
         ok=store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {},device_id)
         if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
