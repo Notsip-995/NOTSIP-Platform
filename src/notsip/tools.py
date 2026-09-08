@@ -42,4 +42,5 @@ class Windows:
 def open_target(target):
     try: opened=bool(webbrowser.open(target))
     except Exception as exc: return {'status':'FAILURE','opened':False,'target':target,'error':str(exc)}
-    return {'status':'SUCCESS' if opened else 'UNKNOWN','opened':opened,'target':target,'note':'launch requested; target application/browser state was not independently verified'}
+    if not opened:return {'status':'UNKNOWN','opened':False,'target':target,'note':'launch request was not accepted by the platform'}
+    return {'status':'PARTIAL_SUCCESS','opened':True,'target':target,'verification_required':True,'note':'launch requested; target application/browser state was not independently verified'}
