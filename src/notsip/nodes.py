@@ -3,14 +3,17 @@ import hashlib,hmac,json,os,secrets,time,uuid
 from pathlib import Path
 class NodeRegistry:
     def __init__(self,store,secret='',lease_seconds=None):self.store=store;self.secret=secret or '';self.lease_seconds=int(lease_seconds or os.getenv('NOTSIP_NODE_LEASE_SECONDS','90'))
-    def sign(self,node_id,nonce):return hmac.new(self.secret.encode(),f'{node_id}:{nonce}'.encode(),hashlib.sha256).hexdigest() if self.secret else ''
-    def verify(self,node_id,nonce,signature):return bool(self.secret) and hmac.compare_digest(self.sign(node_id,nonce),signature)
+    def _require_shared_secret(self):
+        if not self.secret:raise PermissionError('federation shared secret is not configured')
+    def sign(self,node_id,nonce):self._require_shared_secret();return hmac.new(self.secret.encode(),f'{node_id}:{nonce}'.encode(),hashlib.sha256).hexdigest()
+    def verify(self,node_id,nonce,signature):
+        self._require_shared_secret();return bool(signature) and hmac.compare_digest(self.sign(node_id,nonce),signature)
     def register(self,node_id,name,platform,capabilities=None,public_key='',nonce='',signature=''):
-        if self.secret and not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
+        if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         token=secrets.token_urlsafe(32);self.store.pair_device(node_id,name,platform,public_key,token);self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps({'capabilities':capabilities or [],'lease_expires':time.time()+self.lease_seconds,'registered_at':time.time(),'node_epoch':1}),node_id));return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds}
     def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature=''):
         if not self.store.device_token_valid(node_id,token):raise PermissionError('invalid node token')
-        if self.secret and not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
+        if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         data=self.store.row('SELECT data,status FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));return cur
     def rotate(self,node_id):
         if not self.store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise KeyError(node_id)
