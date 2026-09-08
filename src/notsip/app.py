@@ -170,11 +170,17 @@ async def create_approval(payload:dict,_:None=Depends(require_auth)):return appr
 async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_auth)):
     item=approvals.decide(approval_id,bool(payload.get('approved')))
     if not item:raise HTTPException(404,'approval not found')
+    ctx=item.get('context') or {}
+    actor=str(ctx.get('actor','primary-user'))
+    if actor!=__import__('.actor_context',fromlist=['current_actor']).current_actor():raise HTTPException(403,'approval belongs to a different actor')
     audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
     if item['status']=='APPROVED' and payload.get('execute',True):
-        ctx=item.get('context') or {};name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
+        name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
         if not tool:raise HTTPException(400,'approved tool no longer exists')
-        result=tool.fn(**args);result=await result if inspect.isawaitable(result) else result;result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result};audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
+        ToolExecutionGate.wrap_registry(registry)
+        try:result=tool.fn(**args)
+        except PermissionError as exc:raise HTTPException(403,str(exc)) from exc
+        result=await result if inspect.isawaitable(result) else result;result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result};audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
     return item
 @app.get('/api/memory/lifecycle')
 async def memory_lifecycle(_:None=Depends(require_auth)):return memory_service.snapshot()
