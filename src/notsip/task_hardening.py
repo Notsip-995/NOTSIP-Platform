@@ -5,9 +5,7 @@ from .actor_context import current_actor
 
 
 def _task_data(payload, actor):
-    data=dict(payload.get('data') or {})
-    data.pop('actor',None)
-    context=payload.get('context',data.get('context',{}));constraints=payload.get('constraints',data.get('constraints',[]));required_tools=payload.get('required_tools',data.get('required_tools',[]));permissions=payload.get('permissions',data.get('permissions',[]));subtasks=payload.get('subtasks',data.get('subtasks',[]));verification=payload.get('verification',data.get('verification',{}))
+    data=dict(payload.get('data') or {});data.pop('actor',None);context=payload.get('context',data.get('context',{}));constraints=payload.get('constraints',data.get('constraints',[]));required_tools=payload.get('required_tools',data.get('required_tools',[]));permissions=payload.get('permissions',data.get('permissions',[]));subtasks=payload.get('subtasks',data.get('subtasks',[]));verification=payload.get('verification',data.get('verification',{}))
     if not isinstance(context,dict):raise HTTPException(400,'context must be an object')
     for name,value in (('constraints',constraints),('required_tools',required_tools),('permissions',permissions),('subtasks',subtasks)):
         if not isinstance(value,list):raise HTTPException(400,f'{name} must be an array')
@@ -17,19 +15,19 @@ def _task_data(payload, actor):
         try:deadline=float(deadline)
         except (TypeError,ValueError):raise HTTPException(400,'deadline must be Unix seconds')
         if deadline<=time.time():raise HTTPException(400,'deadline must be in the future')
-    data.update({'actor':actor,'requester':actor,'context':context,'deadline':deadline,'priority':max(0,min(4,int(payload.get('priority',data.get('priority',0)) or 0))),'constraints':constraints,'required_tools':required_tools,'permissions':permissions,'subtasks':subtasks,'verification':verification,'state':data.get('state','PENDING')})
-    return data
+    data.update({'actor':actor,'requester':actor,'context':context,'deadline':deadline,'priority':max(0,min(4,int(payload.get('priority',data.get('priority',0)) or 0))),'constraints':constraints,'required_tools':required_tools,'permissions':permissions,'subtasks':subtasks,'verification':verification,'state':data.get('state','PENDING')});return data
 
 
 def attach(app,require_auth,store,jobs):
+    from .app import agent as live_agent
+    jobs.agent=live_agent
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/tasks','/api/tasks/{task_id}/run'}]
     def own(task):
         try:data=json.loads(task.get('data') or '{}')
         except Exception:data={}
         return data.get('actor','primary-user')==current_actor()
     @app.get('/api/tasks')
-    async def list_tasks(_:None=Depends(require_auth)):
-        return {'tasks':[x for x in store.tasks() if own(x)]}
+    async def list_tasks(_:None=Depends(require_auth)):return {'tasks':[x for x in store.tasks() if own(x)]}
     @app.post('/api/tasks')
     async def create_task(payload:dict,_:None=Depends(require_auth)):
         actor=current_actor();objective=str(payload.get('objective','')).strip();handler=str(payload.get('handler','agent')).strip()
