@@ -59,13 +59,12 @@ def install(store, jobs, app):
                 with store._backend.conn() as c:
                     cur=c.execute('UPDATE commands SET status=%s,result=%s,updated=%s WHERE id=%s AND device_id=%s',(status,json.dumps(result),time.time(),command_id,device_id));
                     if cur.rowcount!=1:raise PermissionError('command does not belong to authenticated device')
-                    return None
+                    return True
             with store.lock,store.conn() as c:
                 cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=?',(status,json.dumps(result),time.time(),command_id,device_id));
                 if cur.rowcount!=1:raise PermissionError('command does not belong to authenticated device')
-                return None
-        return store._backend.command_result(command_id,status,result,device_id) if getattr(store,'_backend',None) else store.command_result.__wrapped__(command_id,status,result) if hasattr(store.command_result,'__wrapped__') else None
-    # Preserve a direct non-device path for internal callers by binding the current Store method only when needed.
+                return True
+        return original_result(command_id,status,result)
     original_result=store.command_result
     def result_wrapper(command_id,status,result,device_id=None):
         if device_id is not None:return atomic_result(command_id,status,result,device_id)
