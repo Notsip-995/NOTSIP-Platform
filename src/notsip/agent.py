@@ -19,7 +19,7 @@ class Agent:
         now=datetime.now(ZoneInfo(self.settings.local_timezone));return {'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'memory':self.store.memories(self.user,text,15),'conversation':self.conversations.history(self.session_id,20),'summary':self.session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':self.approvals.pending()}
     def _time_response(self,text):
         s=text.strip().lower()
-        try:local= datetime.now(ZoneInfo(self.settings.local_timezone))
+        try:local=datetime.now(ZoneInfo(self.settings.local_timezone))
         except ZoneInfoNotFoundError as exc:raise RuntimeError(f'invalid configured timezone: {self.settings.local_timezone}') from exc
         utc=local.astimezone(timezone.utc)
         if s in {'time','date','today','day','what time is it','what date is it','what day is it'} or 'current time' in s or 'current date' in s or 'day of the week' in s:
@@ -56,13 +56,13 @@ class Agent:
     async def run_tool(self,name,args,approved=False):
         tool=self.registry.get(name)
         if not tool:return {'status':'FAILURE','error':'unknown tool'}
-        d=self.policy.decide(tool.risk,tool.destructive)
+        d=self.policy.decide(tool.risk,tool.destructive,tool.capability)
         if not d.allowed:
             if d.needs_confirmation and not approved:
-                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk)})
+                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level})
                 self.store.audit(self.user,name,'approval','request','PENDING','approval requested')
-                return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':item['reason']}
-            return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason}
+                return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
+            return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
         r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute','SUCCESS',json.dumps(r,default=str));return r
     def fallback(self,text):
         s=text.lower();clock=self._time_response(text)
