@@ -4,7 +4,7 @@ import httpx
 class OAuthService:
     PROFILES={
         'google':{'scopes':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly','calendar':'https://www.googleapis.com/calendar/v3/calendars/primary/events','mail':'https://gmail.googleapis.com/gmail/v1/users/me/messages','token':'https://oauth2.googleapis.com/token','revoke':'https://oauth2.googleapis.com/revoke'},
-        'microsoft':{'scopes':'openid profile email offline_access User.Read Calendars.Read Mail.Read','calendar':'https://graph.microsoft.com/v1.0/me/calendar/events','mail':'https://graph.microsoft.com/v1.0/me/messages','token':'https://login.microsoftonline.com/common/oauth2/v2.0/token','revoke':'https://login.microsoftonline.com/common/oauth2/v2.0/logout'},
+        'microsoft':{'scopes':'openid profile email offline_access User.Read Calendars.Read Mail.Read','calendar':'https://graph.microsoft.com/v1.0/me/calendar/events','mail':'https://graph.microsoft.com/v1.0/me/messages','token':'https://login.microsoftonline.com/common/oauth2/v2.0/token'},
     }
     def __init__(self,secrets,accounts=None):self.secrets=secrets;self.accounts=accounts
     def _account(self,provider,account_id=None):
@@ -19,9 +19,7 @@ class OAuthService:
         if not matches:raise RuntimeError(f'{provider} account is not authorized')
         raise RuntimeError(f'multiple {provider} accounts are connected; specify account_id')
     def _token(self,provider,account_id=None):
-        item=self._account(provider,account_id)
-        tokens=self.accounts.tokens(item['id'])
-        return tokens.get('access_token',''),item
+        item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);return tokens.get('access_token',''),item
     async def _get(self,provider,path,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         token,item=self._token(provider,account_id)
@@ -37,10 +35,22 @@ class OAuthService:
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);refresh=tokens.get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','') or self.secrets.get('oidc:client_id','')
         if not refresh or not client_id:raise RuntimeError(f'{provider} refresh token or client id unavailable')
-        async with httpx.AsyncClient(timeout=30) as c:
-            r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id});r.raise_for_status();new=r.json()
+        async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id});r.raise_for_status();new=r.json()
         self.accounts.save_tokens(item['id'],new);return new
+    async def revoke(self,provider,account_id=None):
+        if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
+        item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);access=tokens.get('access_token','');refresh=tokens.get('refresh_token','')
+        if not access and not refresh:return {'status':'ALREADY_REVOKED','account_id':item['id'],'provider':provider}
+        if provider=='google':
+            token=refresh or access
+            async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
+            if r.status_code not in (200,400):r.raise_for_status()
+            if r.status_code==400:return {'status':'PROVIDER_TOKEN_ALREADY_INVALID','account_id':item['id'],'provider':provider,'provider_status':400}
+            return {'status':'PROVIDER_REVOKED','account_id':item['id'],'provider':provider,'provider_status':r.status_code}
+        # Microsoft does not expose a delegated per-token revoke endpoint for this
+        # integration. Its sign-out/session invalidation endpoints are not equivalent
+        # and may affect other sessions, so never pretend local deletion is revocation.
+        return {'status':'PROVIDER_REVOCATION_UNAVAILABLE','account_id':item['id'],'provider':provider,'reason':'Microsoft delegated token revocation is not safely available through the configured integration'}
     def save_tokens(self,provider,tokens,account_id=None):
-        item=self._account(provider,account_id)
-        return self.accounts.save_tokens(item['id'],tokens)
+        item=self._account(provider,account_id);return self.accounts.save_tokens(item['id'],tokens)
     def profile(self,provider):return self.PROFILES.get(provider,{'scopes':''})
