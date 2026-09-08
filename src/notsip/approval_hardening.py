@@ -1,6 +1,6 @@
 from __future__ import annotations
-import time, threading
-from fastapi import Depends, HTTPException
+import time,threading
+from fastapi import Depends,HTTPException
 _EXECUTION_LOCK=threading.RLock()
 
 def attach(app, *, require_auth, approvals, registry, audit_log, agent):
@@ -17,10 +17,12 @@ def attach(app, *, require_auth, approvals, registry, audit_log, agent):
             if not item or item.get('status')=='PENDING':raise HTTPException(409,'approval state transition failed')
             audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
             if item['status']=='APPROVED' and payload.get('execute',True):
-                ctx=item.get('context') or {};name=str(ctx.get('tool',''));args=ctx.get('args') or {}
-                if not registry.get(name):raise HTTPException(400,'approved tool no longer exists')
-                result=await agent.run_tool(name,args,approved=True)
-                if result.get('status')=='FAILURE':
-                    current=approvals._load().get(approval_id) or item;current['status']='FAILED';current['failed_at']=time.time();current['execution']=result;approvals._save({**approvals._load(),approval_id:current});audit_log.write('approval.execution_failed',approval_id=approval_id,tool=name,result=result);return current
-                current=approvals._load().get(approval_id) or item;current['status']='EXECUTED';current['executed']=time.time();current['execution']=result;approvals._save({**approvals._load(),approval_id:current});audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item=current
+                ctx=item.get('context') or {};name=str(ctx.get('tool',''));args=ctx.get('args') or {};tool=registry.get(name)
+                if not tool:raise HTTPException(400,'approved tool no longer exists')
+                try:
+                    result=tool.fn(**args);result=await result if hasattr(result,'__await__') else result
+                except Exception as exc:
+                    audit_log.write('approval.execution_failed',approval_id=approval_id,tool=name,error=str(exc));raise
+                result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result}
+                current=approvals._load().get(approval_id) or item;current['execution']=result;current['executed']=time.time();current['status']=result.get('status','SUCCESS') if result.get('status') in {'FAILED','PARTIAL_SUCCESS','UNKNOWN'} else 'EXECUTED';approvals._save({**approvals._load(),approval_id:current});audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item=current
             return item
