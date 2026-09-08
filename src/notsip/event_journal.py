@@ -17,18 +17,23 @@ class EventJournal:
     def append(self,event):
         row={'ts':time.time(),'type':event.type,'source':event.source,'timestamp':event.timestamp,'payload':_redact(event.payload)}
         with self.lock,self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,default=str)+'\n')
-        self._trim();return row
+        trimmed=self._trim()
+        if trimmed.get('status')!='SUCCESS':row['maintenance_warning']=trimmed
+        return row
     def _trim(self):
-        try:
+        with self.lock:
             lines=self.path.read_text(encoding='utf-8').splitlines()
-            if len(lines)>self.max_events:self.path.write_text('\n'.join(lines[-self.max_events:])+'\n',encoding='utf-8')
-        except Exception:pass
+            if len(lines)<=self.max_events:return {'status':'SUCCESS','trimmed':0}
+            kept=lines[-self.max_events:]
+            tmp=self.path.with_suffix('.tmp');tmp.write_text('\n'.join(kept)+'\n',encoding='utf-8');tmp.replace(self.path)
+            return {'status':'SUCCESS','trimmed':len(lines)-len(kept)}
     def recent(self,limit=500):
         if not self.path.exists():return []
-        rows=[]
+        rows=[];bad=0
         for line in self.path.read_text(encoding='utf-8').splitlines()[-max(1,min(int(limit),5000)):]:
             try:rows.append(json.loads(line))
-            except Exception:continue
+            except json.JSONDecodeError:bad+=1
+        if bad:raise RuntimeError(f'event journal contains {bad} malformed record(s)')
         return rows
 
 class JournaledEventBus:
