@@ -17,6 +17,17 @@ jobs:
         run: pytest -q
       - name: Docker build
         run: docker build -t notsip-ci .
+      - name: Docker runtime smoke
+        run: |
+          set -euxo pipefail
+          cid=$(docker run -d --name notsip-ci-runtime -e NOTSIP_HOST=0.0.0.0 -e NOTSIP_API_KEY='' -e NOTSIP_OPEN_BROWSER=false notsip-ci)
+          trap 'docker logs "$cid" || true; docker rm -f "$cid" || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8765/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+            if [ "$i" -eq 30 ]; then exit 1; fi
+          done
+          docker exec "$cid" python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).read().decode())"
   windows-build:
     runs-on: windows-latest
     steps:
