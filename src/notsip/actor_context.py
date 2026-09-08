@@ -23,7 +23,7 @@ def attach_actor_middleware(app,auth):
             actor='primary-user';cookie=request.cookies.get('notsip_session')
             if cookie and auth.validate_session(cookie):
                 session=auth.sessions.get(cookie,{}) or {};actor=_safe_actor(session.get('claims') or {})
-            elif request.headers.get('authorization','').startswith('Bearer '):
+            elif auth.mode!='oidc' and request.headers.get('authorization','').startswith('Bearer '):
                 bearer=request.headers.get('authorization','')[7:]
                 if getattr(auth.settings,'api_key','') and bearer==auth.settings.api_key:actor='primary-user'
             request.state.notsip_actor=actor;token=set_actor(actor);return await call_next(request)
