@@ -1,8 +1,10 @@
 from __future__ import annotations
-import base64, email.policy
+import base64,email.policy
 from email.message import EmailMessage
 from urllib.parse import quote
 import httpx
+
+MAX_OAUTH_RESPONSE_BYTES=10*1024*1024
 
 class OAuthService:
     PROFILES={
@@ -27,27 +29,35 @@ class OAuthService:
     def _require_scope(self,provider,item,kind):
         required=self.PROFILES[provider].get(f'{kind}_scope','')
         if required not in self._scopes(item):raise PermissionError(f'{provider} OAuth account lacks required scope: {required}')
+    @staticmethod
+    def _response_json(response):
+        if response.is_redirect or response.is_permanent_redirect:raise RuntimeError('OAuth provider redirect rejected')
+        response.raise_for_status()
+        if len(response.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth provider response exceeded safety limit')
+        return response.json()
     async def _get(self,provider,path,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         token,item=self._token(provider,account_id)
         if not token:raise RuntimeError(f'{provider} account is not authorized')
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
             r=await c.get(self.PROFILES[provider][path],headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
             if r.status_code==401:
                 await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.get(self.PROFILES[provider][path],headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
-            r.raise_for_status();return r.json()
+            return self._response_json(r)
     async def calendar(self,provider,account_id=None):return await self._get(provider,'calendar',account_id)
     async def mail(self,provider,account_id=None):return await self._get(provider,'mail',account_id)
     async def _request(self,provider,method,path,account_id=None,**kwargs):
         token,item=self._token(provider,account_id)
         if not token:raise RuntimeError(f'{provider} account is not authorized')
         extra_headers=dict(kwargs.pop('headers',{}) or {})
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
             def headers_for(current):return {'Authorization':'Bearer '+current,'Accept':'application/json',**extra_headers}
             r=await c.request(method,path,headers=headers_for(token),**kwargs)
             if r.status_code==401:
                 await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.request(method,path,headers=headers_for(token),**kwargs)
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth provider redirect rejected')
             if r.status_code not in (200,201,202,204):r.raise_for_status()
+            if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth provider response exceeded safety limit')
             if r.status_code==204 or not r.content:return {'status':'SUCCESS','provider_status':r.status_code}
             data=r.json();return {'status':'SUCCESS','provider_status':r.status_code,'data':data}
     async def calendar_create(self,provider,title,start,end,description='',location='',timezone='UTC',account_id=None):
@@ -82,7 +92,12 @@ class OAuthService:
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);refresh=tokens.get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','') or self.secrets.get('oidc:client_id','')
         if not refresh or not client_id:raise RuntimeError(f'{provider} refresh token or client id unavailable')
-        async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id});r.raise_for_status();new=r.json()
+        async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
+            r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id})
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth token endpoint redirect rejected')
+            r.raise_for_status()
+            if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth token response exceeded safety limit')
+            new=r.json()
         self.accounts.save_tokens(item['id'],new);return new
     async def revoke(self,provider,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
@@ -92,8 +107,11 @@ class OAuthService:
             connected=self.accounts.for_provider('google')
             if len(connected)>1:return {'status':'PROVIDER_REVOCATION_BLOCKED_MULTI_ACCOUNT','account_id':item['id'],'provider':provider,'connected_accounts':len(connected),'reason':'Google project-level revocation could invalidate another connected account; local credentials were retained'}
             token=refresh or access
-            async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
-            if r.status_code not in (200,400):r.raise_for_status()
+            async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
+                r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
+                if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth revocation redirect rejected')
+                if r.status_code not in (200,400):r.raise_for_status()
+                if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth revocation response exceeded safety limit')
             if r.status_code==400:return {'status':'PROVIDER_TOKEN_ALREADY_INVALID','account_id':item['id'],'provider':provider,'provider_status':400}
             return {'status':'PROVIDER_REVOKED','account_id':item['id'],'provider':provider,'provider_status':r.status_code}
         return {'status':'PROVIDER_REVOCATION_UNAVAILABLE','account_id':item['id'],'provider':provider,'reason':'Microsoft delegated-token revocation is not safely available through the configured integration without broader user-session revocation'}
