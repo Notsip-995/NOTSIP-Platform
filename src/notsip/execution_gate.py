@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json,threading,time
 from functools import wraps
+from .actor_context import current_actor
 
 class ToolExecutionGate:
-    """Central guard used by Tool.fn so every invocation observes policy and approval state."""
+    """Central guard used by Tool.fn so every invocation observes policy and actor-bound approval state."""
     _policy=None;_approvals=None;_lock=threading.RLock()
     @classmethod
     def configure(cls,policy,approvals):cls._policy=policy;cls._approvals=approvals
@@ -11,13 +12,14 @@ class ToolExecutionGate:
     def _approved(cls,name,args):
         approvals=cls._approvals
         if approvals is None:return False
+        actor=current_actor()
         with cls._lock:
             try:
                 data=approvals._load();now=time.time();canonical=json.dumps(args,sort_keys=True,separators=(',',':'),default=str);candidates=[]
                 for item in data.values():
                     if item.get('status')!='APPROVED' or float(item.get('decided',0))+60<now:continue
                     context=item.get('context') or {}
-                    if context.get('tool')!=name:continue
+                    if context.get('tool')!=name or context.get('actor','primary-user')!=actor:continue
                     expected=json.dumps(context.get('args') or {},sort_keys=True,separators=(',',':'),default=str)
                     if expected==canonical:candidates.append(item)
                 if not candidates:return False
@@ -41,9 +43,7 @@ class ToolExecutionGate:
                     if grant and grant is not True:cls._finish_approval(grant,'FAILED',str(exc),None)
                     raise
                 if grant and grant is not True:
-                    status=result.get('status') if isinstance(result,dict) else 'SUCCESS'
-                    outcome={'SUCCESS':'EXECUTED','FAILURE':'FAILED','UNKNOWN':'UNKNOWN','PARTIAL_SUCCESS':'PARTIAL_SUCCESS'}.get(str(status).upper(),'EXECUTED')
-                    cls._finish_approval(grant,outcome,'' if outcome=='EXECUTED' else str(result.get('error','')) if isinstance(result,dict) else '')
+                    status=result.get('status') if isinstance(result,dict) else 'SUCCESS';outcome={'SUCCESS':'EXECUTED','FAILURE':'FAILED','UNKNOWN':'UNKNOWN','PARTIAL_SUCCESS':'PARTIAL_SUCCESS'}.get(str(status).upper(),'EXECUTED');cls._finish_approval(grant,outcome,'' if outcome=='EXECUTED' else str(result.get('error','')) if isinstance(result,dict) else '')
                 return result
             tool.fn=guarded;tool._notsip_original_fn=original;tool._notsip_guarded=True
     @classmethod
