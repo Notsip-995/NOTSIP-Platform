@@ -30,8 +30,10 @@ jobs:
         env:
           WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
           WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_PUBLISHER_THUMBPRINT: ${{ secrets.WINDOWS_PUBLISHER_THUMBPRINT }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_PASSWORD)) { throw 'Tagged Windows releases require WINDOWS_SIGNING_PFX_BASE64 and WINDOWS_SIGNING_PFX_PASSWORD.' }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_PASSWORD) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_PUBLISHER_THUMBPRINT)) { throw 'Tagged Windows releases require signing PFX, password and publisher thumbprint secrets.' }
+          $expected = ($env:WINDOWS_PUBLISHER_THUMBPRINT -replace '\s','').ToUpperInvariant()
           $pfx = Join-Path $env:RUNNER_TEMP 'notsip-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64))
           $signtool = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
@@ -41,6 +43,8 @@ jobs:
           foreach ($target in @('dist\NOTSIP.exe','Output\NOTSIP-Setup.exe')) {
             $sig = Get-AuthenticodeSignature $target
             if ($sig.Status -ne 'Valid') { throw "Authenticode verification failed for $target: $($sig.Status)" }
+            $actual = (($sig.SignerCertificate.Thumbprint -replace '\s','').ToUpperInvariant())
+            if ($actual -ne $expected) { throw "Authenticode publisher mismatch for $target: expected $expected, got $actual" }
           }
       - name: Generate Windows SHA-256 manifests
         shell: pwsh
