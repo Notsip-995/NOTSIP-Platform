@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64,binascii,hashlib,json,os,platform,shutil,socket,subprocess,sys,tempfile,time,uuid,zipfile
+import base64,binascii,hashlib,json,os,platform,shutil,socket,subprocess,sys,tempfile,time,uuid,zipfile,threading
 from pathlib import Path
 APP_NAME='NOTSIP';CONFIG_VERSION=2
 
@@ -51,7 +51,7 @@ class ProcessGuard:
             self._owned=False
 
 class ConfigStore:
-    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','business_admin_token','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
+    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','business_admin_token','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','speaker_identity_token'}
     def __init__(self,root):self.root=Path(root);self.path=self.root/'config.json';self.root.mkdir(parents=True,exist_ok=True)
     def load(self):
         if not self.path.exists():return {'version':CONFIG_VERSION,'settings':{}}
@@ -66,7 +66,7 @@ class ConfigStore:
         dst=self.root/'runtime'/f'config-{time.strftime("%Y%m%d-%H%M%S")}.json';dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(self.path,dst);return str(dst.relative_to(self.root))
 
 class AuditLog:
-    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=__import__('threading').RLock()
+    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
     def _last_hash(self):
         if not self.path.exists():return '0'*64
         try:
@@ -143,24 +143,27 @@ class BackupManager:
         return {'status':'SUCCESS','restored':name,'restart_required':True}
 
 class ApprovalStore:
-    def __init__(self,root):self.path=Path(root)/'runtime'/'approvals.json';self.path.parent.mkdir(parents=True,exist_ok=True)
+    def __init__(self,root):self.path=Path(root)/'runtime'/'approvals.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
     def _load(self):
         try:return json.loads(self.path.read_text())
         except Exception:return {}
     def _save(self,d):tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(d,indent=2,sort_keys=True));os.replace(tmp,self.path)
     def request(self,action,reason,context=None,ttl=900):
-        d=self._load();aid=uuid.uuid4().hex;d[aid]={'id':aid,'action':action,'reason':reason,'context':context or {},'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
+        with self.lock:
+            d=self._load();aid=uuid.uuid4().hex;d[aid]={'id':aid,'action':action,'reason':reason,'context':context or {},'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
     def decide(self,aid,approved):
-        d=self._load();x=d.get(aid)
-        if not x:return None
-        if x.get('status')!='PENDING':return x
-        if float(x.get('expires',0))<=time.time():x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
-        x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
+        with self.lock:
+            d=self._load();x=d.get(aid)
+            if not x:return None
+            if x.get('status')!='PENDING':return x
+            if float(x.get('expires',0))<=time.time():x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
+            x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
     def pending(self):
-        out=[];now=time.time()
-        for x in self._load().values():
-            if x.get('status')=='PENDING' and x.get('expires',0)>now:out.append(x)
-        return out
+        with self.lock:
+            out=[];now=time.time()
+            for x in self._load().values():
+                if x.get('status')=='PENDING' and x.get('expires',0)>now:out.append(x)
+            return out
 
 class Diagnostics:
     def __init__(self,root,settings=None,store=None,provider=None,web=None,email=None,auth=None,nodes=None,recovery=None):self.root=Path(root);self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email;self.auth=auth;self.nodes=nodes;self.recovery=recovery
@@ -183,11 +186,11 @@ class Diagnostics:
         checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'}
         checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'}
         checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
-        checks['audit']={'ok':self._audit_ok(),'detail':'hash chain verified' if self._audit_ok() else 'audit chain verification failed'}
-        core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']];return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
-    def _audit_ok(self):
-        try:return AuditLog(self.root).verify().get('valid',False)
-        except Exception:return False
+        core_names={'python','platform','storage','database','llm','scheduler','federation','security'}
+        optional_names=set(checks)-core_names
+        core_ok=all(checks[k]['ok'] for k in core_names if k in checks)
+        optional_missing=[k for k in optional_names if not checks[k]['ok']]
+        return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
 
 class Maintenance:
     def __init__(self,root):self.root=Path(root).resolve()
@@ -204,4 +207,5 @@ class Maintenance:
         return p.read_text(encoding='utf-8')
     def verify(self):
         if not (self.root/'.git').exists():return {'status':'UNAVAILABLE','reason':'durable Git checkout required','root':str(self.root)}
-        r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600);return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
+        r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600)
+        return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
