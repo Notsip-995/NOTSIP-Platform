@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException
 from .config import settings
 from .tools import Workspace, Registry, Tool
 from .policy import Risk
+from .execution_gate import ToolExecutionGate
 
 
 def _time_snapshot():
@@ -39,13 +40,14 @@ def attach(app,require_auth,settings_obj,store,agent,registry):
         if registry.get(name) is None:registry.add(Tool(name,desc,capability,risk,schema,fn,destructive))
     register('current_time','Return current local time and date.','TIME',Risk.LOW,{'type':'object','properties':{}},lambda:_time_snapshot())
     register('system_telemetry','Return host, CPU, memory, disk, network and battery telemetry when available.','SYSTEM_DIAGNOSTICS',Risk.LOW,{'type':'object','properties':{}},lambda:_telemetry())
-    register('file_rename','Rename an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:{'status':'SUCCESS','path':str(workspace.path(source).rename(workspace.path(target)) or workspace.path(target).relative_to(workspace.root))})
+    register('file_rename','Rename an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_rename(workspace,source,target))
     register('file_copy','Copy an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_copy(workspace,source,target))
     register('file_move','Move an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_move(workspace,source,target))
     register('file_delete','Delete an authorized workspace file.','WRITE_FILES',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:_delete(workspace,path),True)
     register('file_archive','Create a ZIP archive of authorized workspace paths.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'paths':{'type':'array','items':{'type':'string'}},'archive':{'type':'string'}},'required':['paths','archive']},lambda paths,archive:_archive(workspace,paths,archive))
     register('python_exec','Run code in an isolated sandbox; requires approval.','CODE_EXECUTION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
     register('simulate','Run a deterministic numeric simulation in an isolated sandbox; requires approval.','SIMULATION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
+    ToolExecutionGate.wrap_registry(registry)
     @app.get('/api/time')
     async def current_time(_:None=Depends(require_auth)):return _time_snapshot()
     @app.get('/api/telemetry')
@@ -100,7 +102,7 @@ def _python_exec(workspace,code,timeout=30):
         mode=os.getenv('NOTSIP_CODE_SANDBOX','disabled').strip().lower();timeout=max(1,min(int(timeout),60))
         if mode=='docker':
             docker=shutil.which('docker')
-            if not docker:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'Docker sandbox runtime is required but docker was not found'}
+            if not docker:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'isolated Docker sandbox required but docker was not found'}
             image=os.getenv('NOTSIP_CODE_SANDBOX_IMAGE','python:3.12-slim');cmd=[docker,'run','--rm','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','512m','--cpus','1','--tmpfs','/tmp:rw,size=64m','-v',f'{workspace.root.resolve()}:/workspace:rw','-w','/workspace',image,'python','-I','/workspace/runtime_exec/run.py']
         elif mode=='local-unsafe' and os.getenv('NOTSIP_ALLOW_UNSAFE_CODE_EXEC','').lower() in {'1','true','yes'}:cmd=[os.environ.get('PYTHON','python'),'-I',str(script)]
         else:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'isolated code sandbox is not configured; set NOTSIP_CODE_SANDBOX=docker with Docker available'}
