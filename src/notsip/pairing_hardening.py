@@ -1,5 +1,4 @@
 from __future__ import annotations
-import hashlib
 import secrets
 from fastapi import Depends,HTTPException,Request
 from pydantic import BaseModel
@@ -16,8 +15,7 @@ class PairIn(BaseModel):
 def _device_auth(store,request:Request,device_id:str|None=None):
     did=(device_id or request.headers.get('X-NOTSIP-Device-ID','')).strip()
     token=request.headers.get('X-NOTSIP-Device-Token','').strip()
-    if not did or not token or not store.device_token_valid(did,token):
-        raise HTTPException(401,'device authentication required')
+    if not did or not token or not store.device_token_valid(did,token):raise HTTPException(401,'device authentication required')
     row=store.row('SELECT status FROM devices WHERE id=?',(did,))
     if not row:raise HTTPException(404,'device not found')
     if str(row.get('status'))=='REVOKED':raise HTTPException(403,'device is revoked')
@@ -28,6 +26,13 @@ def attach(app,require_auth,store,pairing,auth=None):
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/pair/code','/api/pair/consume','/api/devices/{device_id}/commands','/api/devices/heartbeat','/api/devices/result'}]
     secret_store=getattr(auth,'secrets',None) if auth is not None else None
     if secret_store is None:raise RuntimeError('pairing hardening requires the canonical secret store')
+    if not getattr(store,'_notsip_pairing_ownership_guarded',False):
+        original_pair_device=store.pair_device
+        def guarded_pair_device(device_id,name,platform,public_key,token,owner=None):
+            actor=str(owner or current_actor()).strip() or 'primary-user';existing_owner=store.device_owner(device_id)
+            if existing_owner is not None and existing_owner!=actor:raise PermissionError('device_id is already owned by another actor')
+            return original_pair_device(device_id,name,platform,public_key,token,owner=actor)
+        store.pair_device=guarded_pair_device;store._notsip_pairing_ownership_guarded=True
 
     @app.get('/api/pair/code')
     async def pair_code(_:None=Depends(require_auth)):
