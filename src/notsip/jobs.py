@@ -51,7 +51,7 @@ class Scheduler:
             if inspect.isawaitable(result):result=await result
             status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS';payload['finished_at']=time.time();payload['last_result']=result;self._outcome_metadata(payload,result,status)
             if status=='CONTINUE':
-                self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
+                payload['state']='PENDING';self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
                 if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
                 return {'status':'CONTINUE','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
             if status in {'UNKNOWN','PARTIAL_SUCCESS'}:self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
