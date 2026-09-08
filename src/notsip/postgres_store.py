@@ -115,6 +115,6 @@ class PostgreSQLStore:
             if rows:c.executemany("UPDATE commands SET status='UNKNOWN',updated=%s,result=%s WHERE id=%s AND status='DELIVERED'",[(time.time(),json.dumps({'verified':False,'reason':'device was removed, revoked, or did not return a command result before lease expiry'}),r['id']) for r in rows])
             c.commit();return [dict(r) for r in rows]
     def command_result(self,cid,status,result,device_id=None):
-        if device_id is None:q='UPDATE commands SET status=%s,result=%s,updated=%s WHERE id=%s';args=(status,json.dumps(result),time.time(),cid)
-        else:q='UPDATE commands SET status=%s,result=%s,updated=%s WHERE id=%s AND device_id=%s';args=(status,json.dumps(result),time.time(),cid,device_id)
+        if device_id is None:return False
+        q='UPDATE commands SET status=%s,result=%s,updated=%s WHERE id=%s AND device_id=%s';args=(status,json.dumps(result),time.time(),cid,device_id)
         with self.conn() as c:cur=c.execute(q,args);c.commit();return cur.rowcount==1
