@@ -42,28 +42,24 @@ attach_calendar_service(app,_require,DATA,settings.local_timezone)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
 journal=EventJournal(DATA)
 _original_publish=events.publish
-async def _journaled_publish(event):
-    journal.append(event)
-    return await _original_publish(event)
+async def _journaled_publish(event):journal.append(event);return await _original_publish(event)
 events.publish=_journaled_publish
 attach_event_reconstruction(app,_require,store,journal)
 _health=HealthAnalytics(DATA)
 attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
-attach_advanced_intelligence(app,_require,store,__import__('notsip.app',fromlist=['web']).web,agent,registry,events)
+attach_advanced_intelligence(app,_require,store,__import__('notsip.app',fromlist=['web']).web,agent,registry,events,settings)
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 normalize_routes(app)
 
 @app.on_event('startup')
 async def start_configured_native_voice():
-    if getattr(settings, 'native_voice_enabled', False):
+    if getattr(settings,'native_voice_enabled',False):
         result=native_voice.start()
-        if result.get('status') not in {'STARTED','ALREADY_RUNNING','UNAVAILABLE'}:
-            raise RuntimeError(f'Unexpected native voice startup result: {result}')
+        if result.get('status') not in {'STARTED','ALREADY_RUNNING','UNAVAILABLE'}:raise RuntimeError(f'Unexpected native voice startup result: {result}')
 
 @app.on_event('shutdown')
 async def stop_configured_native_voice():
-    if getattr(native_voice, 'running', False):
-        native_voice.stop()
+    if getattr(native_voice,'running',False):native_voice.stop()
 
 __all__=['app']
