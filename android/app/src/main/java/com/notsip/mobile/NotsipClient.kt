@@ -58,7 +58,9 @@ class NotsipClient(private val ctx: Context) {
             .put("platform", "android")
             .toString()
         val response = JSONObject(request("POST", "/api/pair/consume", body))
-        setToken(response.getString("token"))
+        val pairedToken=response.optString("device_token").ifBlank { response.optString("token") }
+        require(pairedToken.isNotBlank()) { "NOTSIP pairing response did not include a device token" }
+        setToken(pairedToken)
     }
 
     fun heartbeat() {
