@@ -38,7 +38,7 @@ attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
-attach_calendar_service(app,_require,DATA,settings.local_timezone)
+calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
 journal=EventJournal(DATA)
 _original_publish=events.publish
