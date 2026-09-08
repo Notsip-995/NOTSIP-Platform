@@ -3,7 +3,7 @@ import copy, importlib
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
-SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
+SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
 def _redacted_config(mod):
@@ -34,13 +34,15 @@ def attach(app):
         for key in SECRET_NAMES:
             if key in settings_payload and not str(settings_payload[key] or '').strip():
                 settings_payload.pop(key,None)
+        database_changed=False
+        if 'database_url' in settings_payload:
+            db_url=str(settings_payload.pop('database_url') or '').strip() or 'sqlite:///data/notsip.db'
+            mod.settings.database_url=db_url
+            database_changed=True
         incoming['settings']=settings_payload
-        db_url=settings_payload.pop('database_url',None)
-        if db_url is not None and str(db_url).strip():
-            mod.auth.secrets.set('NOTSIP_DATABASE_URL',str(db_url));mod.settings.database_url=str(db_url)
         data=await mod.config_set(incoming,None)
         requested=set(settings_payload)
-        if db_url is not None:requested.add('database_url')
+        if database_changed:requested.add('database_url')
         data['restart_required']=bool(RESTART_KEYS & requested)
         if data['restart_required']:
             data['restart_reason']='host, port, data directory, or database changes require a NOTSIP restart'
