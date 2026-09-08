@@ -32,6 +32,7 @@ from .actor_context import attach_actor_middleware
 from .session_hardening import attach as attach_session_hardening
 from .task_hardening import attach as attach_task_hardening
 from .pairing_hardening import attach as attach_pairing_hardening
+from .windows_hardening import attach as attach_windows_hardening
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -72,6 +73,7 @@ attach_actor_middleware(app,auth)
 attach_session_hardening(app,_require,agent,DATA)
 attach_task_hardening(app,_require,store,jobs)
 attach_pairing_hardening(app,_require,store,pairing)
+attach_windows_hardening(registry,__import__('notsip.app',fromlist=['win']).win)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
