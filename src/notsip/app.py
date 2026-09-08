@@ -26,7 +26,6 @@ from .execution_gate import ToolExecutionGate
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
-
 CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
 CONFIG_HIGH_RISK={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint',*CONFIG_SECRET_NAMES}
 
@@ -34,6 +33,7 @@ def _rebuild_runtime_after_config():
     global provider,web,emailc,policy,diagnostics,probes,auth_token
     provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
     web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
+    ToolExecutionGate.configure(policy,agent.approvals)
     auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
 
 def _apply_config(requested):
@@ -42,7 +42,7 @@ def _apply_config(requested):
         for k,v in requested.items():
             if k in allowed:setattr(settings,k,v)
             elif k in CONFIG_SECRET_NAMES:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
-        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':bool(set(requested)&{'host','port','auth_mode'}),'diagnostics':diagnostics.run()}
     except Exception as exc:
         for k,v in snapshot.items():setattr(settings,k,v)
         for k,v in secret_snapshot.items():
@@ -55,7 +55,6 @@ def _config_admin(pending_id,keys):
     if not isinstance(pending,dict):raise RuntimeError('pending configuration change not found or expired')
     try:return _apply_config(pending)
     finally:auth.secrets.delete('config:pending:'+str(pending_id))
-
 if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize and apply security-sensitive configuration changes from an encrypted pending record.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'pending_id':{'type':'string'},'keys':{'type':'array'}},'required':['pending_id','keys']},_config_admin,True))
 if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
 if registry.get('native_voice_start') is None:registry.add(Tool('native_voice_start','Start the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.start()))
@@ -128,9 +127,7 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
     if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
     sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
     if sensitive:
-        pending_id=uuid.uuid4().hex
-        auth.secrets.set('config:pending:'+pending_id,requested)
-        result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
+        pending_id=uuid.uuid4().hex;auth.secrets.set('config:pending:'+pending_id,requested);result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
         if result.get('status')=='FAILURE':auth.secrets.delete('config:pending:'+pending_id)
         return result
     try:return _apply_config(requested)
@@ -205,4 +202,3 @@ async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth
 async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
 @app.post('/api/federation/{node_id}/revoke')
 async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
-__all__=['app']
