@@ -36,7 +36,7 @@ class UpdateManager:
         if not repo:return {'available':False,'reason':'github_repository not configured'}
         headers={'Accept':'application/vnd.github+json'};token=os.getenv('NOTSIP_GITHUB_TOKEN','')
         if token:headers['Authorization']='Bearer '+token
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.get(f'https://api.github.com/repos/{repo}/releases/latest',headers=headers)
+        async with httpx.AsyncClient(timeout=20,trust_env=False) as c:r=await c.get(f'https://api.github.com/repos/{repo}/releases/latest',headers=headers)
         if r.status_code==404:return {'available':False,'reason':'no published release'}
         if r.status_code in (401,403):return {'available':False,'reason':'GitHub release access denied','status_code':r.status_code}
         r.raise_for_status();d=r.json();tag=d.get('tag_name','');current=self._version_tuple(__version__);latest=self._version_tuple(tag)
@@ -50,7 +50,7 @@ class UpdateManager:
     async def _fetch_manifest_sha(self,url:str,expected_name:str):
         if not self._trusted_manifest(url):raise ValueError('update SHA-256 manifest is not from the configured GitHub release path')
         token=os.getenv('NOTSIP_GITHUB_TOKEN','');current=url
-        async with httpx.AsyncClient(timeout=20,follow_redirects=False) as c:
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             for _ in range(6):
                 headers={'Accept':'text/plain'}
                 if token and urlparse(current).netloc.lower()=='github.com':headers['Authorization']='Bearer '+token
@@ -81,7 +81,7 @@ class UpdateManager:
         if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
         token=os.getenv('NOTSIP_GITHUB_TOKEN','');current_url=asset_url;target=self.dir/f'update-{uuid.uuid4().hex}.exe';response=None
-        async with httpx.AsyncClient(timeout=120,follow_redirects=False) as c:
+        async with httpx.AsyncClient(timeout=120,follow_redirects=False,trust_env=False) as c:
             for _ in range(6):
                 headers={'Accept':'application/octet-stream'}
                 if token and urlparse(current_url).netloc.lower()=='github.com':headers['Authorization']='Bearer '+token
@@ -118,5 +118,5 @@ class UpdateManager:
         if not current.exists():raise FileNotFoundError(current)
         new_path=self._managed_update_path(new_exe);signer=self._verify_authenticode(new_path)
         if signer.get('status')!='VALID':raise RuntimeError(signer.get('reason','publisher verification unavailable'))
-        suffix=uuid.uuid4().hex;backup=self.dir/f'previous-{suffix}.exe';helper=self.dir/f'apply-{suffix}.ps1';shutil.copy2(current,backup);new_s=self._powershell_quote(new_path);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url);pid=os.getpid()
-        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 1\ntry {{ Stop-Process -Id {pid} -Force -ErrorAction Stop }} catch {{ if($_.Exception.Message -notmatch "not found|cannot find"){{ throw }} }}\nStart-Sleep -Milliseconds 750\ntry {{ Copy-Item -Force {new_s} {cur_s}; Start-Process {cur_s}; Start-Sleep -Seconds 4; $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }}; Remove-Item -Force {backup_s} -ErrorAction SilentlyContinue }} catch {{ try {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s} }} catch {{ }}; exit 2 }}\n''',encoding='utf-8');subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer,'health_url':self.health_url}
+        suffix=uuid.uuid4().hex;backup=self.dir/f'previous-{suffix}.exe';helper=self.dir/f'apply-{suffix}.ps1';new_s=self._powershell_quote(new_path);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url);pid=os.getpid()
+        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 1\ntry {{ Stop-Process -Id {pid} -Force -ErrorAction Stop }} catch {{ if($_.Exception.Message -notmatch "not found|cannot find"){{ throw }} }}\nStart-Sleep -Milliseconds 750\ntry {{ Copy-Item -Force {new_s} {cur_s}; Start-Process {cur_s}; Start-Sleep -Seconds 4; $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }}; Remove-Item -Force {backup_s} -ErrorAction SilentlyContinue }} catch {{ try {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s} }} catch {{ Write-Error "Rollback failed after update failure: $($_.Exception.Message)"; exit 3 }}; exit 2 }}\n''',encoding='utf-8');subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer,'health_url':self.health_url}
