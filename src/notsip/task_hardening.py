@@ -68,6 +68,7 @@ def attach(app,require_auth,store,jobs):
         return {'status':'SUCCESS','task_id':tid,'handler':handler,'actor':actor,'requester':actor,'context':data['context'],'deadline':data['deadline'],'priority':data['priority'],'constraints':data['constraints'],'required_tools':data['required_tools'],'permissions':data['permissions'],'subtasks':data['subtasks'],'state':data['state'],'verification':data['verification']}
     @app.post('/api/tasks/{task_id}/run')
     async def run_task(task_id:str,_:None=Depends(require_auth)):
-        task=store.row('SELECT * FROM tasks WHERE id=?',(task_id,))
+        placeholder='%s' if getattr(store,'_backend',None) else '?'
+        task=store.row(f'SELECT * FROM tasks WHERE id={placeholder}',(task_id,))
         if not task or not own(task):raise HTTPException(404,'Task not found')
         store.task_update(task_id,state='PENDING',run_at=0);return {'status':'QUEUED','task_id':task_id,'actor':current_actor()}
