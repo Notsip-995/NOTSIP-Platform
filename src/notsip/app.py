@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid, inspect
+import json, os, socket, time, uuid, inspect, copy
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -25,6 +25,11 @@ from .execution_gate import ToolExecutionGate
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
+if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize security-sensitive configuration changes; no changes are applied until the caller completes the approval flow.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'keys':{'type':'array'},'settings':{'type':'object'}},'required':['keys','settings']},lambda keys,settings:{'status':'SUCCESS','authorized_keys':list(keys)}))
+if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
+if registry.get('native_voice_start') is None:registry.add(Tool('native_voice_start','Start the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.start()))
+if registry.get('native_voice_stop') is None:registry.add(Tool('native_voice_stop','Stop the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.stop()))
+ToolExecutionGate.wrap_registry(registry)
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval)
 attach_perception(app,settings,win,media,store,events)
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
@@ -92,15 +97,21 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
     if denied:
         result=await agent.run_tool('config_admin',{'keys':denied,'settings':{k:requested[k] for k in denied}})
         if result.get('status')!='SUCCESS':return result
-    for k,v in requested.items():
-        if k in denied:continue
-        if k in allowed:setattr(settings,k,v)
-        elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
+    snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','node_shared_secret','database_url'}}
+    try:
+        for k,v in requested.items():
+            if k in denied:continue
+            if k in allowed:setattr(settings,k,v)
+            elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
+        settings.ensure()
+    except Exception as exc:
+        for k,v in snapshot.items():setattr(settings,k,v)
+        raise HTTPException(400,f'configuration rejected: {exc}')
     config_store.save({k:getattr(settings,k) for k in allowed})
     global provider,web,emailc,policy,diagnostics,probes,auth_token
     provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
-    diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc);audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
+    auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc);audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
@@ -112,7 +123,7 @@ async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.ve
 @app.post('/api/backups/{name}/restore')
 async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):
     if not payload.get('confirm'):raise HTTPException(400,'restore confirmation required')
-    result=await agent.run_tool('backup_restore',{'name':name});return result
+    return await agent.run_tool('backup_restore',{'name':name})
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
 @app.post('/api/approvals')
@@ -171,4 +182,3 @@ async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth
 async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
 @app.post('/api/federation/{node_id}/revoke')
 async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
-__all__=['app']
