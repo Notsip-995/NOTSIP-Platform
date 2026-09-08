@@ -1,11 +1,12 @@
 from __future__ import annotations
 import hashlib,json,os,secrets,sqlite3,threading,time,uuid
 from pathlib import Path
+from .actor_context import current_actor
 class Store:
     def __init__(self,root,database_url=''):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock();self._backend=None
         url=database_url or os.getenv('NOTSIP_DATABASE_URL','')
-        if url.startswith('sqlite:///'): self.db=Path(url.replace('sqlite:///','',1)); self.db=self.db if self.db.is_absolute() else self.root/self.db.name
+        if url.startswith('sqlite:///'):self.db=Path(url.replace('sqlite:///','',1));self.db=self.db if self.db.is_absolute() else self.root/self.db.name
         elif url.startswith('postgresql://') or url.startswith('postgres://'):
             from .postgres_store import PostgreSQLStore
             self._backend=PostgreSQLStore(self.root,url);self.db=None;return
@@ -28,8 +29,7 @@ class Store:
     def rows(self,sql,args=()):
         if self._backend:return self._backend.rows(sql,args)
         return self.conn_rows(sql,args)
-    def row(self,sql,args=()):
-        x=self.rows(sql,args);return x[0] if x else None
+    def row(self,sql,args=()):x=self.rows(sql,args);return x[0] if x else None
     def message(self,role,content):self.exec('INSERT INTO messages(role,content,ts) VALUES(?,?,?)',(role,content,time.time()))
     def history(self,n=24):return self.rows('SELECT role,content FROM messages ORDER BY id DESC LIMIT ?',(n,))[::-1]
     def remember(self,uid,kind,content,weight=.8,source='conversation',provenance=None):
@@ -79,16 +79,14 @@ class Store:
         if self._backend:return self._backend.restore_runtime_state(state)
         tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or [];commands=state.get('commands') or []
         with self.lock,self.conn() as c:
-            existing_tokens={r['id']:r['token_hash'] for r in c.execute('SELECT id,token_hash FROM devices').fetchall()}
-            c.execute('DELETE FROM commands');c.execute('DELETE FROM tasks');c.execute('DELETE FROM devices');c.execute('DELETE FROM entities');c.execute('DELETE FROM relations');c.execute('DELETE FROM facts')
+            existing_tokens={r['id']:r['token_hash'] for r in c.execute('SELECT id,token_hash FROM devices').fetchall()};c.execute('DELETE FROM commands');c.execute('DELETE FROM tasks');c.execute('DELETE FROM devices');c.execute('DELETE FROM entities');c.execute('DELETE FROM relations');c.execute('DELETE FROM facts')
             for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error',''),t.get('idempotency_key','') or ''))
             repair=[]
             for d in devices:
                 token_hash=d.get('token_hash') or existing_tokens.get(d.get('id',''),'');status=d.get('status','') if token_hash else 'REPAIR_REQUIRED'
                 if not token_hash:repair.append(d.get('id',''))
-                c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
-            for cmd in commands:
-                c.execute('INSERT INTO commands(id,device_id,action,payload,status,created,updated,result) VALUES(?,?,?,?,?,?,?,?)',(cmd.get('id') or str(uuid.uuid4()),cmd.get('device_id',''),cmd.get('action',''),cmd.get('payload','{}') if isinstance(cmd.get('payload','{}'),str) else json.dumps(cmd.get('payload') or {}),cmd.get('status','PENDING'),float(cmd.get('created',time.time())),float(cmd.get('updated',time.time())),cmd.get('result','{}') if isinstance(cmd.get('result','{}'),str) else json.dumps(cmd.get('result') or {})))
+                data=d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {});c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,data))
+            for cmd in commands:c.execute('INSERT INTO commands(id,device_id,action,payload,status,created,updated,result) VALUES(?,?,?,?,?,?,?,?)',(cmd.get('id') or str(uuid.uuid4()),cmd.get('device_id',''),cmd.get('action',''),cmd.get('payload','{}') if isinstance(cmd.get('payload','{}'),str) else json.dumps(cmd.get('payload') or {}),cmd.get('status','PENDING'),float(cmd.get('created',time.time())),float(cmd.get('updated',time.time())),cmd.get('result','{}') if isinstance(cmd.get('result','{}'),str) else json.dumps(cmd.get('result') or {})))
             for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(?,?,?,?,?)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
             for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?,?)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
             for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(?,?,?,?,?,?,?)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
@@ -104,18 +102,34 @@ class Store:
         if self._backend:return self._backend.consume_pair_code(code)
         with self.lock,self.conn() as c:
             r=c.execute('DELETE FROM pairing_codes WHERE code=? AND expires>? RETURNING code',(code.upper(),time.time())).fetchone();return bool(r)
-    def pair_device(self,id,name,platform,public_key,token):
-        if self._backend:return self._backend.pair_device(id,name,platform,public_key,token)
-        self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE','{}'))
+    def pair_device(self,id,name,platform,public_key,token,owner=None):
+        owner=self._owner(owner)
+        if self._backend:return self._backend.pair_device(id,name,platform,public_key,token,owner)
+        row=self.row('SELECT data FROM devices WHERE id=?',(id,));data=json.loads(row['data'] or '{}') if row else {};data['owner']=owner
+        self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status,data=excluded.data',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE',json.dumps(data)))
+    def _owner(self,owner=None):return str(owner or current_actor()).strip() or 'primary-user'
+    def device_owner(self,id):
+        r=self.row('SELECT data FROM devices WHERE id=?',(id,));
+        if not r:return None
+        try:return json.loads(r.get('data') or '{}').get('owner','primary-user')
+        except Exception:return 'primary-user'
+    def device_owned_by(self,id,owner=None):return self.device_owner(id)==self._owner(owner)
     def device_token_valid(self,id,token):
         if self._backend:return self._backend.device_token_valid(id,token)
         r=self.row('SELECT token_hash FROM devices WHERE id=?',(id,));return bool(r and secrets.compare_digest(r['token_hash'],hashlib.sha256(token.encode()).hexdigest()))
     def heartbeat(self,id,status='ONLINE'):
         if self._backend:return self._backend.heartbeat(id,status)
         self.exec('UPDATE devices SET last_seen=?,status=? WHERE id=?',(time.time(),status,id))
-    def devices(self):return self._backend.devices() if self._backend else self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name')
+    def devices(self,owner=None):
+        owner=self._owner(owner);rows=self._backend.devices() if self._backend else self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name');out=[]
+        for row in rows:
+            try:row_owner=json.loads(row.get('data') or '{}').get('owner','primary-user')
+            except Exception:row_owner='primary-user'
+            if row_owner==owner:out.append(row)
+        return out
     def queue_command(self,device_id,action,payload):return self._backend.queue_command(device_id,action,payload) if self._backend else self._queue_sqlite(device_id,action,payload)
     def _queue_sqlite(self,device_id,action,payload):
+        if not self.device_owned_by(device_id):raise PermissionError('device is not owned by current actor')
         cid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO commands VALUES(?,?,?,?,?,?,?,?)',(cid,device_id,action,json.dumps(payload or {}),'PENDING',now,now,''));return cid
     def pull_commands(self,device_id,limit=20):
         if self._backend:return self._backend.pull_commands(device_id,limit)
@@ -123,11 +137,9 @@ class Store:
             c.execute('BEGIN IMMEDIATE')
             try:
                 rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
-                if rows:
-                    ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
+                if rows:ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
                 c.commit()
-            except Exception:
-                c.rollback();raise
+            except Exception:c.rollback();raise
             for r in rows:r['payload']=json.loads(r['payload'])
             return rows
     def command_result(self,cid,status,result,device_id=None):
