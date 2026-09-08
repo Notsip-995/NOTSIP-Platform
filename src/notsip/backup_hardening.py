@@ -3,7 +3,6 @@ import shutil,tempfile,time,uuid,zipfile
 from pathlib import Path
 
 def install(manager):
-    original_create=getattr(manager,'create')
     if not getattr(manager,'_notsip_secure_backup_create',False):
         def create_safe(include_logs=False):
             p=manager.dir/f'NOTSIP-backup-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:8]}.zip';count=0
@@ -24,9 +23,7 @@ def install(manager):
         with zipfile.ZipFile(archive) as z:
             members=manager._safe_members(z)
             if z.testzip() is not None:raise ValueError('backup archive is corrupt')
-            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=manager.root.parent))
-            rollback=Path(tempfile.mkdtemp(prefix='notsip-rollback-',dir=manager.root.parent))
-            moved=[]
+            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=manager.root.parent));rollback=Path(tempfile.mkdtemp(prefix='notsip-rollback-',dir=manager.root.parent));changes=[]
             try:
                 for info in members:
                     target=(stage/info.filename).resolve()
@@ -37,20 +34,21 @@ def install(manager):
                 for item in stage.iterdir():
                     target=(manager.root/item.name).resolve()
                     if manager.root not in target.parents:raise ValueError('invalid restore target')
-                    backup_target=rollback/item.name
-                    if target.exists():
-                        backup_target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(target),str(backup_target))
-                    shutil.move(str(item),str(target));moved.append((target,backup_target))
+                    backup_target=rollback/item.name;existed=target.exists();changes.append((target,backup_target,existed))
+                    if existed:shutil.move(str(target),str(backup_target))
+                    try:shutil.move(str(item),str(target))
+                    except Exception:
+                        if existed and backup_target.exists():shutil.move(str(backup_target),str(target))
+                        raise
                 return {'status':'SUCCESS','restored':name,'restart_required':True,'rollback_snapshot':str(rollback.relative_to(manager.root.parent))}
             except Exception:
-                for target,backup_target in reversed(moved):
+                for target,backup_target,existed in reversed(changes):
                     try:
                         if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
-                        if backup_target.exists():
+                        if existed and backup_target.exists():
                             target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(backup_target),str(target))
                     except Exception:pass
                 raise
-            finally:
-                shutil.rmtree(stage,ignore_errors=True)
+            finally:shutil.rmtree(stage,ignore_errors=True);shutil.rmtree(rollback,ignore_errors=True)
     manager.restore=restore_safe
     return manager
