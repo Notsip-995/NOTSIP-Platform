@@ -2,6 +2,7 @@ from __future__ import annotations
 import json,time
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
+from .task_decomposer import TaskDecomposer
 
 
 def _task_data(payload, actor):
@@ -21,6 +22,7 @@ def _task_data(payload, actor):
 def attach(app,require_auth,store,jobs):
     from .app import agent as live_agent
     jobs.agent=live_agent
+    decomposer=TaskDecomposer()
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/tasks','/api/tasks/{task_id}/run'}]
     def own(task):
         try:data=json.loads(task.get('data') or '{}')
@@ -34,6 +36,11 @@ def attach(app,require_auth,store,jobs):
         if not objective:raise HTTPException(400,'objective is required')
         if handler not in jobs.handlers:raise HTTPException(400,f'unknown task handler: {handler}')
         data=_task_data(payload,actor)
+        explicit_subtasks='subtasks' in payload or 'subtasks' in data
+        if not data['subtasks'] and handler=='agent' and not explicit_subtasks:
+            plan=decomposer.decompose(objective)
+            if plan.get('status')=='SUCCESS':
+                data['subtasks']=plan.get('subtasks',[]);data['context']['decomposition']={'status':'SUCCESS','completion_condition':plan.get('completion_condition'),'critical_path':decomposer.critical_path(plan)}
         if len(data['subtasks'])>50:raise HTTPException(400,'too many subtasks')
         try:tid=jobs.create(objective,handler,float(payload.get('delay',0) or 0),payload.get('interval'),data,data['priority'],str(payload.get('idempotency_key','') or ''),actor=actor)
         except ValueError as exc:raise HTTPException(400,str(exc))
