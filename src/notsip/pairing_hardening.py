@@ -23,6 +23,8 @@ def _device_auth(store,request:Request,device_id:str|None=None):
 
 
 def attach(app,require_auth,store,pairing,auth=None):
+    from .database_concurrency_hardening import install as install_database_concurrency
+    install_database_concurrency(store)
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/pair/code','/api/pair/consume','/api/devices/{device_id}/commands','/api/devices/heartbeat','/api/devices/result'}]
     secret_store=getattr(auth,'secrets',None) if auth is not None else None
     if secret_store is None:raise RuntimeError('pairing hardening requires the canonical secret store')
@@ -44,8 +46,7 @@ def attach(app,require_auth,store,pairing,auth=None):
         actor=current_actor()
         if not isinstance(record,dict) or str(record.get('actor'))!=actor:raise HTTPException(403,'pairing code is not owned by current actor')
         existing_owner=store.device_owner(body.device_id)
-        if existing_owner is not None and existing_owner!=actor:
-            raise HTTPException(409,'device_id is already owned by another actor')
+        if existing_owner is not None and existing_owner!=actor:raise HTTPException(409,'device_id is already owned by another actor')
         if not store.consume_pair_code(code):raise HTTPException(400,'invalid or expired pairing code')
         secret_store.delete('pairing:owner:'+code);token=secrets.token_urlsafe(32);store.pair_device(body.device_id,body.name,body.platform,body.public_key,token,owner=actor)
         return {'status':'PAIRED','device_id':body.device_id,'device_token':token,'actor':actor}
