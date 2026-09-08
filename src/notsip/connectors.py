@@ -14,7 +14,7 @@ class Web:
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.get('https://api.search.brave.com/res/v1/web/search',params={'q':q,'count':count},headers={'Accept':'application/json','X-Subscription-Token':self._key})
             if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('web search provider redirect rejected')
-            r.raise_for_status();r.raise_for_status();
+            r.raise_for_status()
             if len(r.content)>5*1024*1024:raise RuntimeError('web search response exceeded safety limit')
             d=r.json()
         return [{'title':x.get('title'),'url':x.get('url'),'description':x.get('description')} for x in d.get('web',{}).get('results',[])]
