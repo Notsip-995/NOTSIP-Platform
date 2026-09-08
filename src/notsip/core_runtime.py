@@ -48,6 +48,7 @@ from .database_router import attach as attach_database_router
 from .threat_assessment import ThreatAssessor
 from .workspace_scope_hardening import attach as attach_workspace_scope_hardening
 from .workflow_runtime_hardening import attach as attach_workflow_runtime
+from .forensics_scope_hardening import attach as attach_forensics_scope_hardening
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
@@ -117,6 +118,7 @@ async def threat_assessment(payload:dict,_:None=Depends(_require)):
     if not isinstance(indicators,list):raise HTTPException(400,'indicators must be an array')
     result=_threat.assess(indicators);result['actor']=current_actor();return result
 attach_workspace_scope_hardening(app,registry,DATA)
+attach_forensics_scope_hardening(app,_require,DATA)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
