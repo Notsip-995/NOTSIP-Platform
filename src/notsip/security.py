@@ -84,7 +84,10 @@ class OIDCProvider:
         async with httpx.AsyncClient(timeout=20) as c:r=await c.get(url,headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
     async def validate_id_token(self,id_token,nonce=''):
         import jwt
-        m=self.metadata or await self.discover();jwks=jwt.PyJWKClient(m['jwks_uri']);key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=['RS256','RS384','RS512','ES256','ES384','ES512'],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
+        m=self.metadata or await self.discover();header=jwt.get_unverified_header(id_token);alg=str(header.get('alg') or '')
+        advertised=m.get('id_token_signing_alg_values_supported') or ['RS256']
+        if not alg or alg not in set(str(x) for x in advertised):raise ValueError('OIDC ID token signing algorithm is not allowed by provider metadata')
+        jwks=jwt.PyJWKClient(m['jwks_uri']);key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=[alg],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
         expected=m.get('issuer',self.issuer);iss=claims.get('iss','')
         if '{tenantid}' in expected:expected=expected.replace('{tenantid}',claims.get('tid',''))
         if iss!=expected:raise ValueError('OIDC issuer validation failed')
