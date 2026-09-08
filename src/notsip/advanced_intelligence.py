@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import asdict
-from fastapi import Depends, HTTPException
+from fastapi import Depends,HTTPException
 from .event_priority import EventPriorityEngine
 from .predictive_maintenance import PredictiveMaintenance
 from .task_decomposer import TaskDecomposer
@@ -10,19 +10,14 @@ from .retrieval_router import RetrievalRouter
 from .compute_planner import ComputePlanner
 
 
-def attach(app, require_auth, store, web, agent, registry=None, events=None, settings=None):
-    decomposer=TaskDecomposer(); predictor=PredictiveMaintenance(); priority=EventPriorityEngine(); router=ResourceRouter(store); robots=RobotGateway(store,router); retrieval=RetrievalRouter()
-    settings=settings or getattr(agent,'settings',None)
-    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''))
-    remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''))
-    home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''))
-    biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''))
-    compute=ComputePlanner(router,remote_compute)
+def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=None):
+    decomposer=TaskDecomposer();predictor=PredictiveMaintenance();priority=EventPriorityEngine();router=ResourceRouter(store);robots=RobotGateway(store,router);retrieval=RetrievalRouter();settings=settings or getattr(agent,'settings',None)
+    profile=agent.profile
+    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute)
     @app.get('/api/intelligence/decompose')
-    async def decompose(objective:str,_:None=Depends(require_auth)): return decomposer.decompose(objective)
+    async def decompose(objective:str,_:None=Depends(require_auth)):return decomposer.decompose(objective)
     @app.post('/api/intelligence/priority')
-    async def classify_event(payload:dict,_:None=Depends(require_auth)):
-        return asdict(priority.classify(importance=payload.get('importance',0),urgency=payload.get('urgency',0),relevance=payload.get('relevance',0),explicit_interrupt=payload.get('explicit_interrupt',False),event_type=payload.get('event_type','')))
+    async def classify_event(payload:dict,_:None=Depends(require_auth)):return asdict(priority.classify(importance=payload.get('importance',0),urgency=payload.get('urgency',0),relevance=payload.get('relevance',0),explicit_interrupt=payload.get('explicit_interrupt',False),event_type=payload.get('event_type','')))
     @app.post('/api/intelligence/predict')
     async def predict(payload:dict,_:None=Depends(require_auth)):
         samples=payload.get('samples') or [];metric=str(payload.get('metric') or '').strip()
@@ -32,8 +27,14 @@ def attach(app, require_auth, store, web, agent, registry=None, events=None, set
     async def retrieval_plan(query:str,_:None=Depends(require_auth)):
         plan=retrieval.plan(query);return {'status':'SUCCESS','sources':list(plan.sources),'public_web':plan.public_web,'rationale':plan.rationale}
     @app.get('/api/intelligence/compute-plan')
-    async def compute_plan(capability:str='COMPUTE',prefer_local:bool=True,_:None=Depends(require_auth)):
-        return {'status':'SUCCESS','decision':asdict(compute.choose(capability,prefer_local))}
+    async def compute_plan(capability:str='COMPUTE',prefer_local:bool=True,_:None=Depends(require_auth)):return {'status':'SUCCESS','decision':asdict(compute.choose(capability,prefer_local))}
+    @app.get('/api/profile')
+    async def profile_get(_:None=Depends(require_auth)):return profile.load()
+    @app.patch('/api/profile')
+    async def profile_update(payload:dict,_:None=Depends(require_auth)):
+        allowed={'identity','preferred_name','communication_style','preferences','routines','important_people','projects','devices','accounts','locations','schedules','frequently_used_services','permissions','long_term_objectives'};unknown=set(payload)-allowed
+        if unknown:raise HTTPException(400,f'unsupported profile fields: {sorted(unknown)}')
+        return profile.update(**payload)
     @app.get('/api/resources')
     async def resources(_:None=Depends(require_auth)):return {'status':'SUCCESS','nodes':router.snapshot()}
     @app.get('/api/resources/select')
@@ -79,9 +80,9 @@ def attach(app, require_auth, store, web, agent, registry=None, events=None, set
         registry.add(Tool('select_resource','Select a healthy authorized execution node.','CONTROL_SERVER',Risk.MEDIUM,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},router.select))
         registry.add(Tool('remote_compute','Submit authorized compute work to the configured remote compute provider.','COMPUTE',Risk.MEDIUM,{'type':'object','properties':{'job_type':{'type':'string'},'payload':{'type':'object'}},'required':['job_type']},remote_compute.submit))
         registry.add(Tool('remote_sensing','Query the configured lawful remote-sensing provider.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'params':{'type':'object'}}},remote_sensing.query))
-        registry.add(Tool('satellite_query','Query an authorized satellite/remote-sensing provider with geolocation and temporal analysis metadata.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'bbox':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'scene_id':{'type':'string'},'authorized':{'type':'boolean'}},'required':['bbox','start','end','authorized']},remote_sensing.satellite_query))
+        registry.add(Tool('satellite_query','Query an authorized satellite/remote-sensing provider with provenance and temporal metadata.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'bbox':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'scene_id':{'type':'string'},'authorized':{'type':'boolean'}},'required':['bbox','start','end','authorized']},remote_sensing.satellite_query))
         registry.add(Tool('home_command','Control an authorized building/home device through the configured provider.','CONTROL_HOME',Risk.HIGH,{'type':'object','properties':{'device_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['device_id','action']},home.command,True))
         registry.add(Tool('biometric_latest','Read authorized biometric telemetry; never a medical diagnosis.','ACCESS_CAMERA',Risk.MEDIUM,{'type':'object','properties':{}},biometrics.latest))
         registry.add(Tool('robot_command','Queue an authorized command for a connected robot and await device verification.','CONTROL_ROBOTICS',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['node_id','action']},lambda node_id,action,payload=None:robots.command(node_id,action,payload),True))
         ToolExecutionGate=__import__('notsip.execution_gate',fromlist=['ToolExecutionGate']).ToolExecutionGate;ToolExecutionGate.wrap_registry(registry)
-    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'robots':robots,'retrieval':retrieval,'compute':compute,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
+    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'robots':robots,'retrieval':retrieval,'compute':compute,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics,'profile':profile}
