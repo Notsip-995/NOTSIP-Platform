@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, os, shutil, subprocess, sys, time
+import hashlib,json,os,shutil,subprocess,sys,time
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
@@ -16,6 +16,10 @@ class UpdateManager:
         p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ')
         return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.exe')
     @staticmethod
+    def _trusted_redirect(url:str)->bool:
+        p=urlparse(str(url));host=(p.hostname or '').lower()
+        return p.scheme=='https' and host in {'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
+    @staticmethod
     def _version_tuple(value:str):
         raw=str(value or '').strip().lower().lstrip('v');parts=raw.split('.')
         if len(parts)<2 or len(parts)>4 or any(not p.isdigit() for p in parts):return None
@@ -31,14 +35,11 @@ class UpdateManager:
         if r.status_code in (401,403):return {'available':False,'reason':'GitHub release access denied','status_code':r.status_code}
         r.raise_for_status();d=r.json();tag=d.get('tag_name','');current=self._version_tuple(__version__);latest=self._version_tuple(tag)
         if not current or not latest:return {'available':False,'reason':'release version is not semantic','tag':tag}
-        assets=[]
-        release_assets=d.get('assets',[])
-        by_name={str(a.get('name','')):a for a in release_assets}
+        assets=[];release_assets=d.get('assets',[]);by_name={str(a.get('name','')):a for a in release_assets}
         for a in release_assets:
             name=str(a.get('name',''))
             if not name.lower().endswith('.exe'):continue
-            sha_asset=by_name.get(name+'.sha256')
-            assets.append({'name':name,'size':a['size'],'url':a['browser_download_url'],'sha256_url':sha_asset.get('browser_download_url') if sha_asset else None,'publisher_thumbprint_required':bool(getattr(self.settings,'windows_publisher_thumbprint',''))})
+            sha_asset=by_name.get(name+'.sha256');assets.append({'name':name,'size':a['size'],'url':a['browser_download_url'],'sha256_url':sha_asset.get('browser_download_url') if sha_asset else None,'publisher_thumbprint_required':bool(getattr(self.settings,'windows_publisher_thumbprint',''))})
         return {'available':latest>current,'current_version':__version__,'tag':tag,'name':d.get('name'),'url':d.get('html_url'),'assets':assets}
     async def download(self,asset_url:str,sha256:str=''):
         if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
@@ -46,10 +47,14 @@ class UpdateManager:
         token=os.getenv('NOTSIP_GITHUB_TOKEN','');headers={'Accept':'application/octet-stream'}
         if token:headers['Authorization']='Bearer '+token
         target=self.dir/f'update-{int(time.time())}.exe'
-        async with httpx.AsyncClient(timeout=120,follow_redirects=True) as c:r=await c.get(asset_url,headers=headers);r.raise_for_status();target.write_bytes(r.content)
+        async with httpx.AsyncClient(timeout=120,follow_redirects=True) as c:
+            r=await c.get(asset_url,headers=headers)
+            r.raise_for_status()
+            if not self._trusted_redirect(str(r.url)):raise ValueError(f'untrusted update redirect destination: {r.url}')
+            target.write_bytes(r.content)
         digest=hashlib.sha256(target.read_bytes()).hexdigest()
         if digest.lower()!=sha256.lower():target.unlink(missing_ok=True);raise ValueError('update SHA-256 verification failed')
-        return {'status':'DOWNLOADED','path':str(target),'sha256':digest}
+        return {'status':'DOWNLOADED','path':str(target),'sha256':digest,'download_host':urlparse(str(r.url)).hostname}
     @staticmethod
     def _powershell_quote(value):return "'"+str(value).replace("'","''")+"'"
     def _verify_authenticode(self,new_exe:Path):
@@ -71,7 +76,6 @@ class UpdateManager:
         signer=self._verify_authenticode(new_exe)
         if signer.get('status')!='VALID':raise RuntimeError(signer.get('reason','publisher verification unavailable'))
         backup=self.dir/f'previous-{int(time.time())}.exe';shutil.copy2(current,backup)
-        helper=self.dir/f'apply-{int(time.time())}.ps1'
-        new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url)
+        helper=self.dir/f'apply-{int(time.time())}.ps1';new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url)
         helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force {new_s} {cur_s}\nStart-Process {cur_s}\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s}; exit 2 }}\n''',encoding='utf-8')
         subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer}
