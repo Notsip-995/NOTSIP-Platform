@@ -5,6 +5,7 @@ from .events import Event
 from .oauth_services import OAuthService
 from .policy import Risk
 from .tools import Tool
+from .actor_context import current_actor
 
 def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None, registry=None, agent=None):
     async def require_user_or_device(request:Request):
@@ -69,8 +70,7 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
     @app.post('/api/integrations/{provider_name}/calendar/events')
     async def integration_calendar_create(provider_name:str,payload:dict,_:None=Depends(require_auth)):
         provider_guard(provider_name);a=require_agent()
-        result=await a.run_tool('oauth_calendar_create',{'provider':provider_name,'account_id':str(payload.get('account_id','')) or None,'title':str(payload.get('title','')).strip(),'start':str(payload.get('start','')),'end':str(payload.get('end','')),'description':str(payload.get('description','')),'location':str(payload.get('location','')),'timezone':str(payload.get('timezone','UTC'))})
-        return result
+        return await a.run_tool('oauth_calendar_create',{'provider':provider_name,'account_id':str(payload.get('account_id','')) or None,'title':str(payload.get('title','')).strip(),'start':str(payload.get('start','')),'end':str(payload.get('end','')),'description':str(payload.get('description','')),'location':str(payload.get('location','')),'timezone':str(payload.get('timezone','UTC'))})
     @app.patch('/api/integrations/{provider_name}/calendar/events/{event_id}')
     async def integration_calendar_update(provider_name:str,event_id:str,payload:dict,_:None=Depends(require_auth)):
         provider_guard(provider_name);a=require_agent();changes=dict(payload);account_id=str(changes.pop('account_id','')) or None
@@ -100,4 +100,5 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
 
 def store_fact_if_present(store,result,payload):
     observation=result.get('observation') if isinstance(result,dict) else None
-    if observation:store.fact(observation,'vision','',0.65,{'prompt':payload.get('prompt','')})
+    if observation:
+        store.fact(observation,'vision','',0.65,{'prompt':payload.get('prompt',''),'actor':current_actor()})
