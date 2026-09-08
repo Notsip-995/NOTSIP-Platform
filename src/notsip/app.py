@@ -8,7 +8,7 @@ from .runtime_prod import policy
 from .provider import Provider
 from .connectors import Web, Email
 from .security import OIDCProvider
-from .policy import Policy
+from .policy import Policy, Risk
 from .nodes import NodeRegistry
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
@@ -20,6 +20,8 @@ from .account_store import AccountStore
 from .conversations import ConversationStore
 from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
+from .tools import Tool
+from .execution_gate import ToolExecutionGate
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
@@ -69,7 +71,7 @@ async def production_security(request:Request,call_next):
 async def api_login(payload:dict):
     if not settings.api_key:raise HTTPException(503,'API key authentication is disabled; local access is open')
     if not __import__('secrets').compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
-    token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=settings.session_ttl);return r
+    token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=not str(settings.host) in {'127.0.0.1','::1','localhost'},max_age=settings.session_ttl);return r
 @app.post('/api/logout')
 async def api_logout(request:Request):
     s=request.cookies.get('notsip_session');d=_sessions();d.pop(s,None);_save_sessions(d);auth.sessions.pop(s,None);r=Response(status_code=204);r.delete_cookie('notsip_session');return r
@@ -81,23 +83,24 @@ async def diagnostics_route(_:None=Depends(require_auth)):return diagnostics.run
 async def audit_log_route(_:None=Depends(require_auth)):return {'events':audit_log.tail()}
 @app.get('/api/config')
 async def config_get(_:None=Depends(require_auth)):
-    data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret'))};return data
+    data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret','token'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
+    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','flight_planning_token'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token'}
+    high_risk={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','node_shared_secret'}
+    denied=sorted(set(requested)&high_risk)
+    if denied:
+        result=await agent.run_tool('config_admin',{'keys':denied,'settings':{k:requested[k] for k in denied}})
+        if result.get('status')!='SUCCESS':return result
     for k,v in requested.items():
+        if k in denied:continue
         if k in allowed:setattr(settings,k,v)
         elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
     config_store.save({k:getattr(settings,k) for k in allowed})
     global provider,web,emailc,policy,diagnostics,probes,auth_token
     provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level)
-    # Keep the original shared NodeRegistry instance so route closures across the
-    # application observe the new federation secret immediately.
-    nodes.secret=settings.node_shared_secret
-    agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
-    diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
-    audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
+    diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc);audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
@@ -107,7 +110,9 @@ async def list_backups(_:None=Depends(require_auth)):return {'backups':backups.l
 @app.get('/api/backups/{name}/verify')
 async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.verify(name)
 @app.post('/api/backups/{name}/restore')
-async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):return backups.restore(name,bool(payload.get('confirm')))
+async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):
+    if not payload.get('confirm'):raise HTTPException(400,'restore confirmation required')
+    result=await agent.run_tool('backup_restore',{'name':name});return result
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
 @app.post('/api/approvals')
@@ -140,9 +145,8 @@ async def select_session(session_id:str,_:None=Depends(require_auth)):
 async def oauth_accounts(_:None=Depends(require_auth)):return {'accounts':accounts.list()}
 @app.post('/api/integrations/accounts/{account_id}/disconnect')
 async def oauth_disconnect(account_id:str,_:None=Depends(require_auth)):
-    item=accounts.disconnect(account_id)
-    if not item:raise HTTPException(404,'account not found')
-    return {'status':'SUCCESS','account_id':account_id}
+    if not accounts.get(account_id):raise HTTPException(404,'account not found')
+    return await agent.run_tool('oauth_revoke',{'account_id':account_id})
 @app.get('/api/self/provenance')
 async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
@@ -150,24 +154,21 @@ async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'
 @app.get('/api/voice/native')
 async def native_voice_status(_:None=Depends(require_auth)):return {'running':native_voice.running}
 @app.post('/api/voice/native/start')
-async def native_voice_start(_:None=Depends(require_auth)):return native_voice.start()
+async def native_voice_start(_:None=Depends(require_auth)):return await agent.run_tool('native_voice_start',{})
 @app.post('/api/voice/native/stop')
-async def native_voice_stop(_:None=Depends(require_auth)):return native_voice.stop()
+async def native_voice_stop(_:None=Depends(require_auth)):return await agent.run_tool('native_voice_stop',{})
 @app.get('/api/windows/tree')
 async def windows_tree(window_title:str='',window_re:str='',_:None=Depends(require_auth)):return uia.control_tree(window_title,window_re)
 @app.post('/api/windows/click')
-async def windows_click(payload:dict,_:None=Depends(require_auth)):return uia.click(**payload)
+async def windows_click(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_click',payload)
 @app.post('/api/windows/type')
-async def windows_type(payload:dict,_:None=Depends(require_auth)):return uia.type_text(**payload)
+async def windows_type(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_type',payload)
 @app.post('/api/windows/hotkey')
-async def windows_hotkey(payload:dict,_:None=Depends(require_auth)):return uia.hotkey(*payload.get('keys',[]))
+async def windows_hotkey(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_hotkey',{'keys':payload.get('keys',[])})
 @app.get('/api/federation/challenge')
 async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce)}
 @app.post('/api/federation/{node_id}/rotate')
-async def federation_rotate(node_id:str,_:None=Depends(require_auth)):
-    if not store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise HTTPException(404,'node not found')
-    token=__import__('secrets').token_urlsafe(32);store.exec('UPDATE devices SET token_hash=? WHERE id=?',(__import__('hashlib').sha256(token.encode()).hexdigest(),node_id));return {'node_id':node_id,'token':token}
+async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
 @app.post('/api/federation/{node_id}/revoke')
-async def federation_revoke(node_id:str,_:None=Depends(require_auth)):
-    store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));return {'node_id':node_id,'status':'REVOKED'}
+async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
 __all__=['app']
