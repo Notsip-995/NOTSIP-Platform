@@ -1,5 +1,5 @@
 from __future__ import annotations
-import importlib,copy
+import importlib,copy,json
 from fastapi import HTTPException,Request
 from fastapi.responses import FileResponse,JSONResponse
 
@@ -7,7 +7,13 @@ SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fall
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
 def _migrate_legacy_config(mod):
-    data=mod.config_store.load();raw=dict(data.get('settings') or {});changed=int(data.get('version',1))<2
+    on_disk_version=1
+    try:
+        if mod.config_store.path.exists():
+            raw_document=json.loads(mod.config_store.path.read_text(encoding='utf-8'))
+            on_disk_version=int(raw_document.get('version',1))
+    except Exception as exc:raise RuntimeError(f'cannot inspect persisted configuration version: {exc}') from exc
+    data=mod.config_store.load();raw=dict(data.get('settings') or {});changed=on_disk_version<2
     for key in SECRET_NAMES:
         value=raw.get(key)
         if str(value or '').strip():
