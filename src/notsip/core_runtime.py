@@ -55,6 +55,7 @@ from .forensics_scope_hardening import attach as attach_forensics_scope_hardenin
 from .memory_scope_hardening import attach as attach_memory_scope_hardening
 from .setup_readiness import attach as attach_setup_readiness
 from .device_ownership_hardening import install as install_device_ownership_hardening
+from .satellite_tool_hardening import attach as attach_satellite_tool_hardening
 from .execution_gate import ToolExecutionGate
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
@@ -101,6 +102,7 @@ _health=HealthAnalytics(DATA)
 attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
 attach_advanced_intelligence(app,_require,store,web,agent,registry,events,settings)
+attach_satellite_tool_hardening(registry,__import__('notsip.advanced_intelligence',fromlist=['RemoteSensingAdapter']).RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token','')))
 attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
