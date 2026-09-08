@@ -2,6 +2,9 @@ from __future__ import annotations
 import ipaddress,socket,time
 from urllib.parse import urlparse,quote
 import httpx
+from .policy import Risk
+from .tools import Tool
+from .execution_gate import ToolExecutionGate
 
 class AdapterUnavailable(RuntimeError): pass
 
@@ -43,7 +46,7 @@ class HomeAdapter:
         if not self.configured:raise AdapterUnavailable('home/building adapter is not configured')
         path=quote(str(device_id),safe='')
         async with httpx.AsyncClient(timeout=20) as c:r=await c.post(self.endpoint+'/devices/'+path+'/commands',json={'action':action,'payload':payload or {}},headers={'Authorization':'Bearer '+self.token});r.raise_for_status();d=r.json()
-        return {'status':'QUEUED' if d.get('status') in {'QUEUED','ACCEPTED'} else d.get('status','UNKNOWN'),'device_id':device_id,'action':action,'provider_result':d}
+        return {'status':'QUEUED' if d.get('status') in {'QUEUED','ACCEPTED'} else d.get('status','UNKNOWN'),'device_id':device_id,'action':action,'provider_result':d,'verified':False,'note':'provider accepted the command; physical device state was not independently verified'}
 
 class BiometricTelemetryAdapter:
     def __init__(self,endpoint='',token=''):self.endpoint=endpoint.rstrip('/');self.token=token
@@ -53,3 +56,13 @@ class BiometricTelemetryAdapter:
         if not self.configured:raise AdapterUnavailable('biometric telemetry adapter is not configured')
         async with httpx.AsyncClient(timeout=20) as c:r=await c.get(self.endpoint+'/latest',headers={'Authorization':'Bearer '+self.token});r.raise_for_status();data=r.json()
         return {'status':'SUCCESS','measurement':data,'interpretation':None,'warning':None,'diagnosis':None,'is_diagnosis':False,'retrieved_at':time.time()}
+
+def attach(registry,settings):
+    home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''))
+    biometric=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''))
+    if registry.get('home_command') is None:
+        registry.add(Tool('home_command','Issue a command to an authorized home/building device through the configured adapter. Provider acceptance is not physical-state verification.','HOME_AUTOMATION',Risk.HIGH,{'type':'object','properties':{'device_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['device_id','action']},home.command,True))
+    if registry.get('biometric_latest') is None:
+        registry.add(Tool('biometric_latest','Read the latest authorized biometric telemetry; interpret it as telemetry, not diagnosis.','BIOMETRIC_READ',Risk.MEDIUM,{'type':'object','properties':{}},biometric.latest))
+    ToolExecutionGate.wrap_registry(registry)
+    return home,biometric
