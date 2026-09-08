@@ -29,16 +29,31 @@ class SecretStore:
             try:return ctypes.string_at(out.pbData,out.cbData)
             finally:kernel32.LocalFree(out.pbData)
         except Exception:return None
+    def _persist_local_key(self,path,key):
+        if os.name=='nt':
+            protected=self._dpapi(key,False)
+            if protected is None:raise RuntimeError('Windows DPAPI is unavailable; refusing to store a plaintext master key')
+            path.write_bytes(protected)
+            return
+        path.write_bytes(key)
+        try:path.chmod(0o600)
+        except OSError as exc:raise RuntimeError(f'unable to protect local master key permissions: {exc}') from exc
     def _load_or_create_key(self):
         env=os.getenv('NOTSIP_MASTER_KEY','')
         if env:return hashlib.sha256(env.encode()).digest()
         p=self.root/'master.key'
         if p.exists():
-            raw=p.read_bytes();dec=self._dpapi(raw,True);return dec[:32] if dec else hashlib.sha256(raw).digest()
-        key=secrets.token_bytes(32);p.write_bytes(self._dpapi(key) or key)
-        try:p.chmod(0o600)
-        except Exception:pass
-        return key
+            raw=p.read_bytes()
+            if os.name=='nt':
+                dec=self._dpapi(raw,True)
+                if dec is not None and len(dec)>=32:return dec[:32]
+                if len(raw)==32:
+                    # Legacy plaintext key: upgrade it in place under DPAPI or fail closed.
+                    self._persist_local_key(p,raw);return raw
+                raise RuntimeError('Windows master key cannot be decrypted; refusing insecure key fallback')
+            if len(raw)<32:raise RuntimeError('local master key is corrupt')
+            return raw[:32]
+        key=secrets.token_bytes(32);self._persist_local_key(p,key);return key
     def load(self):
         with self._lock:
             if not self.path.exists():return {}
@@ -47,7 +62,7 @@ class SecretStore:
         with self._lock:
             n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
             try:self.path.chmod(0o600)
-            except Exception:pass
+            except OSError:pass
     def get(self,name,default=None):
         with self._lock:return self.load().get(name,default)
     def set(self,name,value):
