@@ -36,6 +36,7 @@ from .pairing_hardening import attach as attach_pairing_hardening
 from .windows_hardening import attach as attach_windows_hardening
 from .distributed_failover import attach as attach_distributed_failover
 from .oidc_hardening import attach as attach_oidc_hardening
+from .oidc_session_guard import attach as attach_oidc_session_guard
 from .audit_hardening import attach as attach_audit_hardening
 from .audit_scope_hardening import attach as attach_audit_scope_hardening
 from .notification_hardening import attach as attach_notification_hardening
@@ -103,6 +104,7 @@ attach_advanced_intelligence(app,_require,store,web,agent,registry,events,settin
 attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
+attach_oidc_session_guard(app,auth)
 attach_session_hardening(app,_require,agent,DATA)
 attach_memory_scope_hardening(app,_require,store)
 attach_setup_readiness(app,_require,settings,store)
@@ -128,8 +130,6 @@ async def threat_assessment(payload:dict,_:None=Depends(_require)):
     if not isinstance(indicators,list):raise HTTPException(400,'indicators must be an array')
     result=_threat.assess(indicators);result['actor']=current_actor();return result
 attach_workspace_scope_hardening(app,registry,DATA)
-# Final defense-in-depth pass: every registry function is rechecked after all
-# composition layers that can add or replace tools have executed.
 ToolExecutionGate.wrap_registry(registry)
 attach_forensics_scope_hardening(app,_require,DATA)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
