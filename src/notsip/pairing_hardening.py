@@ -25,6 +25,9 @@ def attach(app,require_auth,store,pairing,auth=None):
         code=body.code.strip().upper();record=secret_store.get('pairing:owner:'+code)
         actor=current_actor()
         if not isinstance(record,dict) or str(record.get('actor'))!=actor:raise HTTPException(403,'pairing code is not owned by current actor')
+        existing_owner=store.device_owner(body.device_id)
+        if existing_owner is not None and existing_owner!=actor:
+            raise HTTPException(409,'device_id is already owned by another actor')
         if not store.consume_pair_code(code):raise HTTPException(400,'invalid or expired pairing code')
         secret_store.delete('pairing:owner:'+code);token=secrets.token_urlsafe(32);store.pair_device(body.device_id,body.name,body.platform,body.public_key,token,owner=actor)
         return {'status':'PAIRED','device_id':body.device_id,'device_token':token,'actor':actor}
