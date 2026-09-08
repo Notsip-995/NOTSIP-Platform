@@ -1,16 +1,18 @@
 from __future__ import annotations
-import asyncio,hashlib,json,os,secrets,time
-from fastapi import Depends,HTTPException,Request,Header
+import secrets,time
+from fastapi import Depends,HTTPException,Request
 from fastapi.responses import RedirectResponse
 from .updater import UpdateManager
 from .policy import Risk
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
 from .oauth_services import OAuthService
+from .actor_context import current_actor
 
 def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 def _checkpoint_devices(store):return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
 def _checkpoint_commands(store):return store.rows('SELECT id,device_id,action,payload,status,created,updated,result FROM commands')
+def _active_account_key():return 'oidc:active_account:'+current_actor()
 
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
@@ -72,7 +74,7 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     @app.get('/api/oauth/login')
     async def oauth_login():
         if not auth.oidc.configured:raise HTTPException(503,'OIDC is not configured')
-        verifier,challenge=__import__('notsip.security',fromlist=['pkce_pair']).pkce_pair();state=secrets.token_urlsafe(32);nonce=secrets.token_urlsafe(24);auth.sessions['oidc:'+state]={'verifier':verifier,'nonce':nonce,'expires':time.time()+600};return RedirectResponse(await auth.oidc.authorize_url(state,challenge,nonce))
+        verifier,challenge=__import__('notsip.security',fromlist=['pkce_pair']).pkce_pair();state=secrets.token_urlsafe(32);nonce=secrets.token_urlsafe(24);auth.sessions['oidc:'+state]={'verifier':verifier,'nonce':nonce,'expires':time.time()+600,'actor':current_actor()};return RedirectResponse(await auth.oidc.authorize_url(state,challenge,nonce))
     @app.get('/api/oauth/callback')
     async def oauth_callback(code:str,state:str):
         pending=auth.sessions.pop('oidc:'+state,None)
@@ -80,11 +82,11 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         tokens=await auth.oidc.exchange(code,pending['verifier']);claims={}
         if tokens.get('id_token'):claims=await auth.oidc.validate_id_token(tokens['id_token'],pending['nonce'])
         elif tokens.get('access_token'):claims=await auth.oidc.userinfo(tokens['access_token'])
-        account=accounts.upsert(settings.oidc_provider,claims.get('sub','user'),claims.get('email',''),auth.oidc.scopes,{'expires_at':tokens.get('expires_at'),'token_type':tokens.get('token_type')});accounts.save_tokens(account['id'],tokens);auth.secrets.set('oidc:active_account',account['id'])
+        actor=str(pending.get('actor') or 'primary-user');account=accounts.upsert(settings.oidc_provider,claims.get('sub','user'),claims.get('email',''),auth.oidc.scopes,{'expires_at':tokens.get('expires_at'),'token_type':tokens.get('token_type')},owner=actor);accounts.save_tokens(account['id'],tokens,owner=actor);auth.secrets.set('oidc:active_account:'+actor,account['id'])
         session=auth.mint_session({'claims':claims,'account_id':account['id']});r=RedirectResponse('/');r.set_cookie('notsip_session',session,httponly=True,secure=settings.oidc_redirect_uri.startswith('https://'),samesite='lax',max_age=settings.session_ttl);return r
     @app.post('/api/oauth/revoke')
     async def oauth_revoke(payload:dict,_:None=Depends(require_auth)):
-        account_id=str(payload.get('account_id') or auth.secrets.get('oidc:active_account',''));item=accounts.get(account_id) if account_id else None
+        account_id=str(payload.get('account_id') or auth.secrets.get(_active_account_key(),''));item=accounts.get(account_id) if account_id else None
         if not item:raise HTTPException(404,'OAuth account not found')
         return await agent.run_tool('oauth_revoke',{'account_id':account_id})
     @app.post('/api/devices/result')
@@ -102,6 +104,6 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         if not device_id or not token or not store.device_token_valid(device_id,token):raise HTTPException(401,'device authentication required')
         store.heartbeat(device_id);return {'status':'ONLINE','device_id':device_id}
     @app.get('/api/devices/{device_id}/commands')
-    async def device_commands(device_id:str,x_notsip_device_token:str=Header('',alias='X-NOTSIP-Device-Token')):
+    async def device_commands(device_id:str,x_notsip_device_token:str=__import__('fastapi').Header('',alias='X-NOTSIP-Device-Token')):
         if not x_notsip_device_token or not store.device_token_valid(device_id,x_notsip_device_token):raise HTTPException(401,'Invalid device token')
         return {'commands':store.pull_commands(device_id)}
