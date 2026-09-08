@@ -53,6 +53,7 @@ from .workflow_runtime_hardening import attach as attach_workflow_runtime
 from .forensics_scope_hardening import attach as attach_forensics_scope_hardening
 from .memory_scope_hardening import attach as attach_memory_scope_hardening
 from .setup_readiness import attach as attach_setup_readiness
+from .device_ownership_hardening import install as install_device_ownership_hardening
 from .execution_gate import ToolExecutionGate
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
@@ -62,6 +63,7 @@ _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
+install_device_ownership_hardening(store)
 app.CONFIG_SECRET_NAMES.add('business_admin_token');app.CONFIG_HIGH_RISK.add('business_admin_token')
 app.CONFIG_SECRET_NAMES.add('speaker_identity_token');app.CONFIG_HIGH_RISK.add('speaker_identity_token')
 from .product_layer import ConfigStore
@@ -114,7 +116,7 @@ attach_audit_scope_hardening(app,_require,store,audit_log)
 notifications=NotificationStore(DATA,store)
 attach_notification_hardening(app,events,notifications,_require)
 attach_status_scope_hardening(app,_require,store,policy,agent,settings,registry,web,emailc,auth)
-attach_browser_hardening(app,_require,agent,browser,registry)
+attach_browser_hardening(app,_require,agent,__import__('notsip.app',fromlist=['browser']).browser,registry)
 attach_database_router(app,_require,agent,registry)
 _threat=ThreatAssessor()
 if registry.get('assess_threat') is None:registry.add(Tool('assess_threat','Assess supplied security indicators without performing containment.','SECURITY_MONITORING',Risk.LOW,{'type':'object','properties':{'indicators':{'type':'array','items':{'type':'object'}}}},_threat.assess))
