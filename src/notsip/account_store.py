@@ -11,8 +11,12 @@ class AccountStore:
     def get(self,account_id):return self._accounts().get(account_id)
     def for_provider(self,provider):return [x for x in self.list() if x.get('provider')==provider and x.get('status')=='CONNECTED']
     def save_tokens(self,account_id,tokens):
-        safe={k:v for k,v in tokens.items() if k in {'access_token','refresh_token','expires_in','expires_at','token_type','scope','id_token'}}
-        self.secrets.set(self._token_key(account_id),safe);return {'account_id':account_id,'stored':sorted(safe)}
+        allowed={'access_token','refresh_token','expires_in','expires_at','token_type','scope','id_token'}
+        incoming={k:v for k,v in tokens.items() if k in allowed and v not in (None,'')}
+        current=self.tokens(account_id)
+        merged=dict(current);merged.update(incoming)
+        self.secrets.set(self._token_key(account_id),merged)
+        return {'account_id':account_id,'stored':sorted(merged)}
     def tokens(self,account_id):return self.secrets.get(self._token_key(account_id),{}) or {}
     def disconnect(self,account_id):
         d=self._accounts();item=d.get(account_id)
