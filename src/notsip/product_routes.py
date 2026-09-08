@@ -6,6 +6,7 @@ from .updater import UpdateManager
 from .policy import Risk
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
+from .oauth_services import OAuthService
 
 def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 def _checkpoint_devices(store):return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
@@ -13,11 +14,12 @@ def _checkpoint_commands(store):return store.rows('SELECT id,device_id,action,pa
 
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
-    updates=UpdateManager(DATA,settings)
+    updates=UpdateManager(DATA,settings);oauth_service=OAuthService(auth.secrets,accounts)
     if agent.registry.get('update_apply') is None:agent.registry.add(Tool('update_apply','Apply a downloaded and cryptographically verified NOTSIP executable update.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:updates.install_and_verify(__import__('pathlib').Path(path).resolve()),True))
     if agent.registry.get('federation_rotate') is None:agent.registry.add(Tool('federation_rotate','Rotate credentials for an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.rotate,True))
     if agent.registry.get('federation_revoke') is None:agent.registry.add(Tool('federation_revoke','Revoke an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.revoke,True))
     if agent.registry.get('recovery_restore') is None:agent.registry.add(Tool('recovery_restore','Restore persistent runtime state from the latest verified checkpoint.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{}},lambda:store.restore_runtime_state(recovery.restore_state()['state']),True))
+    if agent.registry.get('oauth_revoke') is None:agent.registry.add(Tool('oauth_revoke','Revoke an authorized external OAuth account without weakening other connected accounts.','MANAGE_ACCOUNTS',Risk.HIGH,{'type':'object','properties':{'account_id':{'type':'string'}},'required':['account_id']},lambda account_id:oauth_service.revoke(accounts.get(account_id,{}).get('provider',''),account_id),True))
     ToolExecutionGate.wrap_registry(agent.registry)
     @app.get('/api/recovery/check')
     async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
@@ -84,15 +86,7 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     async def oauth_revoke(payload:dict,_:None=Depends(require_auth)):
         account_id=str(payload.get('account_id') or auth.secrets.get('oidc:active_account',''));item=accounts.get(account_id) if account_id else None
         if not item:raise HTTPException(404,'OAuth account not found')
-        tokens=accounts.tokens(account_id);provider=item.get('provider','');url={'google':'https://oauth2.googleapis.com/revoke'}.get(provider)
-        if url and tokens.get('access_token'):
-            import httpx
-            try:
-                async with httpx.AsyncClient(timeout=15) as c:r=await c.post(url,data={'token':tokens['access_token']});r.raise_for_status()
-            except Exception as exc:raise HTTPException(502,f'provider revocation failed: {exc}')
-        accounts.disconnect(account_id)
-        if auth.secrets.get('oidc:active_account','')==account_id:auth.secrets.set('oidc:active_account','')
-        return {'status':'SUCCESS','revoked':True,'account_id':account_id,'provider_revoked':bool(url and tokens.get('access_token'))}
+        return await agent.run_tool('oauth_revoke',{'account_id':account_id})
     @app.post('/api/devices/result')
     async def device_result(payload:dict,request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
