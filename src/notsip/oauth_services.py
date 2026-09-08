@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64, email.policy
 from email.message import EmailMessage
+from urllib.parse import quote
 import httpx
 
 class OAuthService:
@@ -40,44 +41,43 @@ class OAuthService:
     async def _request(self,provider,method,path,account_id=None,**kwargs):
         token,item=self._token(provider,account_id)
         if not token:raise RuntimeError(f'{provider} account is not authorized')
+        extra_headers=dict(kwargs.pop('headers',{}) or {})
         async with httpx.AsyncClient(timeout=30) as c:
-            r=await c.request(method,path,headers={'Authorization':'Bearer '+token,'Accept':'application/json',**(kwargs.pop('headers',{}) or {})},**kwargs)
+            def headers_for(current):return {'Authorization':'Bearer '+current,'Accept':'application/json',**extra_headers}
+            r=await c.request(method,path,headers=headers_for(token),**kwargs)
             if r.status_code==401:
-                await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.request(method,path,headers={'Authorization':'Bearer '+token,'Accept':'application/json',**(kwargs.pop('headers',{}) or {})},**kwargs)
+                await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.request(method,path,headers=headers_for(token),**kwargs)
             if r.status_code not in (200,201,202,204):r.raise_for_status()
             if r.status_code==204 or not r.content:return {'status':'SUCCESS','provider_status':r.status_code}
             data=r.json();return {'status':'SUCCESS','provider_status':r.status_code,'data':data}
     async def calendar_create(self,provider,title,start,end,description='',location='',timezone='UTC',account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
-        if provider=='google':
-            body={'summary':title,'description':description,'location':location,'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
-        else:
-            body={'subject':title,'body':{'contentType':'Text','content':description},'location':{'displayName':location},'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
+        if provider=='google':body={'summary':title,'description':description,'location':location,'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
+        else:body={'subject':title,'body':{'contentType':'Text','content':description},'location':{'displayName':location},'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
         return await self._request(provider,'POST',self.PROFILES[provider]['calendar'],item['id'],json=body)
     async def calendar_update(self,provider,event_id,changes,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
-        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
-        eid=str(event_id).strip()
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar');eid=str(event_id).strip()
         if not eid:raise ValueError('event_id is required')
         body=dict(changes or {})
         if provider=='microsoft' and 'title' in body:body['subject']=body.pop('title')
-        if provider=='google':body={'summary':body.get('title')} if 'title' in body else body
-        path=self.PROFILES[provider]['calendar'].rstrip('/')+'/'+httpx.URL(eid).raw_path.decode() if False else self.PROFILES[provider]['calendar'].rstrip('/')+'/'+eid
+        if provider=='google' and 'title' in body:body={'summary':body['title'],**{k:v for k,v in body.items() if k!='title'}}
+        path=self.PROFILES[provider]['calendar'].rstrip('/')+'/'+quote(eid,safe='')
         return await self._request(provider,'PATCH' if provider=='microsoft' else 'PUT',path,item['id'],json=body)
     async def calendar_delete(self,provider,event_id,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
-        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
-        eid=str(event_id).strip()
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar');eid=str(event_id).strip()
         if not eid:raise ValueError('event_id is required')
-        return await self._request(provider,'DELETE',self.PROFILES[provider]['calendar'].rstrip('/')+'/'+eid,item['id'])
+        return await self._request(provider,'DELETE',self.PROFILES[provider]['calendar'].rstrip('/')+'/'+quote(eid,safe=''),item['id'])
     async def send_mail(self,provider,to,subject,body,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         token,item=self._token(provider,account_id);self._require_scope(provider,item,'mail')
         if provider=='google':
-            msg=EmailMessage(policy=email.policy.SMTP);msg['To']=to;msg['Subject']=subject;msg['From']=item.get('email','');msg.set_content(body);raw=base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip('=');payload={'raw':raw};return await self._request(provider,'POST','https://gmail.googleapis.com/gmail/v1/users/me/messages/send',item['id'],json=payload)
-        payload={'message':{'subject':subject,'body':{'contentType':'Text','content':body},'toRecipients':[{'emailAddress':{'address':to}}]}}
-        return await self._request(provider,'POST','https://graph.microsoft.com/v1.0/me/sendMail',item['id'],json=payload)
+            msg=EmailMessage(policy=email.policy.SMTP);msg['To']=to;msg['Subject']=subject;msg['From']=item.get('email','');msg.set_content(body);raw=base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip('=');payload={'raw':raw};result=await self._request(provider,'POST','https://gmail.googleapis.com/gmail/v1/users/me/messages/send',item['id'],json=payload)
+        else:
+            payload={'message':{'subject':subject,'body':{'contentType':'Text','content':body},'toRecipients':[{'emailAddress':{'address':to}}]}};result=await self._request(provider,'POST','https://graph.microsoft.com/v1.0/me/sendMail',item['id'],json=payload)
+        result['status']='PARTIAL_SUCCESS';result['verified']=False;result['note']='Provider accepted the send request; recipient delivery was not independently verified.';return result
     async def refresh(self,provider,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);refresh=tokens.get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','') or self.secrets.get('oidc:client_id','')
