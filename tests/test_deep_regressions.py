@@ -13,10 +13,8 @@ from notsip.store import Store
 def test_database_url_is_persistent_configuration(tmp_path):
     config = ConfigStore(tmp_path)
     config.save({'database_url': 'postgresql://user:password@example/db', 'node_name': 'TEST'})
-    assert 'database_url' not in config.load()['settings']
-    secrets = SecretStore(tmp_path)
-    secrets.set('NOTSIP_DATABASE_URL', 'postgresql://user:password@example/db')
-    assert secrets.get('NOTSIP_DATABASE_URL') == 'postgresql://user:password@example/db'
+    assert config.load()['settings']['database_url'] == 'postgresql://user:password@example/db'
+    assert 'database_url' not in SECRET_FIELDS
 
 
 def test_scheduler_claim_is_atomic(tmp_path):
@@ -71,8 +69,8 @@ def test_approval_execution_is_one_time(tmp_path):
         raise AssertionError('second approval execution must fail')
 
 
-def test_database_url_is_secret():
-    assert 'database_url' in SECRET_FIELDS
+def test_database_url_is_not_secret():
+    assert 'database_url' not in SECRET_FIELDS
 
 
 def test_canonical_route_set_has_no_duplicates():
