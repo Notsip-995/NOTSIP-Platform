@@ -25,9 +25,10 @@ from .execution_gate import ToolExecutionGate
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
-CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
+CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','speaker_identity_token','business_admin_token'}
 CONFIG_HIGH_RISK={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint',*CONFIG_SECRET_NAMES}
 CONFIG_RUNTIME_UNSUPPORTED={'data_dir','database_url'}
+CONFIG_RESTART_KEYS={'host','port','auth_mode','oidc_provider','oidc_issuer','oidc_client_id','oidc_redirect_uri','oidc_scopes','llm_base_url','llm_api_key','llm_model','fallback_llm_base_url','fallback_llm_api_key','fallback_llm_model','stt_base_url','stt_api_key','stt_model','stt_language','stt_stream_url','tts_base_url','tts_api_key','tts_model','tts_voice','tts_format','voice_enabled','native_voice_enabled','voice_sample_rate','vad_rms_threshold','vad_silence_blocks','wake_word','vision_enabled','perception_enabled','perception_interval','perception_screen_enabled','brave_api_key','browser_enabled','smtp_host','smtp_port','imap_host','email_username','email_password','oauth_authorize_url','oauth_token_url','oauth_client_id','oauth_client_secret','oauth_redirect_uri','oauth_scopes','android_poll_seconds','node_lease_seconds','node_shared_secret','remote_compute_url','remote_compute_token','remote_sensing_url','remote_sensing_token','home_adapter_url','home_adapter_token','biometric_adapter_url','biometric_adapter_token','flight_planning_url','flight_planning_token','business_admin_url','business_admin_token','speaker_identity_url','speaker_identity_token','github_repository','windows_publisher_thumbprint','github_update_enabled'}
 
 def _rebuild_runtime_after_config():
     global provider,web,emailc,policy,diagnostics,probes,auth_token
@@ -36,24 +37,39 @@ def _rebuild_runtime_after_config():
     ToolExecutionGate.configure(policy,agent.approvals)
     auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
 
-def _apply_config(requested):
-    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url','data_dir'}};snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url','data_dir'}};secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
+def _apply_config(requested,bootstrap=False):
+    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url','data_dir'}}
+    snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url','data_dir'}}
+    secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
     try:
+        if not bootstrap:
+            candidate=copy.deepcopy(settings)
+            for k,v in requested.items():
+                if k in allowed:setattr(candidate,k,v)
+                elif k in CONFIG_SECRET_NAMES:setattr(candidate,k,str(v))
+            candidate.ensure()
+            for key,value in requested.items():
+                if key in CONFIG_SECRET_NAMES:
+                    if str(value or '').strip():auth.secrets.set('NOTSIP_'+key.upper(),str(value))
+                    else:auth.secrets.delete('NOTSIP_'+key.upper())
+            persisted={k:getattr(settings,k) for k in allowed};persisted.update({k:v for k,v in requested.items() if k in allowed});config_store.save(persisted)
+            return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':True,'applied_to_runtime':False,'restart_reason':'configuration was validated and persisted; restart NOTSIP to atomically rebuild all adapters','diagnostics':diagnostics.run()}
         for k,v in requested.items():
             if k in allowed:setattr(settings,k,v)
             elif k in CONFIG_SECRET_NAMES:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
-        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':bool(set(requested)&{'host','port','auth_mode'}),'diagnostics':diagnostics.run()}
+        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':bool(set(requested)&CONFIG_RESTART_KEYS),'applied_to_runtime':True,'diagnostics':diagnostics.run()}
     except Exception as exc:
         for k,v in snapshot.items():setattr(settings,k,v)
         for k,v in secret_snapshot.items():
             if v is None:auth.secrets.delete('NOTSIP_'+k.upper())
             else:auth.secrets.set('NOTSIP_'+k.upper(),v)
-        _rebuild_runtime_after_config();raise RuntimeError(f'configuration rejected: {exc}') from exc
+        if bootstrap:_rebuild_runtime_after_config()
+        raise RuntimeError(f'configuration rejected: {exc}') from exc
 
 def _config_admin(pending_id,keys):
     pending=auth.secrets.get('config:pending:'+str(pending_id))
     if not isinstance(pending,dict):raise RuntimeError('pending configuration change not found or expired')
-    try:return _apply_config(pending)
+    try:return _apply_config(pending,bootstrap=False)
     finally:auth.secrets.delete('config:pending:'+str(pending_id))
 if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize and apply security-sensitive configuration changes from an encrypted pending record.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'pending_id':{'type':'string'},'keys':{'type':'array'}},'required':['pending_id','keys']},_config_admin,True))
 if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
@@ -126,13 +142,13 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
     unknown=set(requested)-set(settings.__class__.model_fields)
     if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
     unsupported=sorted(set(requested)&CONFIG_RUNTIME_UNSUPPORTED)
-    if unsupported:raise HTTPException(409,f"runtime cannot safely switch {unsupported}; use explicit restart/migration procedure")
+    if unsupported:raise HTTPException(409,f"runtime cannot safely switch {unsupported}; configure them before startup and restart NOTSIP")
     sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
     if sensitive:
         pending_id=uuid.uuid4().hex;auth.secrets.set('config:pending:'+pending_id,requested);result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
         if result.get('status')=='FAILURE':auth.secrets.delete('config:pending:'+pending_id)
         return result
-    try:return _apply_config(requested)
+    try:return _apply_config(requested,bootstrap=False)
     except RuntimeError as exc:raise HTTPException(400,str(exc))
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
@@ -185,22 +201,4 @@ async def self_provenance(_:None=Depends(require_auth)):return {'repository':str
 @app.get('/api/process')
 async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
 @app.get('/api/voice/native')
-async def native_voice_status(_:None=Depends(require_auth)):return {'running':native_voice.running}
-@app.post('/api/voice/native/start')
-async def native_voice_start(_:None=Depends(require_auth)):return await agent.run_tool('native_voice_start',{})
-@app.post('/api/voice/native/stop')
-async def native_voice_stop(_:None=Depends(require_auth)):return await agent.run_tool('native_voice_stop',{})
-@app.get('/api/windows/tree')
-async def windows_tree(window_title:str='',window_re:str='',_:None=Depends(require_auth)):return uia.control_tree(window_title,window_re)
-@app.post('/api/windows/click')
-async def windows_click(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_click',payload)
-@app.post('/api/windows/type')
-async def windows_type(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_type',payload)
-@app.post('/api/windows/hotkey')
-async def windows_hotkey(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('windows_hotkey',{'keys':payload.get('keys',[])})
-@app.get('/api/federation/challenge')
-async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce)}
-@app.post('/api/federation/{node_id}/rotate')
-async def federation_rotate(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_rotate',{'node_id':node_id})
-@app.post('/api/federation/{node_id}/revoke')
-async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
+async def native_voice_status():return {'running':native_voice.running,'platform':os.name}
