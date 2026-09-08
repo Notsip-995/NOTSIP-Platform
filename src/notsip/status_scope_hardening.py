@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json,platform
-from fastapi import Depends
+from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 
 _PUBLIC_FACT_SOURCES={'brave','public','web','system'}
@@ -20,7 +20,7 @@ def _own_fact(fact,actor,store):
     return bool(device_id and store.device_owned_by(device_id,actor))
 
 def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth):
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/status','/api/facts'}]
+    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/status','/api/facts','/api/remote/satellite'}]
     @app.get('/api/status')
     async def status(_:None=Depends(require_auth)):
         actor=current_actor();tasks=[x for x in store.tasks() if _own_task(x,actor)];live_policy=getattr(agent,'policy',policy);level=getattr(live_policy,'current_level',getattr(live_policy,'level',0));devices=store.devices(actor)
@@ -31,3 +31,10 @@ def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth
     @app.get('/api/facts')
     async def facts(limit:int=100,_:None=Depends(require_auth)):
         actor=current_actor();n=max(1,min(int(limit),500));rows=[x for x in store.facts(n) if _own_fact(x,actor,store)];return {'facts':rows[:n]}
+    @app.get('/api/remote/satellite')
+    async def satellite_route(bbox:str,start:str,end:str,scene_id:str='',_:None=Depends(require_auth)):
+        # Authorization is server-side: the caller cannot self-attest with a query parameter.
+        if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required for satellite access')
+        if not str(getattr(settings,'remote_sensing_url','')).strip() or not str(getattr(settings,'remote_sensing_token','')).strip():
+            return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'authorized remote-sensing provider is not configured'}
+        return await agent.run_tool('satellite_query',{'bbox':bbox,'start':start,'end':end,'scene_id':scene_id,'authorized':True})
