@@ -24,10 +24,9 @@ def test_remote_oidc_requires_issuer_client_and_redirect(tmp_path):
         s.ensure()
 
 
-def test_execution_gate_is_rebound_to_new_runtime_policy(monkeypatch,tmp_path):
+def test_execution_gate_is_rebound_to_new_runtime_policy(tmp_path):
     from notsip import app
     from notsip.execution_gate import ToolExecutionGate
-    from notsip.policy import Policy
     old_level=app.settings.autonomy_level
     old_caps=dict(app.settings.capability_levels)
     old_policy=app.policy
@@ -42,3 +41,9 @@ def test_execution_gate_is_rebound_to_new_runtime_policy(monkeypatch,tmp_path):
         app.settings.capability_levels=old_caps
         app.policy=old_policy
         ToolExecutionGate.configure(old_policy,app.agent.approvals)
+
+
+def test_live_storage_switches_are_not_silently_accepted():
+    from notsip import app
+    assert 'data_dir' in app.CONFIG_RUNTIME_UNSUPPORTED
+    assert 'database_url' in app.CONFIG_RUNTIME_UNSUPPORTED
