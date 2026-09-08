@@ -1,4 +1,4 @@
-from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry,intellect,memory_service
+from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry,intellect,memory_service,backups
 from .runtime_prod import oauth, media, jobs
 from .product_routes import attach as attach_product
 from .completion_routes import attach as attach_completion
@@ -39,6 +39,7 @@ from .audit_hardening import attach as attach_audit_hardening
 from .audit_scope_hardening import attach as attach_audit_scope_hardening
 from .notification_hardening import attach as attach_notification_hardening
 from .notifications import NotificationStore
+from .backup_hardening import install as install_backup_hardening
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -47,6 +48,7 @@ app.CONFIG_SECRET_NAMES.add('business_admin_token');app.CONFIG_HIGH_RISK.add('bu
 app.CONFIG_SECRET_NAMES.add('speaker_identity_token');app.CONFIG_HIGH_RISK.add('speaker_identity_token')
 from .product_layer import ConfigStore
 ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token')
+install_backup_hardening(backups)
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events,registry=registry,agent=agent)
