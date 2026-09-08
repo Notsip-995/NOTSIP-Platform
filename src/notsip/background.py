@@ -23,12 +23,10 @@ class BackgroundSupervisor:
     def _maintain_memories(self):
         results=[]
         for actor in self._actors():
-            service=MemoryService(self.store,actor)
-            token=set_actor(actor)
+            service=MemoryService(self.store,actor);token=set_actor(actor)
             try:
                 decay=service.decay();consolidation=service.consolidate();results.append({'actor':actor,'decay':decay,'consolidation':consolidation})
-            except Exception as exc:
-                results.append({'actor':actor,'status':'FAILURE','error':str(exc)})
+            except Exception as exc:results.append({'actor':actor,'status':'FAILURE','error':str(exc)})
             finally:reset_actor(token)
         return results
     async def _health_cycle(self):
@@ -36,15 +34,21 @@ class BackgroundSupervisor:
         analysis=self.health_analytics.analyze(120);snapshot=self.telemetry();self.health_analytics.record(snapshot)
         if analysis.get('warnings'):await self.events.publish(Event('health.warning',analysis,'health-analytics'))
         history=self.health_analytics.samples(120)
-        cpu=self.predictor.evaluate(history,'cpu_percent',warning_slope=.5,failure_threshold=95)
-        mem=self.predictor.evaluate([{'memory_percent':(r.get('memory') or {}).get('percent')} for r in history],'memory_percent',warning_slope=.5,failure_threshold=95)
+        cpu=self.predictor.evaluate(history,'cpu_percent',warning_slope=.5,failure_threshold=95);mem=self.predictor.evaluate([{'memory_percent':(r.get('memory') or {}).get('percent')} for r in history],'memory_percent',warning_slope=.5,failure_threshold=95)
         for prediction in (cpu,mem):
             if prediction.get('status')=='SUCCESS' and prediction.get('trend',{}).get('state') in {'DEGRADATION','ANOMALY','PREDICTED_FAILURE'}:await self.events.publish(Event('maintenance.prediction',prediction,'predictive-maintenance'))
+    async def _reconcile_commands(self):
+        try:
+            stale=self.store.reconcile_commands()
+        except Exception as exc:
+            await self.events.publish(Event('commands.reconciliation_error',{'error':str(exc)},'command-recovery'));return
+        if stale:
+            await self.events.publish(Event('commands.unknown',{'commands':stale,'count':len(stale)},'command-recovery'))
     async def loop(self):
         while self.running:
             now=time.time()
             try:
-                node_state=self.nodes.reconcile();await self._health_cycle()
+                node_state=self.nodes.reconcile();await self._health_cycle();await self._reconcile_commands()
                 stale=[n for n in node_state if n['status']=='STALE']
                 if stale:await self.events.publish(Event('nodes.stale',{'nodes':stale},'federation'))
                 if now>=self.next_checkpoint:
