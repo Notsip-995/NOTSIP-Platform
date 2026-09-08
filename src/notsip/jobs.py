@@ -35,11 +35,20 @@ class Scheduler:
             result=fn(dict(task,data=json.dumps(payload)))
             if inspect.isawaitable(result):result=await result
             payload.update({'finished_at':time.time(),'last_result':result})
-            if task.get('interval_sec'):self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
+            status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS'
+            if status=='CONTINUE':
+                self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='')
+                event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
+                if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
+                return {'status':'CONTINUE','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
+            if status in {'UNKNOWN','PARTIAL_SUCCESS'}:
+                self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
+            elif task.get('interval_sec'):self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
             else:self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
-            event_errors=await self._publish('task.completed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'recurring':bool(task.get('interval_sec')),'actor':actor});
+            event_type='task.completed' if status=='SUCCESS' else 'task.unknown' if status=='UNKNOWN' else 'task.partial'
+            event_errors=await self._publish(event_type,{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'recurring':bool(task.get('interval_sec')),'actor':actor})
             if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
-            return {'status':'SUCCESS','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
+            return {'status':status,'result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
         except Exception as exc:
             retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time()})
             if retries<=max_retries:
