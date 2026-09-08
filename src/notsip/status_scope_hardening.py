@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json
+import json,platform
 from fastapi import Depends
 from .actor_context import current_actor
 
@@ -23,8 +23,11 @@ def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/status','/api/facts'}]
     @app.get('/api/status')
     async def status(_:None=Depends(require_auth)):
-        actor=current_actor();tasks=[x for x in store.tasks() if _own_task(x,actor)];live_policy=getattr(agent,'policy',policy);level=getattr(live_policy,'current_level',getattr(live_policy,'level',0))
-        return {'identity':'NOTSIP','version':'0.9.0','actor':actor,'autonomy_level':level,'tools':[t.name for t in registry.all()],'devices':store.devices(actor),'world':__import__('notsip.app',fromlist=['world']).world.snapshot(actor),'tasks':tasks,'capabilities':{'llm':bool(getattr(agent.provider,'enabled',False)),'fallback_llm':bool(getattr(agent.provider,'fallback_enabled',False)),'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
+        actor=current_actor();tasks=[x for x in store.tasks() if _own_task(x,actor)];live_policy=getattr(agent,'policy',policy);level=getattr(live_policy,'current_level',getattr(live_policy,'level',0));devices=store.devices(actor)
+        recovery_ok=False
+        try:recovery_ok=bool(getattr(__import__('notsip.app',fromlist=['recovery']),'recovery').verify_latest().get('valid'))
+        except Exception:recovery_ok=False
+        return {'identity':'NOTSIP','version':'0.9.0','actor':actor,'autonomy_level':level,'tools':[t.name for t in registry.all()],'devices':devices,'world':__import__('notsip.app',fromlist=['world']).world.snapshot(actor),'tasks':tasks,'capabilities':{'llm':bool(getattr(agent.provider,'enabled',False)),'fallback_llm':bool(getattr(agent.provider,'fallback_enabled',False)),'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':bool(settings.vision_enabled),'perception':bool(settings.perception_enabled),'windows_uia':platform.system()=='Windows','web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':bool(devices),'self_maintenance':bool(settings.self_modify_enabled),'distributed_nodes':bool(devices),'recovery_checkpoints':recovery_ok}}
     @app.get('/api/facts')
     async def facts(limit:int=100,_:None=Depends(require_auth)):
         actor=current_actor();n=max(1,min(int(limit),500));rows=[x for x in store.facts(n) if _own_fact(x,actor,store)];return {'facts':rows[:n]}
