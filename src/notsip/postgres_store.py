@@ -45,11 +45,13 @@ class PostgreSQLStore:
         tid=str(uuid.uuid4());now=time.time();payload=json.dumps(data or {})
         with self.conn() as c:
             try:
-                row=c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(idempotency_key) WHERE idempotency_key <> %s DO NOTHING RETURNING id',(tid,objective,state,priority,handler,payload,run_at,interval_sec,0,now,now,'',idempotency_key or '',idempotency_key or '')).fetchone()
-                if row:c.commit();return row['id']
-                existing=c.execute('SELECT id FROM tasks WHERE idempotency_key=%s',(idempotency_key,)).fetchone();c.commit()
-                if existing:return existing['id']
-                raise RuntimeError('task idempotency conflict could not be resolved')
+                if idempotency_key:
+                    row=c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id',(tid,objective,state,priority,handler,payload,run_at,interval_sec,0,now,now,'',idempotency_key)).fetchone()
+                    if row:c.commit();return row['id']
+                    existing=c.execute('SELECT id FROM tasks WHERE idempotency_key=%s',(idempotency_key,)).fetchone();c.commit()
+                    if existing:return existing['id']
+                    raise RuntimeError('task idempotency conflict could not be resolved')
+                row=c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',(tid,objective,state,priority,handler,payload,run_at,interval_sec,0,now,now,'','')).fetchone();c.commit();return row['id']
             except Exception:
                 c.rollback();raise
     def tasks(self,state=None):
