@@ -16,8 +16,7 @@ class Agent:
         self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.profile=UserProfileStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
     @property
     def session_id(self):return self.session['id']
-    def new_session(self,title='New conversation'):
-        self.session=self.conversations.create(title);return self.session
+    def new_session(self,title='New conversation'):self.session=self.conversations.create(title);return self.session
     def context(self,text):
         now=datetime.now(ZoneInfo(self.settings.local_timezone));return {'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':self.conversations.history(self.session_id,20),'summary':self.session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':self.approvals.pending()}
     def _time_response(self,text):
@@ -66,17 +65,15 @@ class Agent:
                 except Exception as e:res={'status':'FAILURE','error':str(e)}
                 msgs.append({'role':'tool','tool_call_id':call['id'],'name':call['function']['name'],'content':json.dumps(res,default=str)})
         return {'response':'Agent loop stopped safely after the configured tool rounds.','status':'UNKNOWN','session_id':self.session_id}
-    async def run_tool(self,name,args,approved=False):
+    async def run_tool(self,name,args):
         tool=self.registry.get(name)
         if not tool:return {'status':'FAILURE','error':'unknown tool'}
-        d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=approved)
+        d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=False)
         if not d.allowed:
-            if d.needs_confirmation and not approved:
+            if d.needs_confirmation:
                 item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level});self.store.audit(self.user,name,'approval','request','PENDING','approval requested');return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
-            return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
-        invoke_args=dict(args)
-        if approved:invoke_args['_notsip_approved']=True
-        r=tool.fn(**invoke_args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute','SUCCESS',json.dumps(r,default=str));return r
+            return {'status':'FAILURE','approval_required':False,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
+        r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute',str(r.get('status','SUCCESS')),json.dumps(r,default=str));return r
     def fallback(self,text):
         s=text.lower();clock=self._time_response(text)
         if clock:return clock
