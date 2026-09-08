@@ -53,11 +53,11 @@ from .workflow_runtime_hardening import attach as attach_workflow_runtime
 from .forensics_scope_hardening import attach as attach_forensics_scope_hardening
 from .memory_scope_hardening import attach as attach_memory_scope_hardening
 from .setup_readiness import attach as attach_setup_readiness
+from .execution_gate import ToolExecutionGate
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
 from .policy import Risk
-from .execution_gate import ToolExecutionGate
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -126,13 +126,16 @@ async def threat_assessment(payload:dict,_:None=Depends(_require)):
     if not isinstance(indicators,list):raise HTTPException(400,'indicators must be an array')
     result=_threat.assess(indicators);result['actor']=current_actor();return result
 attach_workspace_scope_hardening(app,registry,DATA)
+# Final defense-in-depth pass: every registry function is rechecked after all
+# composition layers that can add or replace tools have executed.
+ToolExecutionGate.wrap_registry(registry)
 attach_forensics_scope_hardening(app,_require,DATA)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
 async def healthz(request):
     host=getattr(getattr(request,'client',None),'host','')
-    if host not in {'127.0.0.1','::1','localhost'}:from fastapi import HTTPException;raise HTTPException(404,'not found')
+    if host not in {'127.0.0.1','::1','localhost'}:raise HTTPException(404,'not found')
     return {'status':'ok','identity':'NOTSIP','version':__import__('notsip').__version__}
 normalize_routes(app)
 
