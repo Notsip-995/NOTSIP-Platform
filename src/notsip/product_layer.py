@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64, binascii, hashlib, json, os, platform, shutil, socket, subprocess, sys, tempfile, time, uuid, zipfile
+import base64,binascii,hashlib,json,os,platform,shutil,socket,subprocess,sys,tempfile,time,uuid,zipfile
 from pathlib import Path
 APP_NAME='NOTSIP';CONFIG_VERSION=2
 
@@ -27,8 +27,7 @@ def choose_free_port(host,port,limit=20):
     raise RuntimeError('no free TCP port')
 
 class ProcessGuard:
-    def __init__(self,name='NOTSIP',root=None):
-        self.root=Path(root or os.getenv('NOTSIP_DATA_DIR','./data')).resolve();self.path=self.root/'runtime'/'instance.lock';self.path.parent.mkdir(parents=True,exist_ok=True);self._owned=False
+    def __init__(self,name='NOTSIP',root=None):self.root=Path(root or os.getenv('NOTSIP_DATA_DIR','./data')).resolve();self.path=self.root/'runtime'/'instance.lock';self.path.parent.mkdir(parents=True,exist_ok=True);self._owned=False
     def acquire(self):
         try:
             fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,json.dumps({'pid':os.getpid(),'created':time.time(),'host':socket.gethostname()}).encode());os.close(fd);self._owned=True;return True
@@ -52,7 +51,7 @@ class ProcessGuard:
             self._owned=False
 
 class ConfigStore:
-    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}
+    SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','business_admin_token','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token'}
     def __init__(self,root):self.root=Path(root);self.path=self.root/'config.json';self.root.mkdir(parents=True,exist_ok=True)
     def load(self):
         if not self.path.exists():return {'version':CONFIG_VERSION,'settings':{}}
@@ -67,9 +66,30 @@ class ConfigStore:
         dst=self.root/'runtime'/f'config-{time.strftime("%Y%m%d-%H%M%S")}.json';dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(self.path,dst);return str(dst.relative_to(self.root))
 
 class AuditLog:
-    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True)
+    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=__import__('threading').RLock()
+    def _last_hash(self):
+        if not self.path.exists():return '0'*64
+        try:
+            for line in reversed(self.path.read_text(encoding='utf-8').splitlines()):
+                if line.strip():return str(json.loads(line).get('digest','0'*64))
+        except Exception:return '0'*64
+        return '0'*64
     def write(self,event,**fields):
-        with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps({'ts':time.time(),'event':event,**fields},sort_keys=True)+'\n')
+        with self.lock:
+            row={'ts':time.time(),'event':event,**fields};row['prev_digest']=self._last_hash();canonical=json.dumps(row,sort_keys=True,separators=(',',':'),default=str);row['digest']=hashlib.sha256(canonical.encode()).hexdigest()
+            with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
+    def verify(self):
+        if not self.path.exists():return {'valid':True,'entries':0}
+        previous='0'*64;entries=0
+        try:
+            for raw in self.path.read_text(encoding='utf-8').splitlines():
+                if not raw.strip():continue
+                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''))
+                unsigned=dict(row);unsigned.pop('digest',None);canonical=json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str);actual=hashlib.sha256(canonical.encode()).hexdigest()
+                if stored_prev!=previous or digest!=actual:return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
+                previous=digest;entries+=1
+            return {'valid':True,'entries':entries,'head':previous}
+        except Exception as exc:return {'valid':False,'entries':entries,'reason':f'audit verification error: {exc}','failed_entry':entries+1}
     def tail(self,n=200):
         if not self.path.exists():return []
         return [json.loads(x) for x in self.path.read_text(encoding='utf-8').splitlines()[-n:] if x.strip()]
@@ -134,8 +154,7 @@ class ApprovalStore:
         d=self._load();x=d.get(aid)
         if not x:return None
         if x.get('status')!='PENDING':return x
-        if float(x.get('expires',0))<=time.time():
-            x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
+        if float(x.get('expires',0))<=time.time():x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
         x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
     def pending(self):
         out=[];now=time.time()
@@ -164,11 +183,11 @@ class Diagnostics:
         checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'}
         checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'}
         checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
-        core_names={'python','platform','storage','database','llm','scheduler','federation','security'}
-        optional_names=set(checks)-core_names
-        core_ok=all(checks[k]['ok'] for k in core_names if k in checks)
-        optional_missing=[k for k in optional_names if not checks[k]['ok']]
-        return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
+        checks['audit']={'ok':self._audit_ok(),'detail':'hash chain verified' if self._audit_ok() else 'audit chain verification failed'}
+        core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']];return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
+    def _audit_ok(self):
+        try:return AuditLog(self.root).verify().get('valid',False)
+        except Exception:return False
 
 class Maintenance:
     def __init__(self,root):self.root=Path(root).resolve()
@@ -185,5 +204,4 @@ class Maintenance:
         return p.read_text(encoding='utf-8')
     def verify(self):
         if not (self.root/'.git').exists():return {'status':'UNAVAILABLE','reason':'durable Git checkout required','root':str(self.root)}
-        r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600)
-        return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
+        r=subprocess.run(['git','-C',str(self.root),'status','--porcelain'],capture_output=True,text=True);tests=subprocess.run([sys.executable,'-m','pytest','-q'],cwd=self.root,capture_output=True,text=True,timeout=600);return {'status':'PASS' if tests.returncode==0 else 'FAILURE','clean':not bool(r.stdout.strip()),'tests_exit':tests.returncode,'stdout':tests.stdout[-12000:],'stderr':tests.stderr[-12000:]}
