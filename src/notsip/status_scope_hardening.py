@@ -6,15 +6,15 @@ from .actor_context import current_actor
 _PUBLIC_FACT_SOURCES={'brave','public','web','system'}
 
 def _own_task(task,actor):
-    try:return json.loads(task.get('data') or '{}').get('actor','primary-user')==actor
-    except Exception:return actor=='primary-user'
+    try:return json.loads(task.get('data') or '{}').get('actor','')==actor
+    except (TypeError,ValueError):return False
 
 def _own_fact(fact,actor,store):
     if actor=='primary-user':return True
     source=str(fact.get('source') or '').lower()
     if source in _PUBLIC_FACT_SOURCES:return True
     try:meta=json.loads(fact.get('metadata') or '{}') if isinstance(fact.get('metadata'),str) else fact.get('metadata') or {}
-    except Exception:meta={}
+    except (TypeError,ValueError):return False
     if str(meta.get('actor') or '')==actor:return True
     device_id=str(meta.get('device_id') or '')
     return bool(device_id and store.device_owned_by(device_id,actor))
