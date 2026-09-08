@@ -28,6 +28,10 @@ from .event_reasoning_loop import EventReasoningLoop
 from .linux_routes import attach as attach_linux_routes
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
+# runtime_prod constructs the durable scheduler before core_runtime loads the
+# canonical event bus; bind the scheduler explicitly so completed/failure events
+# enter the same world-event stream consumed by NOTSIP's reasoning loop.
+jobs.events=events
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events,registry=registry,agent=agent)
