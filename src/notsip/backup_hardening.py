@@ -1,8 +1,22 @@
 from __future__ import annotations
-import shutil,tempfile,uuid,zipfile
+import shutil,tempfile,time,uuid,zipfile
 from pathlib import Path
 
 def install(manager):
+    original_create=getattr(manager,'create')
+    if not getattr(manager,'_notsip_secure_backup_create',False):
+        def create_safe(include_logs=False):
+            p=manager.dir/f'NOTSIP-backup-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:8]}.zip';count=0
+            with zipfile.ZipFile(p,'w',zipfile.ZIP_DEFLATED) as z:
+                for f in manager.root.rglob('*'):
+                    if not f.is_file():continue
+                    rel=f.relative_to(manager.root)
+                    if rel.parts and rel.parts[0]=='backups':continue
+                    if rel.as_posix()=='master.key':continue
+                    if not include_logs and rel.as_posix().startswith('runtime/') and rel.suffix=='.jsonl':continue
+                    z.write(f,rel.as_posix());count+=1
+            return {'status':'SUCCESS','path':str(p.relative_to(manager.root)),'files':count,'bytes':p.stat().st_size,'security_note':'master.key is intentionally excluded; encrypted secrets require the existing local master key or configured NOTSIP_MASTER_KEY for recovery'}
+        manager.create=create_safe;manager._notsip_secure_backup_create=True
     def restore_safe(name,confirm=False):
         if not confirm:raise PermissionError('restore requires explicit confirmation')
         archive=(manager.dir/name).resolve()
@@ -38,6 +52,5 @@ def install(manager):
                 raise
             finally:
                 shutil.rmtree(stage,ignore_errors=True)
-                # Successful restores retain rollback material until the next explicit cleanup/maintenance pass.
     manager.restore=restore_safe
     return manager
