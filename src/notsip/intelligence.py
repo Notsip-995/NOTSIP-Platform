@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json,re,time
 from collections import defaultdict
+from .actor_context import current_actor
 
 class Intelligence:
     """Model-independent planning, evidence fusion, contradictions and proactive triggers."""
@@ -39,6 +40,7 @@ class Intelligence:
             if entity and entity not in (r.get('subject',''),r.get('object','')):continue
             by_key[(r.get('subject'),r.get('predicate'))].append(r)
         return [{'subject':k[0],'predicate':k[1],'alternatives':sorted({r.get('object') for r in rows}),'evidence':rows} for k,rows in by_key.items() if len({r.get('object') for r in rows})>1]
-    def trigger_candidates(self):
-        memories=self.store.memories('primary-user','',100)
-        return [{'type':'follow_up','reason':'high_weight_unresolved_memory','memory':m['content']} for m in memories if float(m.get('weight',0))>=.9 and any(w in m['content'].lower() for w in ('todo','remember to','follow up','deadline'))][:20]
+    def trigger_candidates(self,actor=None):
+        owner=str(actor or current_actor()).strip() or 'primary-user'
+        memories=self.store.memories(owner,'',100)
+        return [{'type':'follow_up','reason':'high_weight_unresolved_memory','memory':m['content'],'actor':owner} for m in memories if float(m.get('weight',0))>=.9 and any(w in m['content'].lower() for w in ('todo','remember to','follow up','deadline'))][:20]
