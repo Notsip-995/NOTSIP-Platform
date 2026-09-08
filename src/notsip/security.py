@@ -1,10 +1,10 @@
 from __future__ import annotations
-import base64, ctypes, hashlib, json, os, secrets, time
+import base64, ctypes, hashlib, json, os, secrets, time, threading
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 class SecretStore:
-    def __init__(self,root:Path):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.path=self.root/'secrets.enc';self._key=self._load_or_create_key()
+    def __init__(self,root:Path):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.path=self.root/'secrets.enc';self._lock=threading.RLock();self._key=self._load_or_create_key()
     def _dpapi(self,data,decrypt=False):
         if os.name!='nt':return None
         try:
@@ -25,20 +25,25 @@ class SecretStore:
         except Exception:pass
         return key
     def load(self):
-        if not self.path.exists():return {}
-        b=json.loads(self.path.read_text(encoding='utf-8'));return json.loads(AESGCM(self._key).decrypt(base64.b64decode(b['nonce']),base64.b64decode(b['data']),None))
+        with self._lock:
+            if not self.path.exists():return {}
+            b=json.loads(self.path.read_text(encoding='utf-8'));return json.loads(AESGCM(self._key).decrypt(base64.b64decode(b['nonce']),base64.b64decode(b['data']),None))
     def save(self,data):
-        n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
-        try:self.path.chmod(0o600)
-        except Exception:pass
-    def get(self,name,default=None):return self.load().get(name,default)
+        with self._lock:
+            n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
+            try:self.path.chmod(0o600)
+            except Exception:pass
+    def get(self,name,default=None):
+        with self._lock:return self.load().get(name,default)
     def set(self,name,value):
-        if value in ('',None):return self.delete(name)
-        d=self.load();d[name]=value;self.save(d);return True
+        with self._lock:
+            if value in ('',None):return self.delete(name)
+            d=self.load();d[name]=value;self.save(d);return True
     def delete(self,name):
-        d=self.load()
-        if name in d:d.pop(name,None);self.save(d)
-        return True
+        with self._lock:
+            d=self.load()
+            if name in d:d.pop(name,None);self.save(d)
+            return True
 
 class DurableState(dict):
     def __init__(self,secrets_store,prefix='session:'):super().__init__();self._store=secrets_store;self._prefix=prefix
