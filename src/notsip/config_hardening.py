@@ -3,7 +3,7 @@ import copy,importlib,uuid
 from fastapi import HTTPException,Request
 from fastapi.responses import JSONResponse
 
-SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token'}
+SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}
 RUNTIME_UNSUPPORTED={'data_dir','database_url'}
 
 def _redacted_config(mod):
@@ -27,29 +27,24 @@ def attach(app):
         clear=set(incoming.get('clear_secrets') or []);bad_clear=clear-SECRET_NAMES
         if bad_clear:raise HTTPException(400,f'unknown secret fields: {sorted(bad_clear)}')
         for key in clear:requested[key]=''
-        # First-run bootstrap is intentionally separate from ordinary high-risk changes:
-        # there is no authenticated actor yet, so local setup must establish the initial
-        # security boundary atomically. settings.ensure() still rejects unsafe remote binds.
         bootstrap=not mod.config_store.path.exists()
         if bootstrap:
             if not _is_loopback(request):raise HTTPException(403,'initial NOTSIP setup is local-only')
             for key in list(requested):
                 if key in SECRET_NAMES and not str(requested[key] or '').strip():requested.pop(key,None)
             try:
-                result=mod._apply_config(requested)
+                result=mod._apply_config(requested,bootstrap=True)
             except RuntimeError as exc:raise HTTPException(400,str(exc))
         else:
             await mod.require_auth(request)
             sensitive=set(requested)&set(getattr(mod,'CONFIG_HIGH_RISK',set()))
             if sensitive or clear:
                 pending_id=uuid.uuid4().hex
-                # The pending record is encrypted; the approval record contains only the id
-                # and key names, never raw credentials.
                 mod.auth.secrets.set('config:pending:'+pending_id,requested)
                 result=await mod.agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sorted(sensitive or clear)})
                 if result.get('status')=='FAILURE':mod.auth.secrets.delete('config:pending:'+pending_id)
             else:
-                try:result=mod._apply_config(requested)
+                try:result=mod._apply_config(requested,bootstrap=False)
                 except RuntimeError as exc:raise HTTPException(400,str(exc))
         result['bootstrap']=bootstrap
         response=JSONResponse(result)
