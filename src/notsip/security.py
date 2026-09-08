@@ -11,8 +11,7 @@ def _require_public_https(url):
     if parsed.username or parsed.password:raise ValueError('OIDC endpoint must not contain credentials')
     try:
         infos=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError(f'OIDC endpoint host resolution failed: {parsed.hostname}') from exc
+    except socket.gaierror as exc:raise ValueError(f'OIDC endpoint host resolution failed: {parsed.hostname}') from exc
     for info in infos:
         ip=ipaddress.ip_address(info[4][0])
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:raise ValueError('OIDC endpoint resolved to a non-public address')
@@ -33,8 +32,7 @@ class SecretStore:
         if os.name=='nt':
             protected=self._dpapi(key,False)
             if protected is None:raise RuntimeError('Windows DPAPI is unavailable; refusing to store a plaintext master key')
-            path.write_bytes(protected)
-            return
+            path.write_bytes(protected);return
         path.write_bytes(key)
         try:path.chmod(0o600)
         except OSError as exc:raise RuntimeError(f'unable to protect local master key permissions: {exc}') from exc
@@ -48,7 +46,6 @@ class SecretStore:
                 dec=self._dpapi(raw,True)
                 if dec is not None and len(dec)>=32:return dec[:32]
                 if len(raw)==32:
-                    # Legacy plaintext key: upgrade it in place under DPAPI or fail closed.
                     self._persist_local_key(p,raw);return raw
                 raise RuntimeError('Windows master key cannot be decrypted; refusing insecure key fallback')
             if len(raw)<32:raise RuntimeError('local master key is corrupt')
@@ -57,7 +54,8 @@ class SecretStore:
     def load(self):
         with self._lock:
             if not self.path.exists():return {}
-            b=json.loads(self.path.read_text(encoding='utf-8'));return json.loads(AESGCM(self._key).decrypt(base64.b64decode(b['nonce']),base64.b64decode(b['data']),None))
+            try:b=json.loads(self.path.read_text(encoding='utf-8'));return json.loads(AESGCM(self._key).decrypt(base64.b64decode(b['nonce']),base64.b64decode(b['data']),None))
+            except (OSError,ValueError,KeyError,TypeError,base64.binascii.Error) as exc:raise RuntimeError('encrypted secret store is corrupt; refusing to continue with empty credentials') from exc
     def save(self,data):
         with self._lock:
             n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
@@ -76,20 +74,22 @@ class SecretStore:
             return True
 
 class DurableState(dict):
-    def __init__(self,secrets_store,prefix='session:'):super().__init__();self._store=secrets_store;self._prefix=prefix
+    """Encrypted persistent mapping used for authenticated session/OIDC state."""
+    def __init__(self,secrets_store,prefix='session:'):super().__init__();self._store=secrets_store;self._prefix=prefix;self._lock=threading.RLock()
+    def _key(self,key):return self._prefix+str(key)
     def __setitem__(self,key,value):
-        super().__setitem__(key,value)
-        if str(key).startswith('oidc:'):self._store.set(self._prefix+str(key),value)
+        with self._lock:super().__setitem__(key,value);self._store.set(self._key(key),value)
     def get(self,key,default=None):
-        if key in self:return super().get(key,default)
-        if str(key).startswith('oidc:'):return self._store.get(self._prefix+str(key),default)
-        return default
+        with self._lock:
+            if key in self:return super().get(key,default)
+            return self._store.get(self._key(key),default)
     def pop(self,key,default=None):
-        if key in self:out=super().pop(key)
-        else:out=self._store.get(self._prefix+str(key),default) if str(key).startswith('oidc:') else default
-        if str(key).startswith('oidc:'):self._store.delete(self._prefix+str(key))
-        return out
-    def __contains__(self,key):return dict.__contains__(self,key) or (str(key).startswith('oidc:') and self._store.get(self._prefix+str(key),None) is not None)
+        with self._lock:
+            if key in self:out=super().pop(key)
+            else:out=self._store.get(self._key(key),default)
+            self._store.delete(self._key(key));return out
+    def __contains__(self,key):
+        with self._lock:return dict.__contains__(self,key) or self._store.get(self._key(key),None) is not None
 
 class OIDCProvider:
     PRESETS={'google':'https://accounts.google.com','microsoft':'https://login.microsoftonline.com/common/v2.0'}
@@ -100,15 +100,15 @@ class OIDCProvider:
     def configured(self):return bool(self.issuer and self.client_id and self.redirect_uri)
     async def discover(self):
         if not self.configured:raise RuntimeError('OIDC not configured')
-        _require_public_https(self.issuer)
-        import httpx
-        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.get(self.issuer+'/.well-known/openid-configuration');r.raise_for_status();metadata=r.json()
+        _require_public_https(self.issuer);import httpx
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
+            r=await c.get(self.issuer+'/.well-known/openid-configuration')
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OIDC discovery redirect rejected')
+            r.raise_for_status();metadata=r.json()
         for key in ('authorization_endpoint','token_endpoint','userinfo_endpoint','jwks_uri'):
             endpoint=metadata.get(key)
             if endpoint:_require_public_https(endpoint)
-        metadata_issuer=str(metadata.get('issuer') or self.issuer).rstrip('/')
-        _require_public_https(metadata_issuer)
-        self.metadata=metadata;return self.metadata
+        metadata_issuer=str(metadata.get('issuer') or self.issuer).rstrip('/');_require_public_https(metadata_issuer);self.metadata=metadata;return self.metadata
     def _endpoint(self,key):
         endpoint=str((self.metadata or {}).get(key) or '').strip()
         if not endpoint:raise RuntimeError(f'OIDC metadata missing {key}')
@@ -122,16 +122,19 @@ class OIDCProvider:
         import httpx
         m=self.metadata or await self.discover();d={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect_uri,'code_verifier':verifier}
         if self.client_secret:d['client_secret']=self.client_secret
-        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.post(self._endpoint('token_endpoint'),data=d);r.raise_for_status();return r.json()
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
+            r=await c.post(self._endpoint('token_endpoint'),data=d)
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OIDC token endpoint redirect rejected')
+            r.raise_for_status();return r.json()
     async def userinfo(self,access_token):
         import httpx
-        m=self.metadata or await self.discover();url=(m.get('userinfo_endpoint') or '').strip()
-        if not url:return {}
-        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.get(self._endpoint('userinfo_endpoint'),headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
+        m=self.metadata or await self.discover();
+        if not (m.get('userinfo_endpoint') or '').strip():return {}
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
+            r=await c.get(self._endpoint('userinfo_endpoint'),headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
     async def validate_id_token(self,id_token,nonce=''):
         import jwt
-        m=self.metadata or await self.discover();header=jwt.get_unverified_header(id_token);alg=str(header.get('alg') or '')
-        advertised=m.get('id_token_signing_alg_values_supported') or ['RS256']
+        m=self.metadata or await self.discover();header=jwt.get_unverified_header(id_token);alg=str(header.get('alg') or '');advertised=m.get('id_token_signing_alg_values_supported') or ['RS256']
         if not alg or alg not in set(str(x) for x in advertised):raise ValueError('OIDC ID token signing algorithm is not allowed by provider metadata')
         jwks=jwt.PyJWKClient(self._endpoint('jwks_uri'));key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=[alg],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
         expected=str(m.get('issuer') or self.issuer).rstrip('/');iss=claims.get('iss','')
@@ -150,4 +153,4 @@ class AuthManager:
     @property
     def mode(self):return self.settings.auth_mode
     def mint_session(self,claims):t=secrets.token_urlsafe(48);self.sessions[t]={'claims':claims,'expires':time.time()+self.settings.session_ttl};return t
-    def validate_session(self,token):s=self.sessions.get(token);return bool(s and s['expires']>time.time())
+    def validate_session(self,token):s=self.sessions.get(token);return bool(s and float(s.get('expires',0))>time.time())
