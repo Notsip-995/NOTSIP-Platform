@@ -141,15 +141,10 @@ class Store:
     def pull_commands(self,device_id,limit=20):
         if self._backend:return self._backend.pull_commands(device_id,limit)
         with self.lock,self.conn() as c:
-            c.execute('BEGIN IMMEDIATE')
-            try:
-                rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
-                if rows:
-                    ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
-                c.commit()
-            except Exception:c.rollback();raise
-            for r in rows:r['payload']=json.loads(r['payload'])
-            return rows
+            rows=c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()
+            if rows:
+                ids=[r['id'] for r in rows];now=time.time();c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(now,i) for i in ids])
+            return [dict(r) | {'payload':json.loads(r['payload'])} for r in rows]
     def reconcile_commands(self,lease_seconds=None):
         if self._backend:return self._backend.reconcile_commands(lease_seconds)
         lease=max(30,int(lease_seconds or os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
@@ -161,4 +156,4 @@ class Store:
         if self._backend:return self._backend.command_result(cid,status,result,device_id)
         if not device_id:return False
         with self.lock,self.conn() as c:
-            cur=c.execute('UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=?',(status,json.dumps(result),time.time(),cid,device_id));return cur.rowcount==1
+            cur=c.execute("UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=? AND status='DELIVERED'",(status,json.dumps(result),time.time(),cid,device_id));return cur.rowcount==1
