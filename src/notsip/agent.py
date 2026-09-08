@@ -8,6 +8,7 @@ from .conversations import ConversationStore
 from .execution_gate import ToolExecutionGate
 from .user_profile import UserProfileStore
 from .actor_context import current_actor
+from .policy import Risk
 
 class Agent:
     SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, user profile, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. State uncertainty clearly.'''
@@ -87,6 +88,7 @@ class Agent:
     async def run_tool(self,name,args):
         tool=self.registry.get(name)
         if not tool:return {'status':'FAILURE','error':'unknown tool'}
+        if self.user=='voice:unverified' and tool.risk>=Risk.HIGH:return {'status':'FAILURE','error':'verified speaker identity is required for high-risk actions','capability':tool.capability,'required_level':int(tool.risk)}
         d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=False)
         if not d.allowed:
             if d.needs_confirmation:
