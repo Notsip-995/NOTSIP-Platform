@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.telephony.SmsManager
 import kotlinx.coroutines.*
+import org.json.JSONException
 import org.json.JSONObject
 import java.util.UUID
 
@@ -17,15 +18,20 @@ class NotsipCommandService:Service(){
  private fun completed():MutableSet<String>=commandPrefs.getStringSet("completed",emptySet())?.toMutableSet()?:mutableSetOf()
  private fun markCompleted(id:String){val done=completed();done.add(id);while(done.size>256)done.remove(done.first());commandPrefs.edit().putStringSet("completed",done).apply()}
  private fun pendingIds():List<String> = commandPrefs.all.keys.filter{it.startsWith("pending_result_")}.map{it.removePrefix("pending_result_")}
- private fun queueResult(id:String,status:String,result:JSONObject){commandPrefs.edit().putString("pending_result_$id",JSONObject().put("status",status).put("result",result.toString()).toString()).apply()}
+ private fun queueResult(id:String,status:String,result:JSONObject){check(commandPrefs.edit().putString("pending_result_$id",JSONObject().put("status",status).put("result",result.toString()).toString()).commit()){"Failed to persist pending command result"}}
  private fun flushResults(){
   for(id in pendingIds()){
    val raw=commandPrefs.getString("pending_result_$id",null)?:continue
-   try{val item=JSONObject(raw);c.result(id,item.getString("status"),JSONObject(item.getString("result")));commandPrefs.edit().remove("pending_result_$id").apply();markCompleted(id)}catch(_:Exception){return}
+   try{
+    val item=JSONObject(raw);c.result(id,item.getString("status"),JSONObject(item.getString("result")));commandPrefs.edit().remove("pending_result_$id").apply();markCompleted(id)
+   }catch(_:JSONException){
+    val failure=JSONObject().put("error","Android pending command result was locally corrupted").put("action","unknown").put("verified",false)
+    try{c.result(id,"FAILURE",failure);commandPrefs.edit().remove("pending_result_$id").apply();markCompleted(id)}catch(_:Exception){return}
+   }catch(_:Exception){return}
   }
  }
  override fun onCreate(){super.onCreate();c=NotsipClient(this);val nm=getSystemService(NotificationManager::class.java);nm.createNotificationChannel(NotificationChannel("notsip","NOTSIP",NotificationManager.IMPORTANCE_LOW));startForeground(7,Notification.Builder(this,"notsip").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("NOTSIP").setContentText("Device bridge active").setOngoing(true).build());scope.launch{while(isActive){try{flushResults();c.heartbeat();val a=c.poll().optJSONArray("commands");if(a!=null)for(i in 0 until a.length())exec(a.getJSONObject(i));flushResults();backoff=3000L}catch(_:Exception){backoff=minOf(backoff*2,60000L)};delay(backoff)}}}
- private fun exec(x:JSONObject){val id=x.optString("id");val action=x.optString("action");val p=x.optJSONObject("payload")?:JSONObject();if(id.isBlank())return; if(completed().contains(id))return;try{
+ private fun exec(x:JSONObject){val id=x.optString("id");val action=x.optString("action");val p=x.optJSONObject("payload")?:JSONObject();if(id.isBlank())return;if(completed().contains(id))return;try{
    var status="SUCCESS";var verified=true;var note=""
    when(action){
     "open_url"->{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(p.getString("url"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));status="PARTIAL_SUCCESS";verified=false;note="Android accepted the activity launch request; destination UI state was not independently verified"}
