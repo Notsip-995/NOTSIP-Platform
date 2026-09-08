@@ -33,3 +33,21 @@ def test_fusion_keeps_public_facts_for_secondary_actor():
     finally:
         reset_actor(token)
     assert [r['statement'] for r in rows] == ['public fact']
+
+
+def test_all_visible_filters_private_facts_for_secondary_actor():
+    from notsip.information_fusion import InformationFusion
+    service = InformationFusion(StoreStub(), type('Web', (), {'enabled': False})())
+    rows = service.all_visible(20, 'actor-b')
+    assert [r['statement'] for r in rows] == ['private actor B', 'public fact']
+
+
+def test_intelligence_corroboration_filters_private_facts_by_actor():
+    from notsip.intelligence import Intelligence
+    service = Intelligence(StoreStub(), type('World', (), {'snapshot':lambda self: {'relations':[]}})())
+    token = set_actor('actor-a')
+    try:
+        rows = service.corroborate('private')
+    finally:
+        reset_actor(token)
+    assert [r['statement'] for r in rows] == ['private actor A']
