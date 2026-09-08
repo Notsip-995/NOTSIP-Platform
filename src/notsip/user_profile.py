@@ -19,7 +19,10 @@ class UserProfileStore:
         with self.lock:
             if not self.path.exists():return self._default()
             try:data=json.loads(self.path.read_text(encoding='utf-8'))
-            except Exception:return self._default()
+            except Exception as exc:raise RuntimeError(f'user profile is unreadable: {exc}') from exc
+            if not isinstance(data,dict):raise RuntimeError('user profile is structurally invalid')
+            stored_user=str(data.get('user_id') or '').strip() or 'primary-user'
+            if stored_user!=self.user_id:raise PermissionError('user profile ownership mismatch')
             base=self._default();base.update({k:v for k,v in data.items() if k in FIELDS or k in {'user_id','updated_at'}});return base
     def save(self, profile):
         data=self.load()
