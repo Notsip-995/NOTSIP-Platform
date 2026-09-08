@@ -107,7 +107,10 @@ class PostgreSQLStore:
         cid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO commands(id,device_id,action,payload,status,created,updated,result) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(cid,device_id,action,json.dumps(payload or {}),'PENDING',now,now,''));return cid
     def pull_commands(self,device_id,limit=20):
         with self.conn() as c:
-            rows=c.execute("WITH claimed AS (SELECT id FROM commands WHERE device_id=%s AND status='PENDING' ORDER BY created LIMIT %s) UPDATE commands SET status='DELIVERED',updated=%s WHERE id IN (SELECT id FROM claimed) RETURNING *",(device_id,limit,time.time())).fetchall();c.commit();return [{**dict(r),'payload':json.loads(r['payload'])} for r in rows]
+            rows=c.execute("SELECT * FROM commands WHERE device_id=%s AND status='PENDING' ORDER BY created FOR UPDATE SKIP LOCKED LIMIT %s",(device_id,limit)).fetchall()
+            if rows:
+                ids=[r['id'] for r in rows];now=time.time();placeholders=','.join(['%s']*len(ids));c.execute(f"UPDATE commands SET status='DELIVERED',updated=%s WHERE id IN ({placeholders}) AND status='PENDING'",(now,*ids))
+            c.commit();return [{**dict(r),'payload':json.loads(r['payload'])} for r in rows]
     def reconcile_commands(self,lease_seconds=None):
         lease=max(30,int(lease_seconds or os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
         with self.conn() as c:
