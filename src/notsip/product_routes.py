@@ -16,6 +16,12 @@ def _active_account_key():return 'oidc:active_account:'+current_actor()
 def _require_primary():
     if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
 
+def _device_token_allowed(store,device_id,token):
+    placeholder='%s' if getattr(store,'_backend',None) else '?'
+    row=store.row(f'SELECT status FROM devices WHERE id={placeholder}',(device_id,))
+    if not row or str(row.get('status','')).upper()=='REVOKED':return False
+    return bool(token) and store.device_token_valid(device_id,token)
+
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
     updates=UpdateManager(DATA,settings);oauth_service=OAuthService(auth.secrets,accounts)
@@ -72,8 +78,7 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         asset_name=str(payload.get('asset_name') or 'NOTSIP.exe').strip()
         if '/' in asset_name or '\\' in asset_name or asset_name != __import__('pathlib').Path(asset_name).name:raise HTTPException(400,'invalid update asset name')
         supplied=str(payload.get('sha256','')).strip().lower()
-        try:
-            result=await updates.download_release_asset(asset_name)
+        try:result=await updates.download_release_asset(asset_name)
         except ValueError as exc:raise HTTPException(400,str(exc))
         if supplied and supplied!=str(result.get('sha256','')).lower():
             try:__import__('pathlib').Path(result['path']).unlink(missing_ok=True)
@@ -110,8 +115,8 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     @app.post('/api/devices/result')
     async def device_result(payload:dict,request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
-        if not device_id or not store.device_token_valid(device_id,device_token):raise HTTPException(401,'device authentication required')
-        command_id=str(payload.get('command_id',''));command=store.row('SELECT device_id FROM commands WHERE id=?',(command_id,))
+        if not _device_token_allowed(store,device_id,device_token):raise HTTPException(401,'device authentication required')
+        command_id=str(payload.get('command_id',''));placeholder='%s' if getattr(store,'_backend',None) else '?';command=store.row(f'SELECT device_id FROM commands WHERE id={placeholder}',(command_id,))
         if not command or command['device_id']!=device_id:raise HTTPException(403,'command does not belong to authenticated device')
         ok=store.command_result(command_id,str(payload.get('status','UNKNOWN')),payload.get('result') or {},device_id)
         if not ok:raise HTTPException(409,'command result was not recorded for authenticated device')
@@ -119,9 +124,9 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     @app.post('/api/devices/heartbeat')
     async def device_heartbeat(request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','');token=request.headers.get('X-NOTSIP-Device-Token','')
-        if not device_id or not token or not store.device_token_valid(device_id,token):raise HTTPException(401,'device authentication required')
+        if not _device_token_allowed(store,device_id,token):raise HTTPException(401,'device authentication required')
         store.heartbeat(device_id);return {'status':'ONLINE','device_id':device_id}
     @app.get('/api/devices/{device_id}/commands')
     async def device_commands(device_id:str,x_notsip_device_token:str=__import__('fastapi').Header('',alias='X-NOTSIP-Device-Token')):
-        if not x_notsip_device_token or not store.device_token_valid(device_id,x_notsip_device_token):raise HTTPException(401,'Invalid device token')
+        if not _device_token_allowed(store,device_id,x_notsip_device_token):raise HTTPException(401,'Invalid device token')
         return {'commands':store.pull_commands(device_id)}
