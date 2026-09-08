@@ -30,11 +30,12 @@ jobs:
             notsip-ci)
           trap 'docker logs "$cid" || true; docker rm -f "$cid" || true' EXIT
           for i in $(seq 1 30); do
-            if curl --fail --silent --show-error http://127.0.0.1:8765/healthz >/dev/null 2>&1; then break; fi
+            if curl --fail --silent --show-error http://127.0.0.1:8765/ >/dev/null 2>&1; then break; fi
             sleep 1
             if [ "$i" -eq 30 ]; then exit 1; fi
           done
-          docker exec "$cid" python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).read().decode())"
+          curl --fail --silent --show-error -H 'Authorization: Bearer ci-test-only-key' http://127.0.0.1:8765/api/health >/dev/null
+          docker exec "$cid" python -c "import urllib.request; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765/api/health',headers={'Authorization':'Bearer ci-test-only-key'}), timeout=3); print(r.read().decode())"
 
   windows-build:
     runs-on: windows-latest
