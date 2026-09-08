@@ -32,8 +32,7 @@ def attach(app):
         for key in clear_secrets:
             mod.auth.secrets.delete('NOTSIP_'+key.upper());setattr(mod.settings,key,'')
         for key in SECRET_NAMES:
-            if key in settings_payload and not str(settings_payload[key] or '').strip():
-                settings_payload.pop(key,None)
+            if key in settings_payload and not str(settings_payload[key] or '').strip():settings_payload.pop(key,None)
         database_changed=False
         if 'database_url' in settings_payload:
             db_url=str(settings_payload.pop('database_url') or '').strip() or 'sqlite:///data/notsip.db'
@@ -41,6 +40,8 @@ def attach(app):
             database_changed=True
         incoming['settings']=settings_payload
         data=await mod.config_set(incoming,None)
+        if database_changed:
+            saved=mod.config_store.load();saved_settings=dict(saved.get('settings') or {});saved_settings['database_url']=mod.settings.database_url;mod.config_store.save(saved_settings)
         requested=set(settings_payload)
         if database_changed:requested.add('database_url')
         data['restart_required']=bool(RESTART_KEYS & requested)
