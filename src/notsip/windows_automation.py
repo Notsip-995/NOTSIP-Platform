@@ -15,14 +15,17 @@ class WindowsAutomation:
     def _root(self,window_title='',window_re=''):
         r=self._desktop().window(title_re=window_re) if window_re else self._desktop().window(title=window_title);r.wait('visible',timeout=10);return r
     def control_tree(self,window_title='',window_re='',depth=5):
-        root=self._root(window_title,window_re);out=[]
+        root=self._root(window_title,window_re);out=[];errors=[]
         def walk(c,d,parent=''):
             if d>depth:return
             try:
                 out.append({'path':parent,'title':c.window_text(),'control_type':c.element_info.control_type,'automation_id':getattr(c.element_info,'automation_id',''),'enabled':c.is_enabled()})
-                for i,ch in enumerate(c.children()):walk(ch,d+1,f'{parent}/{i}')
-            except Exception:pass
-        walk(root,0,'');return {'status':'SUCCESS','window':root.window_text(),'controls':out[:1000]}
+                children=c.children()
+            except Exception as exc:
+                errors.append({'path':parent,'error':str(exc)});return
+            for i,ch in enumerate(children):walk(ch,d+1,f'{parent}/{i}')
+        walk(root,0,'');status='SUCCESS' if not errors else 'PARTIAL_SUCCESS'
+        return {'status':status,'window':root.window_text(),'controls':out[:1000],'errors':errors[:200],'verified':not errors}
     def _control(self,window_title='',window_re='',control_type='Button',title='',title_re='',automation_id=''):
         r=self._root(window_title,window_re);kwargs={'control_type':control_type}
         if automation_id:kwargs['auto_id']=automation_id
@@ -60,6 +63,7 @@ class WindowsAutomation:
         return {'status':'SUCCESS' if actual==text else 'FAILURE','bytes':len(text.encode()),'verified':actual==text}
     def mouse_click(self,x:int,y:int,button='left'):
         from pywinauto import mouse
+        if button not in {'left','right','middle'}:raise ValueError('unsupported mouse button')
         mouse.click(button=button,coords=(x,y));return {'status':'UNKNOWN','x':x,'y':y,'button':button,'verified':False,'note':'mouse event dispatched; resulting state was not independently verified'}
     def wait_for_window(self,title_re='.*',timeout=15):
         end=time.time()+timeout
@@ -67,6 +71,8 @@ class WindowsAutomation:
             try:
                 w=self._desktop().window(title_re=title_re)
                 if w.exists(timeout=.2):return {'status':'SUCCESS','title':w.window_text(),'verified':True}
-            except Exception:pass
+            except Exception:
+                time.sleep(.25)
+                continue
             time.sleep(.25)
         return {'status':'FAILURE','error':'window timeout','title_re':title_re,'verified':False}
