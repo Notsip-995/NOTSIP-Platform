@@ -21,8 +21,24 @@ def _task_data(payload, actor):
 
 def attach(app,require_auth,store,jobs):
     from .app import agent as live_agent
+    from .workflow_runtime_hardening import DurableWorkflowEngine
     jobs.agent=live_agent
-    decomposer=TaskDecomposer()
+    decomposer=TaskDecomposer();durable=DurableWorkflowEngine(store,live_agent)
+
+    async def durable_agent_handler(task):
+        data=task.get('data') or '{}'
+        data=json.loads(data) if isinstance(data,str) else dict(data)
+        subtasks=data.get('subtasks') or []
+        if not subtasks:
+            return await live_agent.handle(task.get('objective',''))
+        # Convert decomposition records into durable workflow steps while retaining
+        # the original task metadata and persisted step-results on the parent task.
+        workflow_data=dict(data)
+        workflow_data['steps']=[dict(step) for step in subtasks]
+        workflow_data.setdefault('step_results',[])
+        return await durable.run_task(dict(task,data=json.dumps(workflow_data)))
+
+    jobs.register('agent',durable_agent_handler)
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/tasks','/api/tasks/{task_id}/run'}]
     def own(task):
         try:data=json.loads(task.get('data') or '{}')
