@@ -28,12 +28,12 @@ from .event_reasoning_loop import EventReasoningLoop
 from .linux_routes import attach as attach_linux_routes
 from .sensor_ingress import attach as attach_sensor_ingress
 from .business_routes import attach as attach_business_routes
+from .actor_context import attach_actor_middleware
+from .session_hardening import attach as attach_session_hardening
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
-# Keep newly added external credentials under the same secret/approval policy as
-# every other adapter credential, including the active ConfigStore serializer.
 app.CONFIG_SECRET_NAMES.add('business_admin_token')
 app.CONFIG_HIGH_RISK.add('business_admin_token')
 from .product_layer import ConfigStore
@@ -66,6 +66,8 @@ attach_forensics(app,_require,DATA/'workspace')
 attach_advanced_intelligence(app,_require,store,__import__('notsip.app',fromlist=['web']).web,agent,registry,events,settings)
 attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
+attach_actor_middleware(app,auth)
+attach_session_hardening(app,_require,agent,DATA)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 normalize_routes(app)
