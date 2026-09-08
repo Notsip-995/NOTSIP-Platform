@@ -51,6 +51,7 @@ from .threat_assessment import ThreatAssessor
 from .workspace_scope_hardening import attach as attach_workspace_scope_hardening
 from .workflow_runtime_hardening import attach as attach_workflow_runtime
 from .forensics_scope_hardening import attach as attach_forensics_scope_hardening
+from .memory_scope_hardening import attach as attach_memory_scope_hardening
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
@@ -100,6 +101,7 @@ attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
 attach_session_hardening(app,_require,agent,DATA)
+attach_memory_scope_hardening(app,_require,store)
 attach_task_hardening(app,_require,store,jobs)
 attach_pairing_hardening(app,_require,store,pairing,auth)
 attach_windows_hardening(registry,__import__('notsip.app',fromlist=['win']).win)
