@@ -42,15 +42,17 @@ class OAuthService:
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);access=tokens.get('access_token','');refresh=tokens.get('refresh_token','')
         if not access and not refresh:return {'status':'ALREADY_REVOKED','account_id':item['id'],'provider':provider}
         if provider=='google':
+            connected=self.accounts.for_provider('google')
+            # Google's documented revocation can invalidate access/refresh tokens
+            # issued to the OAuth project. With multiple connected Google accounts
+            # sharing this project, revoking one account is therefore unsafe.
+            if len(connected)>1:return {'status':'PROVIDER_REVOCATION_BLOCKED_MULTI_ACCOUNT','account_id':item['id'],'provider':provider,'connected_accounts':len(connected),'reason':'Google project-level revocation could invalidate another connected account; local credentials were retained'}
             token=refresh or access
             async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
             if r.status_code not in (200,400):r.raise_for_status()
             if r.status_code==400:return {'status':'PROVIDER_TOKEN_ALREADY_INVALID','account_id':item['id'],'provider':provider,'provider_status':400}
             return {'status':'PROVIDER_REVOKED','account_id':item['id'],'provider':provider,'provider_status':r.status_code}
-        # Microsoft does not expose a delegated per-token revoke endpoint for this
-        # integration. Its sign-out/session invalidation endpoints are not equivalent
-        # and may affect other sessions, so never pretend local deletion is revocation.
-        return {'status':'PROVIDER_REVOCATION_UNAVAILABLE','account_id':item['id'],'provider':provider,'reason':'Microsoft delegated token revocation is not safely available through the configured integration'}
+        return {'status':'PROVIDER_REVOCATION_UNAVAILABLE','account_id':item['id'],'provider':provider,'reason':'Microsoft delegated-token revocation is not safely available through the configured integration without broader user-session revocation'}
     def save_tokens(self,provider,tokens,account_id=None):
         item=self._account(provider,account_id);return self.accounts.save_tokens(item['id'],tokens)
     def profile(self,provider):return self.PROFILES.get(provider,{'scopes':''})
