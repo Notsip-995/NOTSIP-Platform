@@ -1,6 +1,6 @@
 from __future__ import annotations
 import secrets,time
-from fastapi import HTTPException
+from fastapi import Cookie,HTTPException
 from fastapi.responses import RedirectResponse
 from .security import pkce_pair
 
@@ -19,7 +19,7 @@ def attach(app,auth,accounts,settings):
         return response
 
     @app.get('/api/oauth/callback')
-    async def oauth_callback_hardened(code:str,state:str,notsip_oidc_csrf:str|None=None):
+    async def oauth_callback_hardened(code:str,state:str,notsip_oidc_csrf:str|None=Cookie(default=None)):
         pending=auth.sessions.pop('oidc:'+state,None)
         if not pending or float(pending.get('expires',0))<time.time():raise HTTPException(400,'invalid or expired OIDC state')
         if not secrets.compare_digest(str(pending.get('csrf','')),str(notsip_oidc_csrf or '')):raise HTTPException(400,'OIDC browser state validation failed')
