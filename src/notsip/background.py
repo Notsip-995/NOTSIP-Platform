@@ -9,6 +9,9 @@ class BackgroundSupervisor:
     def recovery_devices(self):
         try:return self.store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
         except Exception:return self.store.devices()
+    def recovery_commands(self):
+        try:return self.store.rows('SELECT id,device_id,action,payload,status,created,updated,result FROM commands')
+        except Exception:return []
     async def _health_cycle(self):
         if not (self.telemetry and self.health_analytics):return
         analysis=self.health_analytics.analyze(120);snapshot=self.telemetry();self.health_analytics.record(snapshot)
@@ -24,9 +27,10 @@ class BackgroundSupervisor:
             try:
                 node_state=self.nodes.reconcile();await self._health_cycle()
                 if now>=self.next_checkpoint:
-                    self.recovery.checkpoint({'timestamp':now,'devices':self.recovery_devices(),'tasks':self.store.tasks(),'world':self.intellect.world.snapshot()});self.next_checkpoint=now+self.checkpoint_interval
+                    self.recovery.checkpoint({'timestamp':now,'devices':self.recovery_devices(),'commands':self.recovery_commands(),'tasks':self.store.tasks(),'world':self.intellect.world.snapshot()});self.next_checkpoint=now+self.checkpoint_interval
                 if now>=self.next_proactive:
-                    for candidate in self.intellect.trigger_candidates()[:10]:
+                    candidates=self.intellect.trigger_candidates()
+                    for candidate in candidates[:10]:
                         decision=self.priority.classify(importance=.7,urgency=.3,relevance=.9,event_type=candidate.get('type','proactive'))
                         if decision.priority.value>=2:
                             payload=dict(candidate);payload.update({'priority':decision.priority.name,'interrupt':decision.interrupt,'score':decision.score});await self.events.publish(Event('proactive.candidate',payload,'intelligence'))
