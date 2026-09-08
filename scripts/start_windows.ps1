@@ -23,7 +23,7 @@ function Get-NotsipUrl {
 }
 function Get-Notsip { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'notsip' -or $_.Name -eq 'NOTSIP.exe' } }
 switch($Action){
-  'status' { $url=Get-NotsipUrl;Get-Notsip|Select-Object ProcessId,Name,CommandLine;try{Invoke-WebRequest "$url/api/health" -UseBasicParsing -TimeoutSec 2|Select-Object StatusCode}catch{Write-Host "NOTSIP HTTP endpoint is not responding at $url."};break }
+  'status' { $url=Get-NotsipUrl;Get-Notsip|Select-Object ProcessId,Name,CommandLine;try{Invoke-WebRequest "$url/" -UseBasicParsing -TimeoutSec 2|Select-Object StatusCode}catch{Write-Host "NOTSIP HTTP endpoint is not responding at $url."};break }
   'stop' { Get-Notsip|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue};break }
   'restart' { & $PSCommandPath stop;Start-Sleep 1;& $PSCommandPath start;break }
   'setup' { Start-Process "$(Get-NotsipUrl)/setup";break }
