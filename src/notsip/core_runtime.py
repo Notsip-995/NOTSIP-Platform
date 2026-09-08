@@ -35,10 +35,10 @@ _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
-app.CONFIG_SECRET_NAMES.add('business_admin_token')
-app.CONFIG_HIGH_RISK.add('business_admin_token')
+app.CONFIG_SECRET_NAMES.add('business_admin_token');app.CONFIG_HIGH_RISK.add('business_admin_token')
+app.CONFIG_SECRET_NAMES.add('speaker_identity_token');app.CONFIG_HIGH_RISK.add('speaker_identity_token')
 from .product_layer import ConfigStore
-ConfigStore.SECRET_NAMES.add('business_admin_token')
+ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token')
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events,registry=registry,agent=agent)
@@ -47,7 +47,7 @@ attach_runtime_hardening(app,require_auth=_require,settings=settings,store=store
 attach_recovery_hardening(app,require_auth=_require,recovery=recovery,store=store)
 attach_setup_hardening(app)
 attach_approval_hardening(app,require_auth=_require,approvals=__import__('notsip.app',fromlist=['approvals']).approvals,registry=registry,audit_log=__import__('notsip.app',fromlist=['audit_log']).audit_log,agent=agent)
-attach_voice_bridge(app,events,agent,native_voice)
+attach_voice_bridge(app,events,agent,native_voice,settings)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
@@ -73,7 +73,10 @@ attach_task_hardening(app,_require,store,jobs)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
-async def healthz():return {'status':'ok','identity':'NOTSIP','version':__import__('notsip').__version__}
+async def healthz(request):
+    host=getattr(getattr(request,'client',None),'host','')
+    if host not in {'127.0.0.1','::1','localhost'}:from fastapi import HTTPException;raise HTTPException(404,'not found')
+    return {'status':'ok','identity':'NOTSIP','version':__import__('notsip').__version__}
 normalize_routes(app)
 
 @app.on_event('startup')
