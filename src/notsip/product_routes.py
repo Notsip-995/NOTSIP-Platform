@@ -1,14 +1,16 @@
 from __future__ import annotations
-import asyncio, hashlib, json, os, secrets, time
-from fastapi import Depends, HTTPException, Request, Header
+import asyncio,hashlib,json,os,secrets,time
+from fastapi import Depends,HTTPException,Request,Header
 from fastapi.responses import RedirectResponse
 from .updater import UpdateManager
 
-def _remove(app, paths):
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
+def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 
-def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store, agent, events, accounts, maintenance, DATA, native_voice):
-    _remove(app, ['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
+def _checkpoint_devices(store):
+    return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
+
+def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
+    _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
     updates=UpdateManager(DATA,settings)
     @app.get('/api/recovery/check')
     async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
@@ -34,7 +36,8 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
     async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return nodes.revoke(node_id)
     @app.post('/api/recovery/checkpoint')
     async def checkpoint(_:None=Depends(require_auth)):
-        return {'status':'SUCCESS','path':recovery.checkpoint({'tasks':store.tasks(),'devices':store.devices(),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()})}
+        state={'tasks':store.tasks(),'devices':_checkpoint_devices(store),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()}
+        return {'status':'SUCCESS','path':recovery.checkpoint(state)}
     @app.get('/api/recovery/latest')
     async def latest_checkpoint(_:None=Depends(require_auth)):return {'checkpoint':recovery.latest(),'verified':recovery.verify_latest()}
     @app.post('/api/recovery/restore')
@@ -87,7 +90,7 @@ def attach(app, *, require_auth, settings, auth, pairing, nodes, recovery, store
         if auth.secrets.get('oidc:active_account','')==account_id:auth.secrets.set('oidc:active_account','')
         return {'status':'SUCCESS','revoked':True,'account_id':account_id,'provider_revoked':bool(url and tokens.get('access_token'))}
     @app.post('/api/devices/result')
-    async def device_result(payload:dict, request:Request):
+    async def device_result(payload:dict,request:Request):
         device_id=request.headers.get('X-NOTSIP-Device-ID','');device_token=request.headers.get('X-NOTSIP-Device-Token','')
         if not device_id or not store.device_token_valid(device_id,device_token):raise HTTPException(401,'device authentication required')
         command_id=str(payload.get('command_id',''));command=store.row('SELECT device_id FROM commands WHERE id=?',(command_id,))
