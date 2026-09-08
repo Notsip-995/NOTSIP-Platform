@@ -61,7 +61,29 @@ from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
 from .policy import Risk
+import notsip.runtime_prod as _runtime_prod
+
+# app.py is the authoritative configured runtime. Rebind compatibility-route globals
+# before any route hardening/normalization so legacy handlers cannot retain stale
+# provider/policy/agent/store/auth instances.
+_runtime_prod.settings=settings
+_runtime_prod.store=store
+_runtime_prod.policy=policy
+_runtime_prod.registry=registry
+_runtime_prod.events=events
+_runtime_prod.provider=agent.provider
+_runtime_prod.agent=agent
+_runtime_prod.web=web
+_runtime_prod.emailc=emailc
+_runtime_prod.nodes=nodes
+_runtime_prod.recovery=recovery
+_runtime_prod.auth=auth
+_runtime_prod.pairing=pairing
+_runtime_prod.oauth=oauth
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
+_runtime_prod.require_auth=_require
+
+# Keep the scheduler/event subsystem on the same authoritative objects.
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
@@ -70,6 +92,7 @@ app.CONFIG_SECRET_NAMES.add('business_admin_token');app.CONFIG_HIGH_RISK.add('bu
 app.CONFIG_SECRET_NAMES.add('speaker_identity_token');app.CONFIG_HIGH_RISK.add('speaker_identity_token')
 from .product_layer import ConfigStore
 ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token')
+ConfigStore.SECRET_NAMES.add('database_url')
 install_backup_hardening(backups)
 external_domains=attach_external_domains(registry,settings)
 external_adapters=attach_external_adapters(registry,settings)
