@@ -1,5 +1,5 @@
 from __future__ import annotations
-import inspect,json,re
+import inspect,json,re,threading
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
@@ -7,18 +7,36 @@ from .product_layer import ApprovalStore
 from .conversations import ConversationStore
 from .execution_gate import ToolExecutionGate
 from .user_profile import UserProfileStore
+from .actor_context import current_actor
 
 class Agent:
-    SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, user profile, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. Prefer real tool execution when authorized. State uncertainty clearly.'''
+    SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, user profile, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. State uncertainty clearly.'''
     CITY_TIMEZONES={'tokyo':'Asia/Tokyo','london':'Europe/London','new york':'America/New_York','los angeles':'America/Los_Angeles','paris':'Europe/Paris','berlin':'Europe/Berlin','kigali':'Africa/Kigali','kampala':'Africa/Kampala','nairobi':'Africa/Nairobi','dubai':'Asia/Dubai','singapore':'Asia/Singapore','sydney':'Australia/Sydney'}
     WEEKDAYS={'monday':0,'tuesday':1,'wednesday':2,'thursday':3,'friday':4,'saturday':5,'sunday':6}
     def __init__(self,settings,store,policy,registry,provider,world):
-        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.profile=UserProfileStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
+        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.approvals=ApprovalStore(Path(settings.data_dir));self._conversation_stores={};self._profile_stores={};self._session_ids={};self._store_lock=threading.RLock();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
+    @property
+    def user(self):return current_actor()
+    def _conversation_store(self):
+        uid=self.user
+        with self._store_lock:return self._conversation_stores.setdefault(uid,ConversationStore(Path(self.settings.data_dir),uid))
+    @property
+    def conversations(self):return self._conversation_store()
+    @property
+    def profile(self):
+        uid=self.user
+        with self._store_lock:return self._profile_stores.setdefault(uid,UserProfileStore(Path(self.settings.data_dir),uid))
+    @property
+    def session(self):
+        store=self._conversation_store();sid=self._session_ids.get(self.user,'');return store.get_or_create(sid)
+    @session.setter
+    def session(self,value):self._session_ids[self.user]=str((value or {}).get('id',''))
     @property
     def session_id(self):return self.session['id']
-    def new_session(self,title='New conversation'):self.session=self.conversations.create(title);return self.session
+    def new_session(self,title='New conversation'):
+        s=self._conversation_store().create(title);self.session=s;return s
     def context(self,text):
-        now=datetime.now(ZoneInfo(self.settings.local_timezone));return {'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':self.conversations.history(self.session_id,20),'summary':self.session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':self.approvals.pending()}
+        now=datetime.now(ZoneInfo(self.settings.local_timezone));session=self.session;store=self._conversation_store();return {'actor':self.user,'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':store.history(session['id'],20),'summary':session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':[x for x in self.approvals.pending() if (x.get('context') or {}).get('actor','primary-user')==self.user]}
     def _time_response(self,text):
         s=text.strip().lower()
         try:local=datetime.now(ZoneInfo(self.settings.local_timezone))
@@ -44,34 +62,35 @@ class Agent:
         if s in {'in two weeks','two weeks from now','what date is in two weeks'}:target=local+timedelta(weeks=2);return f"In two weeks it will be {target.strftime('%A, %Y-%m-%d')}."
         return None
     async def handle(self,text):
-        self.store.message('user',text);self.conversations.append(self.session_id,'user',text)
+        store=self._conversation_store();session=self.session;store.append(session['id'],'user',text)
         m=re.match(r'^remember(?: that)?\s+(.+)$',text,re.I)
         if m:
-            v=m.group(1).strip();self.store.remember(self.user,'semantic',v,.95,'conversation',{'text':text});r=f"I'll remember that: {v}";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'memory','remember','execute',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+            v=m.group(1).strip();self.store.remember(self.user,'semantic',v,.95,'conversation',{'text':text});r=f"I'll remember that: {v}";store.append(session['id'],'assistant',r);self.store.audit(self.user,text,'memory','remember','execute',r);return {'response':r,'status':'SUCCESS','session_id':session['id'],'actor':self.user}
         m=re.match(r'^(?:call me|my name is)\s+(.+)$',text,re.I)
         if m:
-            name=m.group(1).strip().rstrip('.');self.profile.update(preferred_name=name,identity={'preferred_name':name});r=f"Understood. I'll call you {name}.";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'profile','update','success',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+            name=m.group(1).strip().rstrip('.');self.profile.update(preferred_name=name,identity={'preferred_name':name});r=f"Understood. I'll call you {name}.";store.append(session['id'],'assistant',r);self.store.audit(self.user,text,'profile','update','success',r);return {'response':r,'status':'SUCCESS','session_id':session['id'],'actor':self.user}
         time_response=self._time_response(text)
         if time_response:
-            self.store.message('assistant',time_response);self.conversations.append(self.session_id,'assistant',time_response);self.store.audit(self.user,text,'time','clock','success',time_response);return {'response':time_response,'status':'SUCCESS','session_id':self.session_id}
-        if not self.provider.enabled and not self.provider.fallback_enabled:r=self.fallback(text);self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'fallback','agent','respond',r);return {'response':r,'status':'DEGRADED','session_id':self.session_id}
+            store.append(session['id'],'assistant',time_response);self.store.audit(self.user,text,'time','clock','success',time_response);return {'response':time_response,'status':'SUCCESS','session_id':session['id'],'actor':self.user}
+        if not self.provider.enabled and not self.provider.fallback_enabled:
+            r=self.fallback(text);store.append(session['id'],'assistant',r);self.store.audit(self.user,text,'fallback','agent','respond',r);return {'response':r,'status':'DEGRADED','session_id':session['id'],'actor':self.user}
         ctx=self.context(text);msgs=[{'role':'system','content':self.SYSTEM+'\nContext JSON:\n'+json.dumps(ctx,default=str)}]+ctx['conversation'][-12:]+[{'role':'user','content':text}]
         for _ in range(self.settings.max_tool_rounds):
             data=await self.provider.chat(msgs,self.registry.schemas());msg=data['choices'][0]['message'];msgs.append(msg);calls=msg.get('tool_calls') or []
             if not calls:
-                r=msg.get('content','');self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'model','respond','success',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+                r=msg.get('content','');store.append(session['id'],'assistant',r);self.store.audit(self.user,text,'model','respond','success',r);return {'response':r,'status':'SUCCESS','session_id':session['id'],'actor':self.user}
             for call in calls:
                 try:args=json.loads(call['function'].get('arguments') or '{}');res=await self.run_tool(call['function']['name'],args)
                 except Exception as e:res={'status':'FAILURE','error':str(e)}
                 msgs.append({'role':'tool','tool_call_id':call['id'],'name':call['function']['name'],'content':json.dumps(res,default=str)})
-        return {'response':'Agent loop stopped safely after the configured tool rounds.','status':'UNKNOWN','session_id':self.session_id}
+        return {'response':'Agent loop stopped safely after the configured tool rounds.','status':'UNKNOWN','session_id':session['id'],'actor':self.user}
     async def run_tool(self,name,args):
         tool=self.registry.get(name)
         if not tool:return {'status':'FAILURE','error':'unknown tool'}
         d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=False)
         if not d.allowed:
             if d.needs_confirmation:
-                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level});self.store.audit(self.user,name,'approval','request','PENDING','approval requested');return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
+                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level,'actor':self.user});self.store.audit(self.user,name,'approval','request','PENDING','approval requested');return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
             return {'status':'FAILURE','approval_required':False,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
         r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute',str(r.get('status','SUCCESS')),json.dumps(r,default=str));return r
     def fallback(self,text):
