@@ -138,6 +138,7 @@ async def config_get(_:None=Depends(require_auth)):
     data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret','token'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
     requested=dict(payload.get('settings') or {})
     if not requested:raise HTTPException(400,'settings are required')
     unknown=set(requested)-set(settings.__class__.model_fields)
@@ -154,25 +155,32 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
-async def create_backup(_:None=Depends(require_auth)):return backups.create()
+async def create_backup(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return backups.create()
 @app.get('/api/backups')
-async def list_backups(_:None=Depends(require_auth)):return {'backups':backups.list()}
+async def list_backups(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'backups':backups.list()}
 @app.get('/api/backups/{name}/verify')
-async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.verify(name)
+async def verify_backup(name:str,_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return backups.verify(name)
 @app.post('/api/backups/{name}/restore')
 async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
     if not payload.get('confirm'):raise HTTPException(400,'restore confirmation required')
     return await agent.run_tool('backup_restore',{'name':name})
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
 @app.post('/api/approvals')
-async def create_approval(payload:dict,_:None=Depends(require_auth)):return approvals.request(str(payload.get('action','')),str(payload.get('reason','')),payload.get('context') or {})
+async def create_approval(payload:dict,_:None=Depends(require_auth)):
+    ctx=dict(payload.get('context') or {});ctx['actor']=current_actor();return approvals.request(str(payload.get('action','')),str(payload.get('reason','')),ctx)
 @app.post('/api/approvals/{approval_id}')
 async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_auth)):
     item=approvals.decide(approval_id,bool(payload.get('approved')))
     if not item:raise HTTPException(404,'approval not found')
-    ctx=item.get('context') or {}
-    actor=str(ctx.get('actor','primary-user'))
+    ctx=item.get('context') or {};actor=str(ctx.get('actor','primary-user'))
     if actor!=current_actor():raise HTTPException(403,'approval belongs to a different actor')
     audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
     if item['status']=='APPROVED' and payload.get('execute',True):
@@ -204,8 +212,12 @@ async def oauth_disconnect(account_id:str,_:None=Depends(require_auth)):
     if not accounts.get(account_id):raise HTTPException(404,'account not found')
     return await agent.run_tool('oauth_revoke',{'account_id':account_id})
 @app.get('/api/self/provenance')
-async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
+async def self_provenance(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
-async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
+async def process_info(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
 @app.get('/api/voice/native')
 async def native_voice_status():return {'running':native_voice.running,'platform':os.name}
