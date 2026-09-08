@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     oidc_provider:str='generic'; oidc_issuer:str=''; oidc_client_id:str=''; oidc_client_secret:str=''; oidc_redirect_uri:str=''; oidc_scopes:str=''
     llm_base_url:str=''; llm_api_key:str=''; llm_model:str=''; fallback_llm_base_url:str=''; fallback_llm_api_key:str=''; fallback_llm_model:str=''
     stt_base_url:str=''; stt_api_key:str=''; stt_model:str=''; stt_language:str=''; stt_stream_url:str=''
-    tts_base_url:str=''; tts_api_key:str=''; tts_model:str=''; tts_voice:str='alloy'; tts_format:str='mp3'
+    tts_base_url:str=''; tts_api_key:str=''; tts_model:str=''; tts_language:str=''; tts_voice:str='alloy'; tts_format:str='mp3'
     voice_enabled:bool=False; native_voice_enabled:bool=False; voice_sample_rate:int=Field(16000,ge=8000,le=48000); vad_rms_threshold:float=Field(700,ge=1); vad_silence_blocks:int=Field(8,ge=1,le=100); wake_word:str=''
     vision_enabled:bool=True; perception_enabled:bool=True; perception_interval:int=Field(10,ge=2,le=3600); brave_api_key:str=''; browser_enabled:bool=True
     perception_screen_enabled:bool=False; health_interval:int=Field(15,ge=5,le=3600); checkpoint_interval:int=Field(300,ge=30,le=86400); proactive_interval:int=Field(60,ge=15,le=86400); memory_maintenance_interval:int=Field(900,ge=60,le=604800)
@@ -67,6 +67,4 @@ try:
     settings.ensure()
 except Exception as exc:
     SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
-    if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
-    try:settings.ensure()
-    except Exception:pass
+    raise RuntimeError(f'failed to initialize NOTSIP configuration/security state: {SECRET_LOAD_ERROR}') from exc
