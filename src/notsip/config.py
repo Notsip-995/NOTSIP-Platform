@@ -42,6 +42,7 @@ class Settings(BaseSettings):
             if self.auth_mode=='oidc' and not (self.oidc_issuer and self.oidc_client_id and self.oidc_redirect_uri):raise RuntimeError('Remote binding with OIDC requires oidc_issuer, oidc_client_id and oidc_redirect_uri')
         root=Path(self.data_dir);root.mkdir(parents=True,exist_ok=True)
         for name in ('workspace','screenshots','audio','perception','recovery','runtime','backups','updates'):(root/name).mkdir(parents=True,exist_ok=True)
+
 settings=Settings()
 try:
     cfg=Path(settings.data_dir)/'config.json'
@@ -50,8 +51,8 @@ try:
         for k,v in data.items():
             if k in Settings.model_fields and k not in SECRET_FIELDS and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
 except Exception as exc:CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
-settings.ensure()
 try:
+    Path(settings.data_dir).mkdir(parents=True,exist_ok=True)
     from .security import SecretStore
     _secret_store=SecretStore(Path(settings.data_dir).resolve())
     for _name in SECRET_FIELDS:
@@ -63,3 +64,5 @@ try:
 except Exception as exc:
     SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
     if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
+    try:settings.ensure()
+    except Exception:pass
