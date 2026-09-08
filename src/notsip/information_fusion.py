@@ -28,6 +28,8 @@ class InformationFusion:
         return bool(device_id and self.store.device_owned_by(device_id,actor))
     def stored(self,query,limit=50,actor=None):
         actor=actor or current_actor();q=str(query).lower();facts=self.store.facts(max(limit,200));return [f for f in facts if self._allowed(f,actor) and (q in str(f.get('statement','')).lower() or q in str(f.get('url','')).lower())][:max(1,min(int(limit),200))]
+    def all_visible(self,limit=100,actor=None):
+        actor=actor or current_actor();facts=self.store.facts(max(limit,200));return [f for f in facts if self._allowed(f,actor)][:max(1,min(int(limit),500))]
     def _cluster(self,evidence):
         clusters=[]
         for row in evidence:
@@ -78,3 +80,7 @@ def attach(app,require_auth,store,web):
         return await service.fuse(q,count,current_actor())
     @app.get('/api/information/stored')
     async def information_stored(q:str,limit:int=50,_:None=Depends(require_auth)):return {'query':q,'evidence':service.stored(q,max(1,min(int(limit),200)),current_actor())}
+    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None)!='/api/facts']
+    @app.get('/api/facts')
+    async def facts(_:None=Depends(require_auth),limit:int=100):
+        return {'facts':service.all_visible(max(1,min(int(limit),500)),current_actor())}
