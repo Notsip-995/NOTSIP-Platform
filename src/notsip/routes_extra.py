@@ -23,3 +23,17 @@ def attach(app,require_auth,web,emailc):
         client=request.client.host if request.client else ''
         if client not in {'127.0.0.1','::1'}:raise HTTPException(403,'local setup endpoint only')
         return _public_settings()
+    @app.post('/api/oauth/{provider}/revoke/{account_id}')
+    async def oauth_revoke(provider:str,account_id:str,_:None=Depends(require_auth)):
+        from .account_store import AccountStore
+        from .oauth_services import OAuthService
+        accounts=AccountStore(__import__('notsip.runtime_prod',fromlist=['auth']).auth.secrets)
+        oauth=OAuthService(accounts.secrets,accounts)
+        item=accounts.get(account_id)
+        if not item or item.get('provider')!=provider:raise HTTPException(404,'OAuth account not found')
+        outcome=await oauth.revoke(provider,account_id)
+        if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:
+            accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
+        else:
+            outcome['local_status']='CONNECTED'
+        return outcome
