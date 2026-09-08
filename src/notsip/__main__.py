@@ -31,6 +31,17 @@ def _select_port(host:str,configured:int)->int:
     return choose_free_port(host,configured+1,20)
 
 
+def _is_loopback_bind(host:str)->bool:
+    return host.strip().lower() in {'127.0.0.1','localhost','::1'}
+
+
+def _validate_bind_security(host:str)->None:
+    # An empty API key deliberately supports local-only development/setup. Never
+    # allow the same unauthenticated mode to expose NOTSIP on a LAN/WAN bind.
+    if not settings.api_key and settings.auth_mode=='api_key' and not _is_loopback_bind(host):
+        raise RuntimeError('refusing unauthenticated non-loopback bind; configure NOTSIP_API_KEY or OIDC before exposing NOTSIP remotely')
+
+
 def _open_browser(url:str):
     try:webbrowser.open(url)
     except Exception:pass
@@ -58,6 +69,7 @@ def main()->None:
         return
     try:
         host=settings.host
+        _validate_bind_security(host)
         port=_select_port(host,settings.port)
         if port==0:
             return
