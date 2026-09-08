@@ -57,24 +57,19 @@ def attach(app,require_auth,root,timezone,agent=None,registry=None):
         registry.add(Tool('calendar_update','Modify an authorized calendar event and report conflicts.','WRITE_CALENDAR',Risk.MEDIUM,{'type':'object','properties':{'event_id':{'type':'string'},'title':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'description':{'type':'string'},'location':{'type':'string'},'reminder_minutes':{'type':'integer'}},'required':['event_id']},update_tool))
         registry.add(Tool('calendar_delete','Delete an authorized calendar event; confirmation is required.','WRITE_CALENDAR',Risk.HIGH,{'type':'object','properties':{'event_id':{'type':'string'}},'required':['event_id']},delete_tool,True));ToolExecutionGate.wrap_registry(registry)
     @app.get('/api/calendar/events')
-    async def calendar_list(start:str='',end:str='',_:None=Depends(require_auth)):return {'events':store.list(start or None,end or None)}
+    async def calendar_list(start:str='',end:str',_:None=Depends(require_auth)):return {'events':store.list(start or None,end or None)}
+    def require_agent():
+        if agent is None:raise HTTPException(503,'calendar mutation service is not configured')
     @app.post('/api/calendar/events')
     async def calendar_create(payload:dict,_:None=Depends(require_auth)):
-        if agent:return await agent.run_tool('calendar_create',{'title':str(payload.get('title','')).strip(),'start':payload.get('start'),'end':payload.get('end'),'description':str(payload.get('description','')),'location':str(payload.get('location','')),'reminder_minutes':int(payload.get('reminder_minutes',15))})
-        try:event,conflicts=store.create(str(payload.get('title','')).strip(),payload['start'],payload['end'],str(payload.get('description','')),str(payload.get('location','')),int(payload.get('reminder_minutes',15)))
-        except KeyError as exc:raise HTTPException(400,f'missing field: {exc.args[0]}')
-        except ValueError as exc:raise HTTPException(400,str(exc))
-        return {'status':'SUCCESS','event':event,'conflicts':conflicts,'conflict':bool(conflicts)}
+        require_agent()
+        return await agent.run_tool('calendar_create',{'title':str(payload.get('title','')).strip(),'start':payload.get('start'),'end':payload.get('end'),'description':str(payload.get('description','')),'location':str(payload.get('location','')),'reminder_minutes':int(payload.get('reminder_minutes',15))})
     @app.patch('/api/calendar/events/{event_id}')
     async def calendar_update(event_id:str,payload:dict,_:None=Depends(require_auth)):
-        if agent:return await agent.run_tool('calendar_update',dict(payload,event_id=event_id))
-        try:event,conflicts=store.update(event_id,**payload)
-        except KeyError:raise HTTPException(404,'event not found')
-        except ValueError as exc:raise HTTPException(400,str(exc))
-        return {'status':'SUCCESS','event':event,'conflicts':conflicts,'conflict':bool(conflicts)}
+        require_agent()
+        return await agent.run_tool('calendar_update',dict(payload,event_id=event_id))
     @app.delete('/api/calendar/events/{event_id}')
     async def calendar_delete(event_id:str,_:None=Depends(require_auth)):
-        if agent:return await agent.run_tool('calendar_delete',{'event_id':event_id})
-        try:return store.delete(event_id)
-        except KeyError:raise HTTPException(404,'event not found')
+        require_agent()
+        return await agent.run_tool('calendar_delete',{'event_id':event_id})
     return store
