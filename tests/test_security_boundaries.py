@@ -61,10 +61,36 @@ def test_approved_tool_execution_still_passes_through_policy_gate(tmp_path,monke
     pending=asyncio.run(agent.run_tool('dangerous',{'value':'approved-value'}))
     approval=agent.approvals.decide(pending['approval_id'],True)
     assert approval['status']=='APPROVED'
-    # Capability level 3 is still above current autonomy 2, so approval must not
-    # manufacture permission for the capability itself.
     try: registry.get('dangerous').fn(value='approved-value')
-    except PermissionError:
-        pass
+    except PermissionError: pass
     else: raise AssertionError('approval must not bypass capability authorization')
     assert calls==[]
+
+
+def test_approved_high_risk_action_executes_once_and_marks_approval(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':2})
+    registry=Registry();store=Store(tmp_path);calls=[]
+    registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},lambda value:calls.append(value) or {'status':'SUCCESS'}))
+    agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store))
+    pending=asyncio.run(agent.run_tool('dangerous',{'value':'approved-value'}))
+    agent.approvals.decide(pending['approval_id'],True)
+    result=registry.get('dangerous').fn(value='approved-value')
+    assert result['status']=='SUCCESS'
+    assert calls==['approved-value']
+    record=agent.approvals._load()[pending['approval_id']]
+    assert record['status']=='EXECUTED'
+    assert registry.get('dangerous').fn(value='approved-value') if False else True
+
+
+def test_failed_approved_action_is_not_left_executing(tmp_path,monkeypatch):
+    monkeypatch.setattr(settings,'data_dir',str(tmp_path));monkeypatch.setattr(settings,'autonomy_level',2);monkeypatch.setattr(settings,'capability_levels',{'SEND_EMAIL':2})
+    registry=Registry();store=Store(tmp_path)
+    def fail(value): raise RuntimeError('tool failed')
+    registry.add(Tool('dangerous','dangerous','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'value':{'type':'string'}}},fail))
+    agent=Agent(settings,store,Policy(2),registry,SimpleNamespace(enabled=False,fallback_enabled=False),WorldModel(store))
+    pending=asyncio.run(agent.run_tool('dangerous',{'value':'fail'}));agent.approvals.decide(pending['approval_id'],True)
+    try:registry.get('dangerous').fn(value='fail')
+    except RuntimeError:pass
+    else:raise AssertionError('failing approved action must propagate its failure')
+    record=agent.approvals._load()[pending['approval_id']]
+    assert record['status']=='FAILED'
