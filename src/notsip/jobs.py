@@ -27,43 +27,43 @@ class Scheduler:
         except Exception as exc:return [{'kind':'event_publish','error':str(exc),'event':event_type}]
     @staticmethod
     def _outcome_metadata(payload,result,status):
-        payload['state']=status
-        payload['result']=result if isinstance(result,dict) else {'value':result}
-        verification=payload.get('verification') or {}
-        verification['required']=bool(verification.get('required',False))
-        verification['verified']=bool(isinstance(result,dict) and result.get('verified') is True) if verification['required'] else bool(isinstance(result,dict) and result.get('verified') is True)
-        verification['status']='VERIFIED' if verification['verified'] else 'UNVERIFIED'
-        payload['verification']=verification
-        return payload
+        payload['state']=status;payload['result']=result if isinstance(result,dict) else {'value':result};verification=payload.get('verification') or {};verification['required']=bool(verification.get('required',False));verification['verified']=bool(isinstance(result,dict) and result.get('verified') is True);verification['status']='VERIFIED' if verification['verified'] else 'UNVERIFIED';payload['verification']=verification;return payload
+    def _contract_error(self,payload,task):
+        deadline=payload.get('deadline')
+        if deadline is not None:
+            try:
+                if time.time()>float(deadline):return 'task deadline expired'
+            except (TypeError,ValueError):return 'invalid task deadline'
+        required=payload.get('required_tools') or []
+        missing=[str(name) for name in required if str(name) not in self.handlers and not hasattr(getattr(self,'agent',None),'registry')]
+        return f'required tools unavailable: {missing}' if missing else ''
     async def run_one(self,task):
         handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
         if not fn:
-            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':f'no handler registered','attempt':int(task.get('retries') or 0)+1});return {'status':'FAILURE','error':'no handler registered'}
-        execution_id=uuid.uuid4().hex;started=time.time();payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id});claimed=self.store.claim_task(task['id'],json.dumps(payload))
+            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':'no handler registered','attempt':int(task.get('retries') or 0)+1});return {'status':'FAILURE','error':'no handler registered'}
+        execution_id=uuid.uuid4().hex;started=time.time();payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id});contract_error=self._contract_error(payload,task)
+        if contract_error:
+            payload.update({'state':'FAILED','result':{'status':'FAILURE','error':contract_error},'verification':{'required':bool(payload.get('verification',{}).get('required',False)),'verified':False,'status':'UNVERIFIED'}});self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=contract_error);await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':contract_error,'actor':payload.get('actor','primary-user')});return {'status':'FAILURE','error':contract_error}
+        claimed=self.store.claim_task(task['id'],json.dumps(payload))
         if not claimed:return {'status':'SKIPPED','reason':'task already claimed'}
         self._active_tasks.add(task['id']);actor=str(payload.get('actor') or 'primary-user');token=set_actor(actor)
         try:
             result=fn(dict(task,data=json.dumps(payload)))
             if inspect.isawaitable(result):result=await result
-            status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS';payload['finished_at']=time.time();payload['last_result']=result
-            self._outcome_metadata(payload,result,status)
+            status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS';payload['finished_at']=time.time();payload['last_result']=result;self._outcome_metadata(payload,result,status)
             if status=='CONTINUE':
                 self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='')
                 event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
                 if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
                 return {'status':'CONTINUE','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
-            if status in {'UNKNOWN','PARTIAL_SUCCESS'}:
-                self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
-            elif task.get('interval_sec'):
-                payload['state']='PENDING';self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
-            else:
-                self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
+            if status in {'UNKNOWN','PARTIAL_SUCCESS'}:self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
+            elif task.get('interval_sec'):payload['state']='PENDING';self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
+            else:self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
             event_type='task.completed' if status=='SUCCESS' else 'task.unknown' if status=='UNKNOWN' else 'task.partial';event_errors=await self._publish(event_type,{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'recurring':bool(task.get('interval_sec')),'actor':actor})
             if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
             return {'status':status,'result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
         except Exception as exc:
-            retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time(),'state':'PENDING' if retries<=max_retries else 'FAILED','result':{'status':'FAILURE','error':str(exc)}})
-            verification=payload.get('verification') or {};verification['status']='UNVERIFIED';verification['verified']=False;payload['verification']=verification
+            retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time(),'state':'PENDING' if retries<=max_retries else 'FAILED','result':{'status':'FAILURE','error':str(exc)}});verification=payload.get('verification') or {};verification['status']='UNVERIFIED';verification['verified']=False;payload['verification']=verification
             if retries<=max_retries:
                 backoff=min(900,2**min(retries,9));self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,data=json.dumps(payload),error=str(exc));event_errors=await self._publish('task.retrying',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retry':retries,'backoff':backoff,'task_data':payload,'actor':actor});return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff,'event_publish_errors':event_errors}
             self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=str(exc),retries=retries);event_errors=await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retries':retries,'task_data':payload,'actor':actor});return {'status':'FAILURE','error':str(exc),'retries':retries,'event_publish_errors':event_errors}
