@@ -14,8 +14,8 @@ class Scheduler:
                 self.store.task_update(task['id'],state='PENDING',run_at=now,data=json.dumps(data),error='reclaimed after worker timeout')
     def register(self,name,fn):self.handlers[name]=fn
     def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key=''):
-        payload=dict(data or {});payload.setdefault('max_retries',self.max_retries);payload.setdefault('idempotency_key',idempotency_key or uuid.uuid4().hex)
-        return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval)
+        payload=dict(data or {});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('max_retries',self.max_retries);payload.setdefault('idempotency_key',key)
+        return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,key)
     async def run_one(self,task):
         handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
         if not fn:
