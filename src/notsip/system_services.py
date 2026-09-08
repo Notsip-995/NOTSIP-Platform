@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json, os, platform, shutil, socket, subprocess, time, zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from fastapi import Depends, HTTPException
@@ -10,8 +10,8 @@ from .policy import Risk
 
 
 def _time_snapshot():
-    now = datetime.now(ZoneInfo(settings.local_timezone))
-    return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':datetime.utcnow().isoformat(timespec='seconds')+'Z'}
+    now=datetime.now(ZoneInfo(settings.local_timezone));utc=datetime.now(timezone.utc)
+    return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
 
 
 def _telemetry():
@@ -97,17 +97,12 @@ def _archive(workspace,paths,archive):
 def _python_exec(workspace,code,timeout=30):
     p=workspace.root/'runtime_exec';p.mkdir(parents=True,exist_ok=True);script=p/'run.py';script.write_text(code,encoding='utf-8')
     try:
-        mode=os.getenv('NOTSIP_CODE_SANDBOX','disabled').strip().lower()
-        timeout=max(1,min(int(timeout),60))
+        mode=os.getenv('NOTSIP_CODE_SANDBOX','disabled').strip().lower();timeout=max(1,min(int(timeout),60))
         if mode=='docker':
             docker=shutil.which('docker')
             if not docker:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'Docker sandbox runtime is required but docker was not found'}
-            image=os.getenv('NOTSIP_CODE_SANDBOX_IMAGE','python:3.12-slim')
-            cmd=[docker,'run','--rm','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','512m','--cpus','1','--tmpfs','/tmp:rw,size=64m','-v',f'{workspace.root.resolve()}:/workspace:rw','-w','/workspace',image,'python','-I','/workspace/runtime_exec/run.py']
-        elif mode=='local-unsafe' and os.getenv('NOTSIP_ALLOW_UNSAFE_CODE_EXEC','').lower() in {'1','true','yes'}:
-            cmd=[os.environ.get('PYTHON','python'),'-I',str(script)]
-        else:
-            return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'isolated code sandbox is not configured; set NOTSIP_CODE_SANDBOX=docker with Docker available'}
-        r=subprocess.run(cmd,cwd=str(workspace.root),capture_output=True,text=True,timeout=timeout)
-        return {'status':'SUCCESS' if r.returncode==0 else 'FAILURE','returncode':r.returncode,'stdout':r.stdout[-20000:],'stderr':r.stderr[-20000:]}
+            image=os.getenv('NOTSIP_CODE_SANDBOX_IMAGE','python:3.12-slim');cmd=[docker,'run','--rm','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','512m','--cpus','1','--tmpfs','/tmp:rw,size=64m','-v',f'{workspace.root.resolve()}:/workspace:rw','-w','/workspace',image,'python','-I','/workspace/runtime_exec/run.py']
+        elif mode=='local-unsafe' and os.getenv('NOTSIP_ALLOW_UNSAFE_CODE_EXEC','').lower() in {'1','true','yes'}:cmd=[os.environ.get('PYTHON','python'),'-I',str(script)]
+        else:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'isolated code sandbox is not configured; set NOTSIP_CODE_SANDBOX=docker with Docker available'}
+        r=subprocess.run(cmd,cwd=str(workspace.root),capture_output=True,text=True,timeout=timeout);return {'status':'SUCCESS' if r.returncode==0 else 'FAILURE','returncode':r.returncode,'stdout':r.stdout[-20000:],'stderr':r.stderr[-20000:]}
     finally:script.unlink(missing_ok=True)
