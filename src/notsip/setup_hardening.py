@@ -3,8 +3,19 @@ import importlib,copy
 from fastapi import HTTPException,Request
 from fastapi.responses import FileResponse,JSONResponse
 
-SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','business_admin_token'}
+SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','business_admin_token','speaker_identity_token'}
 RESTART_KEYS={'host','port','data_dir','database_url'}
+
+def _migrate_legacy_config(mod):
+    data=mod.config_store.load();raw=dict(data.get('settings') or {});changed=int(data.get('version',1))<2
+    for key in SECRET_NAMES:
+        value=raw.get(key)
+        if str(value or '').strip():
+            secret_name='NOTSIP_'+key.upper()
+            if not mod.auth.secrets.get(secret_name):mod.auth.secrets.set(secret_name,str(value))
+            raw.pop(key,None);changed=True
+    if changed:mod.config_store.save(raw)
+    return mod.config_store.load()
 
 def _redact_database_url(value):
     try:
@@ -18,10 +29,10 @@ def _redact_database_url(value):
     except Exception:return '[configured]'
 
 def _public_state(mod):
-    data=mod.config_store.load();saved=dict(data.get('settings') or {})
+    data=_migrate_legacy_config(mod);saved=dict(data.get('settings') or {})
     safe={k:v for k,v in saved.items() if k not in SECRET_NAMES and not any(x in k.lower() for x in ('password','secret','token'))}
     safe['database_url']=_redact_database_url(getattr(mod.settings,'database_url',''))
-    return {'version':data.get('version',0),'settings':safe,'secret_configured':{k:bool(getattr(mod.settings,k,'')) or bool(mod.auth.secrets.get('NOTSIP_'+k.upper(),'')) for k in SECRET_NAMES}}
+    return {'version':data.get('version',0),'settings':safe,'secret_configured':{k:bool(getattr(mod.settings,k,'') or mod.auth.secrets.get('NOTSIP_'+k.upper())) for k in SECRET_NAMES}}
 
 def _local_oidc_recovery(mod,request):
     host=getattr(getattr(request,'client',None),'host','') or ''
@@ -32,6 +43,7 @@ async def _require_after_setup(mod,request):
 
 def attach(app):
     mod=importlib.import_module('notsip.app')
+    _migrate_legacy_config(mod)
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/config','/api/config/public','/setup'}]
     @app.get('/setup',include_in_schema=False)
     async def setup_page(request:Request):
