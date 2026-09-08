@@ -1,10 +1,12 @@
 from __future__ import annotations
+import base64, email.policy
+from email.message import EmailMessage
 import httpx
 
 class OAuthService:
     PROFILES={
-        'google':{'scopes':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly','calendar':'https://www.googleapis.com/calendar/v3/calendars/primary/events','mail':'https://gmail.googleapis.com/gmail/v1/users/me/messages','token':'https://oauth2.googleapis.com/token','revoke':'https://oauth2.googleapis.com/revoke'},
-        'microsoft':{'scopes':'openid profile email offline_access User.Read Calendars.Read Mail.Read','calendar':'https://graph.microsoft.com/v1.0/me/calendar/events','mail':'https://graph.microsoft.com/v1.0/me/messages','token':'https://login.microsoftonline.com/common/oauth2/v2.0/token'},
+        'google':{'scopes':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly','calendar':'https://www.googleapis.com/calendar/v3/calendars/primary/events','mail':'https://gmail.googleapis.com/gmail/v1/users/me/messages','calendar_scope':'https://www.googleapis.com/auth/calendar','mail_scope':'https://www.googleapis.com/auth/gmail.send','token':'https://oauth2.googleapis.com/token','revoke':'https://oauth2.googleapis.com/revoke'},
+        'microsoft':{'scopes':'openid profile email offline_access User.Read Calendars.ReadWrite Mail.Read Mail.Send','calendar':'https://graph.microsoft.com/v1.0/me/calendar/events','mail':'https://graph.microsoft.com/v1.0/me/messages','calendar_scope':'Calendars.ReadWrite','mail_scope':'Mail.Send','token':'https://login.microsoftonline.com/common/oauth2/v2.0/token'},
     }
     def __init__(self,secrets,accounts=None):self.secrets=secrets;self.accounts=accounts
     def _account(self,provider,account_id=None):
@@ -20,6 +22,10 @@ class OAuthService:
         raise RuntimeError(f'multiple {provider} accounts are connected; specify account_id')
     def _token(self,provider,account_id=None):
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);return tokens.get('access_token',''),item
+    def _scopes(self,item):return set(str(item.get('scopes','')).replace(',',' ').split())
+    def _require_scope(self,provider,item,kind):
+        required=self.PROFILES[provider].get(f'{kind}_scope','')
+        if required not in self._scopes(item):raise PermissionError(f'{provider} OAuth account lacks required scope: {required}')
     async def _get(self,provider,path,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         token,item=self._token(provider,account_id)
@@ -31,6 +37,47 @@ class OAuthService:
             r.raise_for_status();return r.json()
     async def calendar(self,provider,account_id=None):return await self._get(provider,'calendar',account_id)
     async def mail(self,provider,account_id=None):return await self._get(provider,'mail',account_id)
+    async def _request(self,provider,method,path,account_id=None,**kwargs):
+        token,item=self._token(provider,account_id)
+        if not token:raise RuntimeError(f'{provider} account is not authorized')
+        async with httpx.AsyncClient(timeout=30) as c:
+            r=await c.request(method,path,headers={'Authorization':'Bearer '+token,'Accept':'application/json',**(kwargs.pop('headers',{}) or {})},**kwargs)
+            if r.status_code==401:
+                await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.request(method,path,headers={'Authorization':'Bearer '+token,'Accept':'application/json',**(kwargs.pop('headers',{}) or {})},**kwargs)
+            if r.status_code not in (200,201,202,204):r.raise_for_status()
+            if r.status_code==204 or not r.content:return {'status':'SUCCESS','provider_status':r.status_code}
+            data=r.json();return {'status':'SUCCESS','provider_status':r.status_code,'data':data}
+    async def calendar_create(self,provider,title,start,end,description='',location='',timezone='UTC',account_id=None):
+        if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
+        if provider=='google':
+            body={'summary':title,'description':description,'location':location,'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
+        else:
+            body={'subject':title,'body':{'contentType':'Text','content':description},'location':{'displayName':location},'start':{'dateTime':start,'timeZone':timezone},'end':{'dateTime':end,'timeZone':timezone}}
+        return await self._request(provider,'POST',self.PROFILES[provider]['calendar'],item['id'],json=body)
+    async def calendar_update(self,provider,event_id,changes,account_id=None):
+        if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
+        eid=str(event_id).strip()
+        if not eid:raise ValueError('event_id is required')
+        body=dict(changes or {})
+        if provider=='microsoft' and 'title' in body:body['subject']=body.pop('title')
+        if provider=='google':body={'summary':body.get('title')} if 'title' in body else body
+        path=self.PROFILES[provider]['calendar'].rstrip('/')+'/'+httpx.URL(eid).raw_path.decode() if False else self.PROFILES[provider]['calendar'].rstrip('/')+'/'+eid
+        return await self._request(provider,'PATCH' if provider=='microsoft' else 'PUT',path,item['id'],json=body)
+    async def calendar_delete(self,provider,event_id,account_id=None):
+        if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'calendar')
+        eid=str(event_id).strip()
+        if not eid:raise ValueError('event_id is required')
+        return await self._request(provider,'DELETE',self.PROFILES[provider]['calendar'].rstrip('/')+'/'+eid,item['id'])
+    async def send_mail(self,provider,to,subject,body,account_id=None):
+        if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
+        token,item=self._token(provider,account_id);self._require_scope(provider,item,'mail')
+        if provider=='google':
+            msg=EmailMessage(policy=email.policy.SMTP);msg['To']=to;msg['Subject']=subject;msg['From']=item.get('email','');msg.set_content(body);raw=base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip('=');payload={'raw':raw};return await self._request(provider,'POST','https://gmail.googleapis.com/gmail/v1/users/me/messages/send',item['id'],json=payload)
+        payload={'message':{'subject':subject,'body':{'contentType':'Text','content':body},'toRecipients':[{'emailAddress':{'address':to}}]}}
+        return await self._request(provider,'POST','https://graph.microsoft.com/v1.0/me/sendMail',item['id'],json=payload)
     async def refresh(self,provider,account_id=None):
         if provider not in self.PROFILES:raise ValueError('unsupported OAuth provider')
         item=self._account(provider,account_id);tokens=self.accounts.tokens(item['id']);refresh=tokens.get('refresh_token','');client_id=self.secrets.get(f'{provider}:client_id','') or self.secrets.get('oidc:client_id','')
@@ -43,9 +90,6 @@ class OAuthService:
         if not access and not refresh:return {'status':'ALREADY_REVOKED','account_id':item['id'],'provider':provider}
         if provider=='google':
             connected=self.accounts.for_provider('google')
-            # Google's documented revocation can invalidate access/refresh tokens
-            # issued to the OAuth project. With multiple connected Google accounts
-            # sharing this project, revoking one account is therefore unsafe.
             if len(connected)>1:return {'status':'PROVIDER_REVOCATION_BLOCKED_MULTI_ACCOUNT','account_id':item['id'],'provider':provider,'connected_accounts':len(connected),'reason':'Google project-level revocation could invalidate another connected account; local credentials were retained'}
             token=refresh or access
             async with httpx.AsyncClient(timeout=30) as c:r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
