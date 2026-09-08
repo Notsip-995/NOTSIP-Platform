@@ -23,6 +23,6 @@ class WorldModel:
         facts=[f for f in self.store.facts(100) if self._owner(f) in {None,actor}]
         return {'entities':entities,'relations':relations,'devices':self.store.devices(actor),'facts':facts}
     def upsert(self,eid,kind,name,data,owner=None):
-        payload=dict(data or {});payload.setdefault('owner',owner if owner is not None else None);self.store.entity(eid,kind,name,payload)
+        actor=current_actor() if owner is None else str(owner);payload=dict(data or {});payload['owner']=actor;self.store.entity(eid,kind,name,payload);return {'status':'SUCCESS','id':eid,'owner':actor}
     def relate(self,a,p,b,confidence=.8,source='system',owner=None):
-        self.store.relation(a,p,b,confidence,source);return {'subject':a,'predicate':p,'object':b,'owner':owner} if owner is not None else None
+        actor=current_actor() if owner is None else str(owner);self.store.relation(a,p,b,confidence,source);return {'subject':a,'predicate':p,'object':b,'owner':actor}
