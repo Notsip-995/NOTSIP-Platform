@@ -31,26 +31,30 @@ def attach(app, require_auth, store, web, agent, registry=None, events=None, set
         if not capability.strip():raise HTTPException(400,'capability is required')
         return router.select(capability.strip(),prefer_local=prefer_local)
     @app.post('/api/remote/compute')
-    async def remote_compute(payload:dict,_:None=Depends(require_auth)):
-        try:return await remote_compute.submit(str(payload.get('job_type','data_processing')),payload.get('payload') or {})
-        except AdapterUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+    async def remote_compute_route(payload:dict,_:None=Depends(require_auth)):
+        result=await agent.run_tool('remote_compute',{'job_type':str(payload.get('job_type','data_processing')),'payload':payload.get('payload') or {}})
+        if result.get('status')=='FAILURE' and 'remote compute adapter is not configured' in result.get('error',''):result['status']='BLOCKED_BY_EXTERNAL_ENVIRONMENT'
+        return result
     @app.get('/api/remote/sensing')
-    async def remote_sensing(query:dict,_:None=Depends(require_auth)):
-        try:return await remote_sensing.query(query)
-        except AdapterUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+    async def remote_sensing_route(query:dict,_:None=Depends(require_auth)):
+        result=await agent.run_tool('remote_sensing',{'params':query})
+        if result.get('status')=='FAILURE' and 'remote sensing adapter is not configured' in result.get('error',''):result['status']='BLOCKED_BY_EXTERNAL_ENVIRONMENT'
+        return result
     @app.post('/api/home/command')
     async def home_command(payload:dict,_:None=Depends(require_auth)):
-        try:return await home.command(str(payload.get('device_id','')),str(payload.get('action','')),payload.get('payload') or {})
-        except AdapterUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+        result=await agent.run_tool('home_command',{'device_id':str(payload.get('device_id','')),'action':str(payload.get('action','')),'payload':payload.get('payload') or {}})
+        if result.get('status')=='FAILURE' and 'home/building adapter is not configured' in result.get('error',''):result['status']='BLOCKED_BY_EXTERNAL_ENVIRONMENT'
+        return result
     @app.get('/api/biometrics/latest')
     async def biometric_latest(_:None=Depends(require_auth)):
-        try:return await biometrics.latest()
-        except AdapterUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc),'is_diagnosis':False}
+        result=await agent.run_tool('biometric_latest',{})
+        if result.get('status')=='FAILURE' and 'biometric telemetry adapter is not configured' in result.get('error',''):result['status']='BLOCKED_BY_EXTERNAL_ENVIRONMENT';result['is_diagnosis']=False
+        return result
     @app.get('/api/robots/{node_id}/status')
     async def robot_status(node_id:str,_:None=Depends(require_auth)): return robots.status(node_id)
     @app.post('/api/robots/{node_id}/command')
     async def robot_command(node_id:str,payload:dict,_:None=Depends(require_auth)):
-        return robots.command(node_id,str(payload.get('action','')),payload.get('payload') or {})
+        return await agent.run_tool('robot_command',{'node_id':node_id,'action':str(payload.get('action','')),'payload':payload.get('payload') or {}})
     if registry is not None:
         from .policy import Risk
         from .tools import Tool
