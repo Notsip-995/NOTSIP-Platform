@@ -31,10 +31,15 @@ def attach(app,require_auth,store,jobs):
         subtasks=data.get('subtasks') or []
         if not subtasks:
             return await live_agent.handle(task.get('objective',''))
-        # Convert decomposition records into durable workflow steps while retaining
-        # the original task metadata and persisted step-results on the parent task.
         workflow_data=dict(data)
-        workflow_data['steps']=[dict(step) for step in subtasks]
+        normalized_steps=[]
+        for step in subtasks:
+            if not isinstance(step,dict):raise ValueError('workflow subtask must be an object')
+            normalized=dict(step)
+            if 'dependencies' in normalized and 'depends_on' not in normalized:
+                normalized['depends_on']=list(normalized.pop('dependencies') or [])
+            normalized_steps.append(normalized)
+        workflow_data['steps']=normalized_steps
         workflow_data.setdefault('step_results',[])
         return await durable.run_task(dict(task,data=json.dumps(workflow_data)))
 
