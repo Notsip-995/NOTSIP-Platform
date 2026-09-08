@@ -44,6 +44,7 @@ from .external_domains import attach as attach_external_domains
 from .recovery_state_hardening import install_checkpoint_wrapper
 from .status_scope_hardening import attach as attach_status_scope_hardening
 from .browser_hardening import attach as attach_browser_hardening
+from .database_router import attach as attach_database_router
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -97,6 +98,7 @@ notifications=NotificationStore(DATA,store)
 attach_notification_hardening(app,events,notifications,_require)
 attach_status_scope_hardening(app,_require,store,policy,agent,settings,registry,web,emailc,auth)
 attach_browser_hardening(app,_require,agent,browser,registry)
+attach_database_router(app,_require,agent,registry)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
