@@ -132,6 +132,8 @@ class BackupManager:
             members=self._safe_members(z)
             if z.testzip() is not None:raise ValueError('backup archive is corrupt')
             stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent))
+            rollback=Path(tempfile.mkdtemp(prefix='notsip-rollback-',dir=self.root.parent))
+            changes=[]
             try:
                 for info in members:
                     target=(stage/info.filename).resolve()
@@ -142,10 +144,24 @@ class BackupManager:
                 for item in stage.iterdir():
                     target=self.root/item.name
                     if item.name=='backups':continue
-                    if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
-                    shutil.move(str(item),str(target))
-            finally:shutil.rmtree(stage,ignore_errors=True)
-        return {'status':'SUCCESS','restored':name,'restart_required':True}
+                    backup_target=rollback/item.name
+                    existed=target.exists()
+                    changes.append((target,backup_target,existed))
+                    if existed:shutil.move(str(target),str(backup_target))
+                    try:shutil.move(str(item),str(target))
+                    except Exception:
+                        if existed and backup_target.exists():shutil.move(str(backup_target),str(target))
+                        raise
+                return {'status':'SUCCESS','restored':name,'restart_required':True}
+            except Exception:
+                for target,backup_target,existed in reversed(changes):
+                    try:
+                        if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
+                        if existed and backup_target.exists():
+                            target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(backup_target),str(target))
+                    except Exception:pass
+                raise
+            finally:shutil.rmtree(stage,ignore_errors=True);shutil.rmtree(rollback,ignore_errors=True)
 
 class ApprovalStore:
     def __init__(self,root):self.path=Path(root)/'runtime'/'approvals.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
@@ -199,10 +215,7 @@ class Diagnostics:
         checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'}
         checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'}
         checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
-        core_names={'python','platform','storage','database','llm','scheduler','federation','security'}
-        optional_names=set(checks)-core_names
-        core_ok=all(checks[k]['ok'] for k in core_names if k in checks)
-        optional_missing=[k for k in optional_names if not checks[k]['ok']]
+        core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']]
         return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
 
 class Maintenance:
