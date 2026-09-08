@@ -17,9 +17,9 @@ class BusinessAdminAdapter:
     """Provider-neutral adapter for authorized enterprise/business administration."""
     def __init__(self,base_url='',token=''):
         self.base_url=str(base_url or '').strip().rstrip('/')
-        self.token=str(token or '')
+        self.token=str(token or '').strip()
     @property
-    def configured(self):return bool(self.base_url)
+    def configured(self):return bool(self.base_url and self.token)
     def _url(self,path=''):
         if not self.configured:raise BusinessAdminUnavailable('business administration adapter is not configured')
         parsed=urllib.parse.urlparse(self.base_url)
@@ -29,20 +29,18 @@ class BusinessAdminAdapter:
         clean='/' + str(path or '').lstrip('/')
         if '..' in urllib.parse.urlparse(clean).path.split('/'):raise ValueError('invalid business administration path')
         return self.base_url + clean
-    def _headers(self):
-        return {'Authorization':'Bearer '+self.token} if self.token else {}
+    def _headers(self):return {'Authorization':'Bearer '+self.token}
     async def query(self,operation='',params=None):
-        url=self._url('query')
-        payload={'operation':str(operation or 'status'),'params':params or {}}
+        url=self._url('query');payload={'operation':str(operation or 'status'),'params':params or {}}
         async with httpx.AsyncClient(timeout=20) as client:
             response=await client.post(url,json=payload,headers=self._headers());response.raise_for_status();data=response.json()
         return {'status':'SUCCESS','verified':False,'operation':payload['operation'],'data':data,'verification':{'transport':'HTTP 2xx','authoritative_state':bool(data.get('authoritative',False)),'independently_verified':bool(data.get('independently_verified',False))}}
     async def action(self,operation,payload=None):
-        url=self._url('action')
-        name=str(operation or '').strip()
+        url=self._url('action');name=str(operation or '').strip()
         if not name:raise ValueError('operation is required')
         body={'operation':name,'payload':payload or {}}
         async with httpx.AsyncClient(timeout=30) as client:
             response=await client.post(url,json=body,headers=self._headers());response.raise_for_status();data=response.json()
-        independently_verified=bool(data.get('independently_verified',False))
-        return {'status':'SUCCESS' if bool(data.get('success',True)) else 'FAILURE','verified':independently_verified,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','independently_verified':independently_verified}}
+        if 'success' not in data:return {'status':'UNKNOWN','verified':False,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','provider_success_field_present':False,'independently_verified':False}}
+        succeeded=bool(data.get('success'));independently_verified=bool(data.get('independently_verified',False))
+        return {'status':'SUCCESS' if succeeded else 'FAILURE','verified':independently_verified,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','provider_success_field_present':True,'independently_verified':independently_verified}}
