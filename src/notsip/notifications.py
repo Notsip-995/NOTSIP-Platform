@@ -1,4 +1,3 @@
-from __future__ import annotations
 import hashlib,json,threading,time,uuid
 from pathlib import Path
 from .actor_context import set_actor,reset_actor
@@ -7,16 +6,18 @@ class NotificationStore:
     def __init__(self,root,device_store=None,cooldown=900):
         self.path=Path(root)/'runtime'/'notifications.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock();self.device_store=device_store;self.cooldown=max(60,int(cooldown))
     def _load(self):
-        try:return json.loads(self.path.read_text(encoding='utf-8'))
-        except Exception:return {}
+        if not self.path.exists():return {}
+        try:data=json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError) as exc:raise RuntimeError('notification store is corrupt; refusing to treat it as empty') from exc
+        if not isinstance(data,dict):raise RuntimeError('notification store has invalid structure')
+        return data
     def _save(self,data):
         tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2,sort_keys=True),encoding='utf-8');tmp.replace(self.path)
     def create(self,actor,title,body,priority='IMPORTANT',reason='',source='intelligence',dedupe_key=''):
-        actor=str(actor or 'primary-user').strip() or 'primary-user';dedupe=dedupe_key or f'{actor}:{title}:{body}'
-        key=hashlib.sha256(dedupe.encode()).hexdigest();now=time.time()
+        actor=str(actor or 'primary-user').strip() or 'primary-user';dedupe=dedupe_key or f'{title}:{body}';key=hashlib.sha256(f'{actor}\0{dedupe}'.encode('utf-8')).hexdigest();now=time.time()
         with self.lock:
             data=self._load();existing=data.get(key)
-            if existing and now-float(existing.get('created_at',0))<self.cooldown:
+            if existing and existing.get('actor')==actor and now-float(existing.get('created_at',0))<self.cooldown:
                 existing['last_seen']=now;self._save(data);return existing
             item={'id':uuid.uuid4().hex,'actor':actor,'title':str(title),'body':str(body),'priority':str(priority),'reason':str(reason),'source':str(source),'created_at':now,'last_seen':now,'acknowledged':False,'dedupe_key':key}
             data[key]=item;self._save(data)
