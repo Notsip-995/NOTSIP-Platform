@@ -22,16 +22,17 @@ class ResourceRouter:
 class RobotGateway:
     REQUIRED={'status','sensors','power','navigation','control','communication','diagnostics','safety'}
     def __init__(self,store,router=None):self.store=store;self.router=router or ResourceRouter(store)
+    def _placeholder(self):return '%s' if getattr(self.store,'_backend',None) else '?'
     def _require_owner(self,node_id,owner=None):
         actor=current_actor() if owner is None else str(owner)
         if not self.store.device_owned_by(node_id,actor):raise PermissionError('robot node is not owned by current actor')
         return actor
     def register_schema(self,node_id,capabilities,*,location=None,permissions=None,owner=None):
-        actor=self._require_owner(node_id,owner);row=self.store.row('SELECT id,data FROM devices WHERE id=?',(node_id,))
+        actor=self._require_owner(node_id,owner);p=self._placeholder();row=self.store.row(f'SELECT id,data FROM devices WHERE id={p}',(node_id,))
         if not row:raise KeyError(node_id)
-        data=json.loads(row.get('data') or '{}');data.update({'robot_capabilities':sorted(set(capabilities or [])),'location':location,'permissions':permissions or [],'owner':actor});self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps(data),node_id));return data
+        data=json.loads(row.get('data') or '{}');data.update({'robot_capabilities':sorted(set(capabilities or [])),'location':location,'permissions':permissions or [],'owner':actor});self.store.exec(f'UPDATE devices SET data={p} WHERE id={p}',(json.dumps(data),node_id));return data
     def status(self,node_id,owner=None):
-        actor=self._require_owner(node_id,owner);row=self.store.row('SELECT id,name,platform,status,data,last_seen FROM devices WHERE id=?',(node_id,))
+        actor=self._require_owner(node_id,owner);p=self._placeholder();row=self.store.row(f'SELECT id,name,platform,status,data,last_seen FROM devices WHERE id={p}',(node_id,))
         if not row:raise KeyError(node_id)
         data=json.loads(row.get('data') or '{}');lease_expires=data.get('lease_expires');status=row['status']
         if status!='REVOKED' and lease_expires is not None and float(lease_expires)<=time.time():status='STALE'
