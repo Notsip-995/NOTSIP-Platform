@@ -11,7 +11,12 @@ class Web:
     def enabled(self):return bool(self._key)
     async def search(self,q,count=5):
         if not self.enabled:raise RuntimeError('web search not configured')
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.get('https://api.search.brave.com/res/v1/web/search',params={'q':q,'count':count},headers={'Accept':'application/json','X-Subscription-Token':self._key});r.raise_for_status();d=r.json()
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
+            r=await c.get('https://api.search.brave.com/res/v1/web/search',params={'q':q,'count':count},headers={'Accept':'application/json','X-Subscription-Token':self._key})
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('web search provider redirect rejected')
+            r.raise_for_status();r.raise_for_status();
+            if len(r.content)>5*1024*1024:raise RuntimeError('web search response exceeded safety limit')
+            d=r.json()
         return [{'title':x.get('title'),'url':x.get('url'),'description':x.get('description')} for x in d.get('web',{}).get('results',[])]
 class Email:
     def __init__(self,smtp_host='',smtp_port=587,imap_host='',username='',password=''):self.smtp_host=smtp_host;self.smtp_port=int(smtp_port);self.imap_host=imap_host;self.username=username;self.password=password
@@ -63,14 +68,30 @@ class OAuth:
     def __init__(self,authorize='',token='',client_id='',client_secret='',redirect='',scopes=''):self.authorize=authorize;self.token=token;self.client_id=client_id;self.client_secret=client_secret;self.redirect=redirect;self.scopes=scopes
     @property
     def configured(self):return bool(self.authorize and self.token and self.client_id and self.redirect)
+    @staticmethod
+    def _validate_endpoint(url):
+        parsed=urllib.parse.urlparse(str(url).strip())
+        if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password:raise ValueError('OAuth endpoint must use HTTPS without embedded credentials')
+        if parsed.query or parsed.fragment:raise ValueError('OAuth endpoint must not contain query or fragment')
+        try:
+            addrs=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:raise ValueError(f'OAuth endpoint host resolution failed: {parsed.hostname}') from exc
+        for addr in addrs:
+            ip=ipaddress.ip_address(addr[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:raise ValueError('OAuth endpoint resolved to a non-public address')
     def authorization_url(self,state):
         if not self.configured:raise RuntimeError('OAuth not configured')
-        return self.authorize+'?'+urllib.parse.urlencode({'client_id':self.client_id,'redirect_uri':self.redirect,'response_type':'code','scope':self.scopes,'state':state})
+        self._validate_endpoint(self.authorize);return self.authorize+'?'+urllib.parse.urlencode({'client_id':self.client_id,'redirect_uri':self.redirect,'response_type':'code','scope':self.scopes,'state':state})
     async def exchange(self,code):
         if not self.configured:raise RuntimeError('OAuth not configured')
-        data={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect}
+        self._validate_endpoint(self.token);data={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect}
         if self.client_secret:data['client_secret']=self.client_secret
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.post(self.token,data=data);r.raise_for_status();return r.json()
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
+            r=await c.post(self.token,data=data)
+            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth token endpoint redirect rejected')
+            r.raise_for_status()
+            if len(r.content)>10*1024*1024:raise RuntimeError('OAuth token response exceeded safety limit')
+            return r.json()
 def _public_host(host):
     try:
         if host.lower() in {'localhost','localhost.localdomain'}:return False
