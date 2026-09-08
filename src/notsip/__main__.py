@@ -36,8 +36,6 @@ def _is_loopback_bind(host:str)->bool:
 
 
 def _validate_bind_security(host:str)->None:
-    # An empty API key deliberately supports local-only development/setup. Never
-    # allow the same unauthenticated mode to expose NOTSIP on a LAN/WAN bind.
     if not settings.api_key and settings.auth_mode=='api_key' and not _is_loopback_bind(host):
         raise RuntimeError('refusing unauthenticated non-loopback bind; configure NOTSIP_API_KEY or OIDC before exposing NOTSIP remotely')
 
@@ -68,6 +66,14 @@ def main()->None:
         if getattr(sys,'frozen',False):os._exit(0)
         return
     try:
+        if getattr(sys,'frozen',False):
+            try:
+                from notsip.update_recovery import reconcile_frozen_update
+                recovery=reconcile_frozen_update(Path(settings.data_dir),Path(sys.executable),getattr(settings,'windows_publisher_thumbprint',''))
+                if recovery.get('status')=='ROLLED_BACK':print(f"NOTSIP update recovery restored {recovery.get('backup')}")
+                elif recovery.get('status')=='RECOVERY_UNAVAILABLE':raise RuntimeError('previous NOTSIP binary is invalid and no valid signed rollback binary is available')
+            except RuntimeError:raise
+            except Exception as exc:raise RuntimeError(f'NOTSIP update recovery failed: {exc}') from exc
         host=settings.host
         _validate_bind_security(host)
         port=_select_port(host,settings.port)
