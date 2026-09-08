@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, os, shutil, subprocess, sys, time
+import hashlib, json, os, shutil, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
@@ -31,7 +31,15 @@ class UpdateManager:
         if r.status_code in (401,403):return {'available':False,'reason':'GitHub release access denied','status_code':r.status_code}
         r.raise_for_status();d=r.json();tag=d.get('tag_name','');current=self._version_tuple(__version__);latest=self._version_tuple(tag)
         if not current or not latest:return {'available':False,'reason':'release version is not semantic','tag':tag}
-        return {'available':latest>current,'current_version':__version__,'tag':tag,'name':d.get('name'),'url':d.get('html_url'),'assets':[{'name':a['name'],'size':a['size'],'url':a['browser_download_url']} for a in d.get('assets',[]) if str(a.get('name','')).lower().endswith('.exe')]}
+        assets=[]
+        release_assets=d.get('assets',[])
+        by_name={str(a.get('name','')):a for a in release_assets}
+        for a in release_assets:
+            name=str(a.get('name',''))
+            if not name.lower().endswith('.exe'):continue
+            sha_asset=by_name.get(name+'.sha256')
+            assets.append({'name':name,'size':a['size'],'url':a['browser_download_url'],'sha256_url':sha_asset.get('browser_download_url') if sha_asset else None,'publisher_thumbprint_required':bool(getattr(self.settings,'windows_publisher_thumbprint',''))})
+        return {'available':latest>current,'current_version':__version__,'tag':tag,'name':d.get('name'),'url':d.get('html_url'),'assets':assets}
     async def download(self,asset_url:str,sha256:str=''):
         if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
@@ -42,11 +50,28 @@ class UpdateManager:
         digest=hashlib.sha256(target.read_bytes()).hexdigest()
         if digest.lower()!=sha256.lower():target.unlink(missing_ok=True);raise ValueError('update SHA-256 verification failed')
         return {'status':'DOWNLOADED','path':str(target),'sha256':digest}
+    @staticmethod
+    def _powershell_quote(value):return "'"+str(value).replace("'","''")+"'"
+    def _verify_authenticode(self,new_exe:Path):
+        thumbprint=str(getattr(self.settings,'windows_publisher_thumbprint','')).replace(' ','').upper()
+        if os.name!='nt':return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','reason':'Windows Authenticode verification requires Windows'}
+        if not thumbprint:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','reason':'windows_publisher_thumbprint is not configured'}
+        command="$s=Get-AuthenticodeSignature -FilePath $args[0]; [pscustomobject]@{Status=[string]$s.Status;Thumbprint=[string]$s.SignerCertificate.Thumbprint;Subject=[string]$s.SignerCertificate.Subject}|ConvertTo-Json -Compress"
+        r=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command,'--',str(new_exe)],capture_output=True,text=True,timeout=15)
+        if r.returncode!=0:raise RuntimeError('Authenticode verification command failed: '+r.stderr[-2000:])
+        try:data=json.loads(r.stdout)
+        except json.JSONDecodeError as exc:raise RuntimeError('Authenticode verification returned invalid data') from exc
+        actual=str(data.get('Thumbprint','')).replace(' ','').upper();status=str(data.get('Status',''))
+        if status!='Valid' or actual!=thumbprint:raise RuntimeError(f'Authenticode verification failed: status={status!r}, thumbprint={actual!r}')
+        return {'status':'VALID','thumbprint':actual,'subject':data.get('Subject','')}
     def install_and_verify(self,new_exe:Path):
         if not self.frozen:raise RuntimeError('binary self-update is only available from a frozen installation')
         current=self.current_exe
         if not current.exists():raise FileNotFoundError(current)
+        signer=self._verify_authenticode(new_exe)
+        if signer.get('status')!='VALID':raise RuntimeError(signer.get('reason','publisher verification unavailable'))
         backup=self.dir/f'previous-{int(time.time())}.exe';shutil.copy2(current,backup)
         helper=self.dir/f'apply-{int(time.time())}.ps1'
-        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force "{new_exe}" "{current}"\nStart-Process "{current}"\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest "{self.health_url}" -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force "{backup}" "{current}"; Start-Process "{current}"; exit 2 }}\n''',encoding='utf-8')
-        subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True}
+        new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url)
+        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force {new_s} {cur_s}\nStart-Process {cur_s}\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s}; exit 2 }}\n''',encoding='utf-8')
+        subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer}
