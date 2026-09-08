@@ -33,8 +33,19 @@ def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth
         actor=current_actor();n=max(1,min(int(limit),500));rows=[x for x in store.facts(n) if _own_fact(x,actor,store)];return {'facts':rows[:n]}
     @app.get('/api/remote/satellite')
     async def satellite_route(bbox:str,start:str,end:str,scene_id:str='',_:None=Depends(require_auth)):
-        # Authorization is server-side: the caller cannot self-attest with a query parameter.
         if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required for satellite access')
         if not str(getattr(settings,'remote_sensing_url','')).strip() or not str(getattr(settings,'remote_sensing_token','')).strip():
             return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'authorized remote-sensing provider is not configured'}
-        return await agent.run_tool('satellite_query',{'bbox':bbox,'start':start,'end':end,'scene_id':scene_id,'authorized':True})
+        return await agent.run_tool('satellite_query',{'bbox':bbox,'start':start,'end':end,'scene_id':scene_id})
+    if registry is not None:
+        from .external_adapters import RemoteSensingAdapter,AdapterUnavailable
+        from .policy import Risk
+        from .tools import Tool
+        from .execution_gate import ToolExecutionGate
+        sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''))
+        def satellite_query(bbox,start,end,scene_id=''):
+            if current_actor()!='primary-user':raise PermissionError('primary administrative actor required for satellite access')
+            if not sensing.configured:raise AdapterUnavailable('authorized remote-sensing provider is not configured')
+            return sensing.satellite_query(bbox,start,end,scene_id,authorized=True)
+        registry.add(Tool('satellite_query','Query an authorized satellite/remote-sensing provider; lawful access is controlled server-side.','INTERNET_SEARCH',Risk.HIGH,{'type':'object','properties':{'bbox':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'scene_id':{'type':'string'}},'required':['bbox','start','end']},satellite_query))
+        ToolExecutionGate.wrap_registry(registry)
