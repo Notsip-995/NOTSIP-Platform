@@ -1,7 +1,17 @@
 from __future__ import annotations
-import asyncio, base64, json, time
+import asyncio,base64,ipaddress,json,socket,time,urllib.parse
 from http.cookies import SimpleCookie
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket,WebSocketDisconnect
+
+
+def _validate_stream_endpoint(url):
+    parsed=urllib.parse.urlsplit(str(url).strip())
+    if parsed.scheme not in {'wss','ws'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('streaming STT endpoint must use ws/wss without credentials')
+    if parsed.query or parsed.fragment:raise ValueError('streaming STT endpoint must not contain query or fragment')
+    infos=socket.getaddrinfo(parsed.hostname,parsed.port or (443 if parsed.scheme=='wss' else 80),type=socket.SOCK_STREAM);ips={ipaddress.ip_address(info[4][0]) for info in infos}
+    if parsed.scheme=='ws' and not all(ip.is_loopback for ip in ips):raise ValueError('ws streaming endpoints are restricted to loopback addresses')
+    if parsed.scheme=='wss' and any(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved for ip in ips):raise ValueError('streaming STT endpoint resolved to a non-public address')
+    return parsed
 
 async def _relay_stream(sock,settings):
     try:
@@ -10,10 +20,12 @@ async def _relay_stream(sock,settings):
         await sock.send_json({'type':'error','error':'websockets client dependency is required'});return
     if not settings.stt_stream_url:
         await sock.send_json({'type':'mode','mode':'buffered'});return
+    try:_validate_stream_endpoint(settings.stt_stream_url)
+    except ValueError as exc:await sock.send_json({'type':'error','error':str(exc)});return
     headers={}
     if settings.stt_api_key:headers['Authorization']='Bearer '+settings.stt_api_key
     try:
-        async with websockets.connect(settings.stt_stream_url,additional_headers=headers,max_size=32*1024*1024) as upstream:
+        async with websockets.connect(settings.stt_stream_url,additional_headers=headers,max_size=32*1024*1024,proxy=None) as upstream:
             await upstream.send(json.dumps({'type':'start','model':settings.stt_model,'language':settings.stt_language}))
             async def producer():
                 while True:
@@ -27,9 +39,10 @@ async def _relay_stream(sock,settings):
                     if isinstance(msg,bytes):await sock.send_bytes(msg)
                     else:
                         try:data=json.loads(msg)
-                        except Exception:data={'type':'transcript','text':str(msg)}
+                        except json.JSONDecodeError:data={'type':'transcript','text':str(msg)}
                         await sock.send_json(data)
             await asyncio.gather(producer(),consumer())
+    except WebSocketDisconnect:raise
     except Exception as e:await sock.send_json({'type':'error','error':f'streaming STT failed: {e}'})
 
 def _ws_authenticated(sock,settings):
@@ -67,12 +80,14 @@ def attach(app,media,settings,auth_token=''):
                     continue
                 text=message.get('text') or ''
                 if not text:continue
-                control=json.loads(text)
-                if control.get('type')=='start':chunks=[];mime=control.get('mime','audio/webm');started=time.time();await sock.send_json({'type':'ready','mode':'buffered'})
+                try:control=json.loads(text)
+                except json.JSONDecodeError:await sock.send_json({'type':'error','error':'invalid control JSON'});continue
+                if control.get('type')=='start':
+                    mime=str(control.get('mime','audio/webm'));chunks=[];started=time.time();await sock.send_json({'type':'ready','mode':'buffered'})
                 elif control.get('type')=='end':
                     if not chunks:await sock.send_json({'type':'error','error':'no audio received'});continue
                     result=await media.transcribe(b''.join(chunks),mime,control.get('language',settings.stt_language));await sock.send_json({'type':'transcript','text':result['text'],'elapsed':time.time()-started});chunks=[]
-        except WebSocketDisconnect:pass
+        except WebSocketDisconnect:raise
 
     @app.websocket('/ws/perception')
     async def perception(sock:WebSocket):
@@ -81,7 +96,8 @@ def attach(app,media,settings,auth_token=''):
         await sock.accept()
         try:
             while True:
-                payload=json.loads(await sock.receive_text());raw=base64.b64decode(payload['image_base64'],validate=True)
+                try:payload=json.loads(await sock.receive_text());raw=base64.b64decode(payload['image_base64'],validate=True)
+                except (json.JSONDecodeError,KeyError):await sock.send_json({'type':'error','error':'invalid perception payload'});continue
                 if len(raw)>10*1024*1024:await sock.send_json({'type':'error','error':'image exceeds 10MB'});continue
                 result=await media.perceive(raw,payload.get('prompt','Describe only observable evidence.'),payload.get('mime','image/jpeg'));await sock.send_json(result)
-        except WebSocketDisconnect:pass
+        except WebSocketDisconnect:raise
