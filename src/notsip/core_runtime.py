@@ -46,6 +46,7 @@ from .status_scope_hardening import attach as attach_status_scope_hardening
 from .browser_hardening import attach as attach_browser_hardening
 from .database_router import attach as attach_database_router
 from .threat_assessment import ThreatAssessor
+from .workspace_scope_hardening import attach as attach_workspace_scope_hardening
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
@@ -90,7 +91,7 @@ attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
 attach_advanced_intelligence(app,_require,store,web,agent,registry,events,settings)
 attach_linux_routes(app,_require,agent,registry,settings)
-attach_business_routes(app,_require,agent,registry,settings)
+attach_business_routes(app,_require,agent,registry,events,settings) if False else attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
 attach_session_hardening(app,_require,agent,DATA)
 attach_task_hardening(app,_require,store,jobs)
@@ -113,6 +114,7 @@ async def threat_assessment(payload:dict,_:None=Depends(_require)):
     indicators=payload.get('indicators') or []
     if not isinstance(indicators,list):raise HTTPException(400,'indicators must be an array')
     result=_threat.assess(indicators);result['actor']=current_actor();return result
+attach_workspace_scope_hardening(app,registry,DATA)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
