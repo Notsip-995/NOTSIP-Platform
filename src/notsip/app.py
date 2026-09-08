@@ -22,6 +22,7 @@ from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
+from .actor_context import current_actor
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
@@ -74,7 +75,7 @@ def _config_admin(pending_id,keys):
 if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize and apply security-sensitive configuration changes from an encrypted pending record.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'pending_id':{'type':'string'},'keys':{'type':'array'}},'required':['pending_id','keys']},_config_admin,True))
 if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
 if registry.get('native_voice_start') is None:registry.add(Tool('native_voice_start','Start the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.start()))
-if registry.get('native_voice_stop') is None:registry.add(Tool('native_voice_stop','Stop the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.stop()))
+if registry.get('native_voice_stop') is None:registry.add(Tool('native_voice_stop','Stop the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object', 'properties':{}},lambda:native_voice.stop()))
 ToolExecutionGate.wrap_registry(registry)
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval)
 attach_perception(app,settings,win,media,store,events)
@@ -172,7 +173,7 @@ async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_au
     if not item:raise HTTPException(404,'approval not found')
     ctx=item.get('context') or {}
     actor=str(ctx.get('actor','primary-user'))
-    if actor!=__import__('.actor_context',fromlist=['current_actor']).current_actor():raise HTTPException(403,'approval belongs to a different actor')
+    if actor!=current_actor():raise HTTPException(403,'approval belongs to a different actor')
     audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
     if item['status']=='APPROVED' and payload.get('execute',True):
         name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
