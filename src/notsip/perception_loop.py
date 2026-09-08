@@ -3,7 +3,7 @@ import asyncio,hashlib,platform,time
 from pathlib import Path
 
 class ContinuousPerception:
-    def __init__(self,settings,windows,media,store,events,world=None,user_id='primary-user'):
+    def __init__(self,settings,windows,media,store,events,world=None,user_id='system:desktop'):
         self.settings=settings;self.windows=windows;self.media=media;self.store=store;self.events=events;self.world=world;self.user_id=user_id;self.last_hash='';self.running=True;self.last_observation=0.0
     async def once(self):
         if not getattr(self.settings,'perception_enabled',False) or not getattr(self.settings,'vision_enabled',False):return {'status':'DISABLED'}
@@ -13,12 +13,12 @@ class ContinuousPerception:
         if digest==self.last_hash:return {'status':'UNCHANGED','frame':result['path'],'sha256':digest}
         self.last_hash=digest;self.last_observation=time.time()
         obs=await self.media.perceive(raw,'Describe only visible desktop evidence. Identify UI state changes, errors, dialogs, and actionable facts without guessing.','image/png');text=str(obs.get('observation',''))
-        provenance={'sha256':digest,'timestamp':self.last_observation,'frame':obs.get('frame'),'source':'desktop-vision'}
+        provenance={'sha256':digest,'timestamp':self.last_observation,'frame':obs.get('frame'),'source':'desktop-vision','scope':'system:desktop'}
         self.store.remember(self.user_id,'perception',text,.65,'desktop-vision',provenance)
         self.store.fact(text,'desktop-vision',obs.get('frame',''),.65,provenance)
-        if self.world is not None:self.world.upsert('computer:desktop','screen','Primary desktop',{'observation':text,'frame':obs.get('frame'),'sha256':digest,'observed_at':self.last_observation})
+        if self.world is not None:self.world.upsert('computer:desktop','screen','Primary desktop',{'observation':text,'frame':obs.get('frame'),'sha256':digest,'observed_at':self.last_observation},owner=None)
         from .events import Event
-        event_payload=dict(obs);event_payload.update({'sha256':digest,'observed_at':self.last_observation,'world_entity':'computer:desktop'})
+        event_payload=dict(obs);event_payload.update({'sha256':digest,'observed_at':self.last_observation,'world_entity':'computer:desktop','scope':'system:desktop'})
         await self.events.publish(Event('perception.observed',event_payload,'desktop-perception'));return event_payload
     async def loop(self,interval=None):
         delay=max(2,int(interval or getattr(self.settings,'perception_interval',10)))
