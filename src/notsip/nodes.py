@@ -32,6 +32,8 @@ class NodeRegistry:
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
         token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token,owner=actor);data={'owner':actor,'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps(data),node_id));self._publish_world(node_id,data,actor);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds,'owner':actor}
     def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature='',owner=None):
+        existing=self.store.row('SELECT status FROM devices WHERE id=?',(node_id,))
+        if existing and str(existing.get('status','')).upper()=='REVOKED':raise PermissionError('revoked federation node cannot heartbeat')
         if not self.store.device_token_valid(node_id,token):raise PermissionError('invalid node token')
         actor=self.store.device_owner(node_id)
         if not actor:raise PermissionError('federation node ownership is unavailable')
@@ -60,8 +62,7 @@ class RecoveryManager:
     def checkpoint(self,state):
         name=f'checkpoint-{int(time.time())}-{uuid.uuid4().hex[:8]}.json';p=self.dir/name;payload=json.dumps(state,indent=2,sort_keys=True);digest=hashlib.sha256(payload.encode()).hexdigest();tmp=p.with_suffix('.tmp');tmp.write_text(payload,encoding='utf-8');tmp.replace(p);side=p.with_suffix('.sha256');tmp_side=side.with_suffix('.tmp');tmp_side.write_text(digest+'  '+name+'\n',encoding='utf-8');tmp_side.replace(side);return str(p.relative_to(self.root))
     def _files(self):return sorted(self.dir.glob('checkpoint-*.json'),key=lambda p:p.stat().st_mtime,reverse=True)
-    def latest_path(self):
-        files=self._files();return files[0] if files else None
+    def latest_path(self):files=self._files();return files[0] if files else None
     def _load_verified(self,p):
         raw=p.read_text(encoding='utf-8');side=p.with_suffix('.sha256')
         if not side.exists():raise RuntimeError('recovery checkpoint integrity manifest is missing')
@@ -75,8 +76,7 @@ class RecoveryManager:
             except Exception as exc:invalid.append({'path':str(p.relative_to(self.root)),'reason':str(exc)})
         if invalid:raise RuntimeError('no verified recovery checkpoint is available')
         return None,None,[]
-    def latest(self):
-        p=self.latest_path();return self._load_verified(p) if p else None
+    def latest(self):p=self.latest_path();return self._load_verified(p) if p else None
     def verify_latest(self):
         files=self._files()
         if not files:return {'valid':False,'reason':'no recovery checkpoint available'}
