@@ -40,7 +40,8 @@ class Store:
         if self._backend:return self._backend.memories(uid,q,limit)
         if q:
             try:return self.rows('SELECT m.kind,m.content,m.weight,m.source,m.provenance,m.ts FROM memory_fts f JOIN memories m ON m.id=f.rowid WHERE m.user_id=? AND f.content MATCH ? ORDER BY rank LIMIT ?',(uid,q.replace('"',' '),limit))
-            except sqlite3.OperationalError:pass
+            except sqlite3.OperationalError as exc:
+                if 'malformed match expression' not in str(exc).lower() and 'syntax error' not in str(exc).lower():raise
         return self.rows('SELECT kind,content,weight,source,provenance,ts FROM memories WHERE user_id=? ORDER BY weight DESC,ts DESC LIMIT ?',(uid,limit))
     def entity(self,eid,kind,name,data):
         if self._backend:return self._backend.entity(eid,kind,name,data)
