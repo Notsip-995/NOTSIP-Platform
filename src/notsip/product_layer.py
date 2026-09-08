@@ -89,8 +89,7 @@ class AuditLog:
         try:
             for raw in self.path.read_text(encoding='utf-8').splitlines():
                 if not raw.strip():continue
-                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''))
-                unsigned=dict(row);unsigned.pop('digest',None);canonical=json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str);actual=hashlib.sha256(canonical.encode()).hexdigest()
+                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''));unsigned=dict(row);unsigned.pop('digest',None);canonical=json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str);actual=hashlib.sha256(canonical.encode()).hexdigest()
                 if stored_prev!=previous or digest!=actual:return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
                 previous=digest;entries+=1
             return {'valid':True,'entries':entries,'head':previous}
@@ -107,7 +106,8 @@ class BackupManager:
             for f in self.root.rglob('*'):
                 if not f.is_file():continue
                 rel=f.relative_to(self.root)
-                if rel.parts and rel.parts[0]=='backups':continue
+                if rel.parts and rel.parts[0] in {'backups','master.key'}:continue
+                if rel.as_posix().startswith('runtime/') and rel.name=='master.key':continue
                 if not include_logs and rel.as_posix().startswith('runtime/') and rel.suffix=='.jsonl':continue
                 z.write(f,rel.as_posix());count+=1
         return {'status':'SUCCESS','path':str(p.relative_to(self.root)),'files':count,'bytes':p.stat().st_size}
@@ -131,9 +131,7 @@ class BackupManager:
         with zipfile.ZipFile(p) as z:
             members=self._safe_members(z)
             if z.testzip() is not None:raise ValueError('backup archive is corrupt')
-            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent))
-            rollback=Path(tempfile.mkdtemp(prefix='notsip-rollback-',dir=self.root.parent))
-            changes=[]
+            stage=Path(tempfile.mkdtemp(prefix='notsip-restore-',dir=self.root.parent));rollback=Path(tempfile.mkdtemp(prefix='notsip-rollback-',dir=self.root.parent));changes=[]
             try:
                 for info in members:
                     target=(stage/info.filename).resolve()
@@ -144,9 +142,7 @@ class BackupManager:
                 for item in stage.iterdir():
                     target=self.root/item.name
                     if item.name=='backups':continue
-                    backup_target=rollback/item.name
-                    existed=target.exists()
-                    changes.append((target,backup_target,existed))
+                    backup_target=rollback/item.name;existed=target.exists();changes.append((target,backup_target,existed))
                     if existed:shutil.move(str(target),str(backup_target))
                     try:shutil.move(str(item),str(target))
                     except Exception:
@@ -157,8 +153,7 @@ class BackupManager:
                 for target,backup_target,existed in reversed(changes):
                     try:
                         if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
-                        if existed and backup_target.exists():
-                            target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(backup_target),str(target))
+                        if existed and backup_target.exists():target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(backup_target),str(target))
                     except Exception:pass
                 raise
             finally:shutil.rmtree(stage,ignore_errors=True);shutil.rmtree(rollback,ignore_errors=True)
@@ -201,22 +196,29 @@ class Diagnostics:
         if self.store:
             try:self.store.row('SELECT 1');checks['database']={'ok':True,'detail':'connected'}
             except Exception as e:checks['database']={'ok':False,'detail':str(e)}
-        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'}
-        checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'}
-        checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'}
-        checks['vision']={'ok':bool(s and s.vision_enabled),'detail':'enabled' if s and s.vision_enabled else 'disabled'}
-        checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'}
-        checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'}
-        checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'}
-        checks['browser']={'ok':bool(getattr(s,'browser_enabled',True)),'detail':'enabled' if getattr(s,'browser_enabled',True) else 'disabled'}
-        checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'}
-        checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'}
-        checks['scheduler']={'ok':True,'detail':'durable scheduler available'}
-        checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'}
-        checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'}
-        checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
+        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'};checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'};checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'};checks['vision']={'ok':bool(s and s.vision_enabled),'detail':'enabled' if s and s.vision_enabled else 'disabled'};checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'};checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'};checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'};checks['browser']={'ok':bool(getattr(s,'browser_enabled',True)),'detail':'enabled' if getattr(s,'browser_enabled',True) else 'disabled'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'};checks['scheduler']={'ok':True,'detail':'durable scheduler available'};checks['federation']={'ok':bool(self.nodes),'detail':'node registry available' if self.nodes else 'not initialized'};checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'};checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
         core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']]
         return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
+
+class CapabilityProbe:
+    """Report configured and available product capabilities without inventing readiness."""
+    def __init__(self,settings=None,store=None,provider=None,web=None,email=None):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
+    def snapshot(self):
+        s=self.settings
+        checks={
+            'llm': bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),
+            'web_search': bool(self.web and self.web.enabled),
+            'email': bool(self.email and self.email.enabled),
+            'android': bool(self.store and self.store.devices()),
+            'windows_uia': platform.system()=='Windows',
+            'database': bool(self.store),
+            'stt': bool(s and s.stt_base_url and s.stt_model),
+            'tts': bool(s and s.tts_base_url and s.tts_model),
+            'vision': bool(s and s.vision_enabled),
+            'browser': bool(getattr(s,'browser_enabled',True)),
+            'federation': bool(getattr(s,'node_lease_seconds',0)),
+        }
+        return {'capabilities':checks,'available':[k for k,v in checks.items() if v],'unavailable':[k for k,v in checks.items() if not v],'timestamp':time.time()}
 
 class Maintenance:
     def __init__(self,root):self.root=Path(root).resolve()
