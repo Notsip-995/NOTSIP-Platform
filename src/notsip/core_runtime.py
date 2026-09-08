@@ -26,11 +26,9 @@ from .event_journal import EventJournal
 from .advanced_intelligence import attach as attach_advanced_intelligence
 from .event_reasoning_loop import EventReasoningLoop
 from .linux_routes import attach as attach_linux_routes
+from .sensor_ingress import attach as attach_sensor_ingress
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
-# runtime_prod constructs the durable scheduler before core_runtime loads the
-# canonical event bus; bind the scheduler explicitly so completed/failure events
-# enter the same world-event stream consumed by NOTSIP's reasoning loop.
 jobs.events=events
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
@@ -48,6 +46,7 @@ install_state_hardening(store,jobs,app)
 calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
 attach_perception(app,settings,win=__import__('notsip.app',fromlist=['win']).win,media=media,store=store,events=events,world=__import__('notsip.app',fromlist=['world']).world)
+attach_sensor_ingress(app,store,__import__('notsip.app',fromlist=['world']).world,events)
 journal=EventJournal(DATA)
 _original_publish=events.publish
 async def _journaled_publish(event):journal.append(event);return await _original_publish(event)
