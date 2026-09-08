@@ -1,7 +1,22 @@
 from __future__ import annotations
-import base64, ctypes, hashlib, json, os, secrets, time, threading
+import base64,ctypes,hashlib,ipaddress,json,os,secrets,socket,time,threading
 from pathlib import Path
+from urllib.parse import urlsplit
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+def _require_public_https(url):
+    parsed=urlsplit(str(url).strip())
+    if parsed.scheme!='https' or not parsed.hostname:raise ValueError('OIDC endpoint must use HTTPS')
+    if parsed.username or parsed.password:raise ValueError('OIDC endpoint must not contain credentials')
+    try:
+        infos=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f'OIDC endpoint host resolution failed: {parsed.hostname}') from exc
+    for info in infos:
+        ip=ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:raise ValueError('OIDC endpoint resolved to a non-public address')
+    return parsed
 
 class SecretStore:
     def __init__(self,root:Path):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.path=self.root/'secrets.enc';self._lock=threading.RLock();self._key=self._load_or_create_key()
@@ -70,30 +85,41 @@ class OIDCProvider:
     def configured(self):return bool(self.issuer and self.client_id and self.redirect_uri)
     async def discover(self):
         if not self.configured:raise RuntimeError('OIDC not configured')
+        _require_public_https(self.issuer)
         import httpx
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.get(self.issuer+'/.well-known/openid-configuration');r.raise_for_status();self.metadata=r.json();return self.metadata
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.get(self.issuer+'/.well-known/openid-configuration');r.raise_for_status();metadata=r.json()
+        for key in ('authorization_endpoint','token_endpoint','userinfo_endpoint','jwks_uri'):
+            endpoint=metadata.get(key)
+            if endpoint:_require_public_https(endpoint)
+        metadata_issuer=str(metadata.get('issuer') or self.issuer).rstrip('/')
+        _require_public_https(metadata_issuer)
+        self.metadata=metadata;return self.metadata
+    def _endpoint(self,key):
+        endpoint=str((self.metadata or {}).get(key) or '').strip()
+        if not endpoint:raise RuntimeError(f'OIDC metadata missing {key}')
+        _require_public_https(endpoint);return endpoint
     async def authorize_url(self,state,challenge,nonce=''):
         from urllib.parse import urlencode
         m=self.metadata or await self.discover();p={'client_id':self.client_id,'redirect_uri':self.redirect_uri,'response_type':'code','scope':self.scopes,'state':state,'code_challenge':challenge,'code_challenge_method':'S256'}
         if nonce:p['nonce']=nonce
-        return m['authorization_endpoint']+'?'+urlencode(p)
+        return self._endpoint('authorization_endpoint')+'?'+urlencode(p)
     async def exchange(self,code,verifier):
         import httpx
         m=self.metadata or await self.discover();d={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect_uri,'code_verifier':verifier}
         if self.client_secret:d['client_secret']=self.client_secret
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.post(m['token_endpoint'],data=d);r.raise_for_status();return r.json()
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.post(self._endpoint('token_endpoint'),data=d);r.raise_for_status();return r.json()
     async def userinfo(self,access_token):
         import httpx
-        m=self.metadata or await self.discover();url=m.get('userinfo_endpoint')
+        m=self.metadata or await self.discover();url=(m.get('userinfo_endpoint') or '').strip()
         if not url:return {}
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.get(url,headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
+        async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:r=await c.get(self._endpoint('userinfo_endpoint'),headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
     async def validate_id_token(self,id_token,nonce=''):
         import jwt
         m=self.metadata or await self.discover();header=jwt.get_unverified_header(id_token);alg=str(header.get('alg') or '')
         advertised=m.get('id_token_signing_alg_values_supported') or ['RS256']
         if not alg or alg not in set(str(x) for x in advertised):raise ValueError('OIDC ID token signing algorithm is not allowed by provider metadata')
-        jwks=jwt.PyJWKClient(m['jwks_uri']);key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=[alg],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
-        expected=m.get('issuer',self.issuer);iss=claims.get('iss','')
+        jwks=jwt.PyJWKClient(self._endpoint('jwks_uri'));key=jwks.get_signing_key_from_jwt(id_token);claims=jwt.decode(id_token,key.key,algorithms=[alg],audience=self.client_id,options={'require':['exp','iat','iss','sub']})
+        expected=str(m.get('issuer') or self.issuer).rstrip('/');iss=claims.get('iss','')
         if '{tenantid}' in expected:expected=expected.replace('{tenantid}',claims.get('tid',''))
         if iss!=expected:raise ValueError('OIDC issuer validation failed')
         if nonce and claims.get('nonce')!=nonce:raise ValueError('OIDC nonce validation failed')
