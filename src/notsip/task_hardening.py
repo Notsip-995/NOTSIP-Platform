@@ -7,22 +7,17 @@ from .actor_context import current_actor
 def _task_data(payload, actor):
     data=dict(payload.get('data') or {})
     data.pop('actor',None)
-    context=payload.get('context',data.get('context',{}))
-    constraints=payload.get('constraints',data.get('constraints',[]))
-    required_tools=payload.get('required_tools',data.get('required_tools',[]))
-    subtasks=payload.get('subtasks',data.get('subtasks',[]))
-    verification=payload.get('verification',data.get('verification',{}))
+    context=payload.get('context',data.get('context',{}));constraints=payload.get('constraints',data.get('constraints',[]));required_tools=payload.get('required_tools',data.get('required_tools',[]));permissions=payload.get('permissions',data.get('permissions',[]));subtasks=payload.get('subtasks',data.get('subtasks',[]));verification=payload.get('verification',data.get('verification',{}))
     if not isinstance(context,dict):raise HTTPException(400,'context must be an object')
-    if not isinstance(constraints,list):raise HTTPException(400,'constraints must be an array')
-    if not isinstance(required_tools,list):raise HTTPException(400,'required_tools must be an array')
-    if not isinstance(subtasks,list):raise HTTPException(400,'subtasks must be an array')
+    for name,value in (('constraints',constraints),('required_tools',required_tools),('permissions',permissions),('subtasks',subtasks)):
+        if not isinstance(value,list):raise HTTPException(400,f'{name} must be an array')
     if not isinstance(verification,dict):raise HTTPException(400,'verification must be an object')
     deadline=payload.get('deadline',data.get('deadline'))
     if deadline is not None:
         try:deadline=float(deadline)
         except (TypeError,ValueError):raise HTTPException(400,'deadline must be Unix seconds')
         if deadline<=time.time():raise HTTPException(400,'deadline must be in the future')
-    data.update({'actor':actor,'requester':actor,'context':context,'deadline':deadline,'constraints':constraints,'required_tools':required_tools,'subtasks':subtasks,'verification':verification,'state':data.get('state','PENDING')})
+    data.update({'actor':actor,'requester':actor,'context':context,'deadline':deadline,'priority':max(0,min(4,int(payload.get('priority',data.get('priority',0)) or 0))),'constraints':constraints,'required_tools':required_tools,'permissions':permissions,'subtasks':subtasks,'verification':verification,'state':data.get('state','PENDING')})
     return data
 
 
@@ -42,9 +37,9 @@ def attach(app,require_auth,store,jobs):
         if handler not in jobs.handlers:raise HTTPException(400,f'unknown task handler: {handler}')
         data=_task_data(payload,actor)
         if len(data['subtasks'])>50:raise HTTPException(400,'too many subtasks')
-        try:tid=jobs.create(objective,handler,float(payload.get('delay',0) or 0),payload.get('interval'),data,int(payload.get('priority',0) or 0),str(payload.get('idempotency_key','') or ''),actor=actor)
+        try:tid=jobs.create(objective,handler,float(payload.get('delay',0) or 0),payload.get('interval'),data,data['priority'],str(payload.get('idempotency_key','') or ''),actor=actor)
         except ValueError as exc:raise HTTPException(400,str(exc))
-        return {'status':'SUCCESS','task_id':tid,'handler':handler,'actor':actor,'requester':actor,'context':data['context'],'deadline':data['deadline'],'constraints':data['constraints'],'required_tools':data['required_tools'],'subtasks':data['subtasks'],'state':data['state'],'verification':data['verification']}
+        return {'status':'SUCCESS','task_id':tid,'handler':handler,'actor':actor,'requester':actor,'context':data['context'],'deadline':data['deadline'],'priority':data['priority'],'constraints':data['constraints'],'required_tools':data['required_tools'],'permissions':data['permissions'],'subtasks':data['subtasks'],'state':data['state'],'verification':data['verification']}
     @app.post('/api/tasks/{task_id}/run')
     async def run_task(task_id:str,_:None=Depends(require_auth)):
         task=store.row('SELECT * FROM tasks WHERE id=?',(task_id,))
