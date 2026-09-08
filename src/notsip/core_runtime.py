@@ -25,6 +25,7 @@ from .forensics import attach as attach_forensics
 from .event_journal import EventJournal
 from .advanced_intelligence import attach as attach_advanced_intelligence
 from .event_reasoning_loop import EventReasoningLoop
+from .linux_routes import attach as attach_linux_routes
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 attach_recovery_runtime(store)
@@ -52,6 +53,7 @@ _health=HealthAnalytics(DATA)
 attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
 attach_advanced_intelligence(app,_require,store,__import__('notsip.app',fromlist=['web']).web,agent,registry,events,settings)
+attach_linux_routes(app,_require,agent,registry,settings)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 normalize_routes(app)
