@@ -18,7 +18,14 @@ class Scheduler:
     def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key='',actor=None):
         delay=max(0.0,float(delay or 0));interval=None if interval is None else float(interval)
         if interval is not None and not 5<=interval<=30*86400:raise ValueError('interval must be between 5 seconds and 30 days')
-        priority=max(0,min(4,int(priority or 0)));payload=dict(data or {});actor_id=str(actor or payload.get('actor') or current_actor()).strip() or 'primary-user';payload.setdefault('actor',actor_id);payload.setdefault('requester',payload.get('actor'));payload.setdefault('state','PENDING');payload.setdefault('result',{});payload.setdefault('verification',{});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('idempotency_key',key);payload.setdefault('max_retries',self.max_retries);storage_key=self._storage_idempotency_key(actor_id,key) if idempotency_key else key;return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,storage_key)
+        priority=max(0,min(4,int(priority or 0)));payload=dict(data or {});actor_id=str(actor or payload.get('actor') or current_actor()).strip() or 'primary-user';payload.setdefault('actor',actor_id);payload.setdefault('requester',payload.get('actor'));payload.setdefault('state','PENDING');payload.setdefault('result',{});payload.setdefault('verification',{});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('idempotency_key',key);payload.setdefault('max_retries',self.max_retries)
+        if idempotency_key:
+            for existing in self.store.tasks():
+                existing_data=_json(existing.get('data'))
+                if existing_data.get('idempotency_key')==key and str(existing_data.get('actor') or 'primary-user')==actor_id:
+                    return existing['id']
+        storage_key=self._storage_idempotency_key(actor_id,key) if idempotency_key else key
+        return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,storage_key)
     async def _publish(self,event_type,payload):
         if self.events is None:return []
         try:
