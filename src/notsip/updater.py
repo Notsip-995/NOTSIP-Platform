@@ -7,30 +7,27 @@ from . import __version__
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
-        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://{settings.host}:{settings.port}/api/health';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
+        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://127.0.0.1:{settings.port}/healthz';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
     @property
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
     def current_exe(self):return Path(sys.executable).resolve() if self.frozen else None
     def _trusted_asset(self,url:str)->bool:
-        p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ')
-        return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.exe')
+        p=urlparse(url);repo=str(getattr(self.settings,'github_repository','')).strip('/ ');return p.scheme=='https' and p.netloc.lower()=='github.com' and repo and p.path.startswith(f'/{repo}/releases/download/') and p.path.lower().endswith('.exe')
     @staticmethod
     def _trusted_redirect(url:str)->bool:
-        p=urlparse(str(url));host=(p.hostname or '').lower()
-        return p.scheme=='https' and host in {'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
+        p=urlparse(str(url));host=(p.hostname or '').lower();return p.scheme=='https' and host in {'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
     @staticmethod
     def _version_tuple(value:str):
         raw=str(value or '').strip().lower().lstrip('v');parts=raw.split('.')
         if len(parts)<2 or len(parts)>4 or any(not p.isdigit() for p in parts):return None
-        nums=[int(p) for p in parts];nums.extend([0]*(4-len(nums)));return tuple(nums)
+        nums=[int(p) for p in parts];nums.extend([0]*(4-len(parts)));return tuple(nums)
     async def check(self):
         repo=getattr(self.settings,'github_repository','')
         if not repo:return {'available':False,'reason':'github_repository not configured'}
         headers={'Accept':'application/vnd.github+json'};token=os.getenv('NOTSIP_GITHUB_TOKEN','')
         if token:headers['Authorization']='Bearer '+token
-        url=f'https://api.github.com/repos/{repo}/releases/latest'
-        async with httpx.AsyncClient(timeout=20) as c:r=await c.get(url,headers=headers)
+        async with httpx.AsyncClient(timeout=20) as c:r=await c.get(f'https://api.github.com/repos/{repo}/releases/latest',headers=headers)
         if r.status_code==404:return {'available':False,'reason':'no published release'}
         if r.status_code in (401,403):return {'available':False,'reason':'GitHub release access denied','status_code':r.status_code}
         r.raise_for_status();d=r.json();tag=d.get('tag_name','');current=self._version_tuple(__version__);latest=self._version_tuple(tag)
@@ -48,8 +45,7 @@ class UpdateManager:
         if token:headers['Authorization']='Bearer '+token
         target=self.dir/f'update-{int(time.time())}.exe'
         async with httpx.AsyncClient(timeout=120,follow_redirects=True) as c:
-            r=await c.get(asset_url,headers=headers)
-            r.raise_for_status()
+            r=await c.get(asset_url,headers=headers);r.raise_for_status()
             if not self._trusted_redirect(str(r.url)):raise ValueError(f'untrusted update redirect destination: {r.url}')
             target.write_bytes(r.content)
         digest=hashlib.sha256(target.read_bytes()).hexdigest()
@@ -76,6 +72,5 @@ class UpdateManager:
         signer=self._verify_authenticode(new_exe)
         if signer.get('status')!='VALID':raise RuntimeError(signer.get('reason','publisher verification unavailable'))
         backup=self.dir/f'previous-{int(time.time())}.exe';shutil.copy2(current,backup)
-        helper=self.dir/f'apply-{int(time.time())}.ps1';new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url)
-        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 2\nCopy-Item -Force {new_s} {cur_s}\nStart-Process {cur_s}\nStart-Sleep -Seconds 4\ntry {{ $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }} }} catch {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s}; exit 2 }}\n''',encoding='utf-8')
-        subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer}
+        helper=self.dir/f'apply-{int(time.time())}.ps1';new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url);pid=os.getpid()
+        helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 1\ntry {{ Stop-Process -Id {pid} -Force -ErrorAction Stop }} catch {{ if($_.Exception.Message -notmatch "not found|cannot find"){{ throw }} }}\nStart-Sleep -Milliseconds 750\ntry {{ Copy-Item -Force {new_s} {cur_s}; Start-Process {cur_s}; Start-Sleep -Seconds 4; $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }}; Remove-Item -Force {backup_s} -ErrorAction SilentlyContinue }} catch {{ try {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s} }} catch {{ }}; exit 2 }}\n''',encoding='utf-8');subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer,'health_url':self.health_url}
