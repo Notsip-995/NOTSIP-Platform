@@ -68,19 +68,20 @@ class ToolExecutionGate:
             original=tool.fn
             @wraps(original)
             def guarded(*args,__tool=tool,__original=original,**kwargs):
+                if '_notsip_approved' in kwargs:raise PermissionError('internal approval override is forbidden; use durable approval state')
                 call_args=args[0] if len(args)==1 and isinstance(args[0],dict) else kwargs
                 _validate_value(call_args,__tool.schema)
-                approved=bool(kwargs.pop('_notsip_approved',False));grant=True if approved else cls._approved(__tool.name,call_args);policy=cls._policy
+                grant=cls._approved(__tool.name,call_args);policy=cls._policy
                 if policy is None:raise RuntimeError('NOTSIP tool policy gate is not configured')
                 d=policy.decide(__tool.risk,__tool.destructive,__tool.capability,approved=bool(grant))
                 if not d.allowed:
-                    if grant and grant is not True:cls._release_approval(grant,d.reason)
+                    if grant:cls._release_approval(grant,d.reason)
                     raise PermissionError(d.reason)
                 try:result=__original(*args,**kwargs)
                 except Exception as exc:
-                    if grant and grant is not True:cls._finish_approval(grant,'FAILED',str(exc))
+                    if grant:cls._finish_approval(grant,'FAILED',str(exc))
                     raise
-                if grant and grant is not True:
+                if grant:
                     status=result.get('status') if isinstance(result,dict) else 'SUCCESS';outcome={'SUCCESS':'EXECUTED','FAILURE':'FAILED','UNKNOWN':'UNKNOWN','PARTIAL_SUCCESS':'PARTIAL_SUCCESS'}.get(str(status).upper(),'EXECUTED');cls._finish_approval(grant,outcome,'' if outcome=='EXECUTED' else str(result.get('error','')) if isinstance(result,dict) else '')
                 return result
             tool.fn=guarded;tool._notsip_original_fn=original;tool._notsip_guarded=True
