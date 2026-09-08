@@ -27,11 +27,12 @@ class NodeRegistry:
         actor=self._owner(owner)
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
-        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token,owner=actor);data={'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps({**data,'owner':actor}),node_id));self._publish_world(node_id,data,actor);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds,'owner':actor}
+        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token,owner=actor);data={'owner':actor,'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps(data),node_id));self._publish_world(node_id,data,actor);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds,'owner':actor}
     def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature='',owner=None):
-        actor=self._owner(owner)
-        if not self.store.device_owned_by(node_id,actor):raise PermissionError('federation node is not owned by current actor')
         if not self.store.device_token_valid(node_id,token):raise PermissionError('invalid node token')
+        actor=self.store.device_owner(node_id)
+        if not actor:raise PermissionError('federation node ownership is unavailable')
+        if owner is not None and str(owner)!=str(actor):raise PermissionError('federation node is not owned by requested actor')
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
         data=self.store.row('SELECT data,status,name,platform,last_seen FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'owner':actor,'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time(),'status':'ONLINE','name':data.get('name',node_id) if data else node_id,'platform':data.get('platform','unknown') if data else 'unknown','last_seen':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));self._publish_world(node_id,cur,actor);return cur
@@ -40,9 +41,10 @@ class NodeRegistry:
     def revoke(self,node_id,owner=None):
         actor=self._require_owner(node_id,owner);self.store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));self._publish_world(node_id,{'name':node_id,'platform':'unknown','capabilities':[],'status':'REVOKED','last_seen':time.time()},actor);return {'node_id':node_id,'status':'REVOKED','owner':actor}
     def reconcile(self,owner=None):
-        actor=self._owner(owner);now=time.time();out=[]
-        for r in self.store.devices(actor):
-            d=json.loads(r.get('data') or '{}');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
+        now=time.time();out=[]
+        rows=self.store.devices(owner) if owner is not None else self.store.rows('SELECT id,name,platform,last_seen,status,data FROM devices')
+        for r in rows:
+            d=json.loads(r.get('data') or '{}');actor=str(d.get('owner') or 'primary-user');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
             if status!=r['status']:self.store.exec('UPDATE devices SET status=? WHERE id=?',(status,r['id']))
             current={'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[]),'name':r.get('name') or r['id'],'platform':r.get('platform') or 'unknown','last_seen':r.get('last_seen'),'owner':actor};self._publish_world(r['id'],current,actor);out.append(current)
         return out
