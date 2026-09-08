@@ -8,12 +8,12 @@ from .resource_router import ResourceRouter,RobotGateway
 from .external_adapters import RemoteComputeAdapter,RemoteSensingAdapter,HomeAdapter,BiometricTelemetryAdapter,AdapterUnavailable
 from .retrieval_router import RetrievalRouter
 from .compute_planner import ComputePlanner
+from .uncertainty_engine import UncertaintyEngine
 
 
 def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=None):
-    decomposer=TaskDecomposer();predictor=PredictiveMaintenance();priority=EventPriorityEngine();router=ResourceRouter(store);robots=RobotGateway(store,router);retrieval=RetrievalRouter();settings=settings or getattr(agent,'settings',None)
-    profile=agent.profile
-    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute)
+    decomposer=TaskDecomposer();predictor=PredictiveMaintenance();priority=EventPriorityEngine();router=ResourceRouter(store);robots=RobotGateway(store,router);retrieval=RetrievalRouter();uncertainty=UncertaintyEngine();settings=settings or getattr(agent,'settings',None)
+    profile=agent.profile;remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute)
     @app.get('/api/intelligence/decompose')
     async def decompose(objective:str,_:None=Depends(require_auth)):return decomposer.decompose(objective)
     @app.post('/api/intelligence/priority')
@@ -23,6 +23,8 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         samples=payload.get('samples') or [];metric=str(payload.get('metric') or '').strip()
         if not metric:raise HTTPException(400,'metric is required')
         return predictor.evaluate(samples,metric,warning_slope=float(payload.get('warning_slope',0.1)),failure_threshold=payload.get('failure_threshold'))
+    @app.post('/api/intelligence/uncertainty')
+    async def uncertainty_route(payload:dict,_:None=Depends(require_auth)):return asdict(uncertainty.evaluate(evidence_count=payload.get('evidence_count',0),confidence=payload.get('confidence',0),conflicts=payload.get('conflicts',0),missing_fields=payload.get('missing_fields') or [],authorized=bool(payload.get('authorized',True)),reversible=bool(payload.get('reversible',True))))
     @app.get('/api/intelligence/retrieval-plan')
     async def retrieval_plan(query:str,_:None=Depends(require_auth)):
         plan=retrieval.plan(query);return {'status':'SUCCESS','sources':list(plan.sources),'public_web':plan.public_web,'rationale':plan.rationale}
@@ -77,6 +79,7 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('prioritize_event','Classify event importance, urgency and user relevance.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'importance':{'type':'number'},'urgency':{'type':'number'},'relevance':{'type':'number'},'explicit_interrupt':{'type':'boolean'},'event_type':{'type':'string'}}},lambda importance=0,urgency=0,relevance=0,explicit_interrupt=False,event_type='':asdict(priority.classify(importance=importance,urgency=urgency,relevance=relevance,explicit_interrupt=explicit_interrupt,event_type=event_type))))
         registry.add(Tool('route_retrieval','Select appropriate private/public/system information sources.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'}},'required':['query']},lambda query:{'sources':list(retrieval.plan(query).sources),'public_web':retrieval.plan(query).public_web,'rationale':retrieval.plan(query).rationale}))
         registry.add(Tool('plan_compute','Determine whether compute should run locally or through the configured remote provider.','COMPUTE',Risk.LOW,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},lambda capability='COMPUTE',prefer_local=True:asdict(compute.choose(capability,prefer_local))))
+        registry.add(Tool('uncertainty_assess','Assess evidence, conflicts and authorization before reasoning or acting.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'evidence_count':{'type':'integer'},'confidence':{'type':'number'},'conflicts':{'type':'integer'},'missing_fields':{'type':'array'},'authorized':{'type':'boolean'},'reversible':{'type':'boolean'}}},lambda evidence_count=0,confidence=0,conflicts=0,missing_fields=None,authorized=True,reversible=True:asdict(uncertainty.evaluate(evidence_count=evidence_count,confidence=confidence,conflicts=conflicts,missing_fields=missing_fields or [],authorized=authorized,reversible=reversible))))
         registry.add(Tool('select_resource','Select a healthy authorized execution node.','CONTROL_SERVER',Risk.MEDIUM,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},router.select))
         registry.add(Tool('remote_compute','Submit authorized compute work to the configured remote compute provider.','COMPUTE',Risk.MEDIUM,{'type':'object','properties':{'job_type':{'type':'string'},'payload':{'type':'object'}},'required':['job_type']},remote_compute.submit))
         registry.add(Tool('remote_sensing','Query the configured lawful remote-sensing provider.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'params':{'type':'object'}}},remote_sensing.query))
@@ -85,4 +88,4 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('biometric_latest','Read authorized biometric telemetry; never a medical diagnosis.','ACCESS_CAMERA',Risk.MEDIUM,{'type':'object','properties':{}},biometrics.latest))
         registry.add(Tool('robot_command','Queue an authorized command for a connected robot and await device verification.','CONTROL_ROBOTICS',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['node_id','action']},lambda node_id,action,payload=None:robots.command(node_id,action,payload),True))
         ToolExecutionGate=__import__('notsip.execution_gate',fromlist=['ToolExecutionGate']).ToolExecutionGate;ToolExecutionGate.wrap_registry(registry)
-    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'robots':robots,'retrieval':retrieval,'compute':compute,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics,'profile':profile}
+    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'robots':robots,'retrieval':retrieval,'compute':compute,'uncertainty':uncertainty,'profile':profile,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
