@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib,json,secrets,time,uuid
+import hashlib,json,os,secrets,time,uuid
 from contextlib import contextmanager
 from .actor_context import current_actor
 try:
@@ -15,7 +15,6 @@ class PostgreSQLStore:
         with psycopg.connect(self.url,row_factory=dict_row) as c:yield c
     def init(self):
         sql='''CREATE TABLE IF NOT EXISTS messages(id BIGSERIAL PRIMARY KEY,role TEXT,content TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS memories(id BIGSERIAL PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight DOUBLE PRECISION,source TEXT,provenance TEXT,ts DOUBLE PRECISION);CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(content,content='memories',content_rowid='id');'''
-        # Keep the existing production schema initialization through the migration-compatible statements below.
         with self.conn() as c:
             c.execute(sql.replace('CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(content,content=\'memories\',content_rowid=\'id\');',''))
             c.execute('CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated DOUBLE PRECISION)')
@@ -112,7 +111,7 @@ class PostgreSQLStore:
         with self.conn() as c:
             rows=c.execute("WITH claimed AS (SELECT id FROM commands WHERE device_id=%s AND status='PENDING' ORDER BY created LIMIT %s) UPDATE commands SET status='DELIVERED',updated=%s WHERE id IN (SELECT id FROM claimed) RETURNING *",(device_id,limit,time.time())).fetchall();c.commit();return [{**dict(r),'payload':json.loads(r['payload'])} for r in rows]
     def reconcile_commands(self,lease_seconds=None):
-        lease=max(30,int(lease_seconds or secrets.os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
+        lease=max(30,int(lease_seconds or os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
         with self.conn() as c:
             rows=c.execute("SELECT c.id,c.device_id,c.action,d.status AS device_status,d.last_seen FROM commands c JOIN devices d ON d.id=c.device_id WHERE c.status='DELIVERED' AND c.updated<? AND (d.status='STALE' OR d.status='REVOKED' OR d.last_seen<?)",(cutoff,cutoff)).fetchall()
             if rows:c.executemany("UPDATE commands SET status='UNKNOWN',updated=%s,result=%s WHERE id=%s AND status='DELIVERED'",[(time.time(),json.dumps({'verified':False,'reason':'device lease expired before command result'}),r['id']) for r in rows])
