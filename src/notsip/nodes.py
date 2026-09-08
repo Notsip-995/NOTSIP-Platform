@@ -3,7 +3,7 @@ import hashlib,hmac,json,os,secrets,time,uuid
 from pathlib import Path
 class NodeRegistry:
     def __init__(self,store,secret='',lease_seconds=None):
-        self.store=store;self.secret=secret or '';self.lease_seconds=int(lease_seconds or os.getenv('NOTSIP_NODE_LEASE_SECONDS','90'))
+        self.store=store;self.secret=secret or '';self.lease_seconds=int(lease_seconds or os.getenv('NOTSIP_NODE_LEASE_SECONDS','90'));self.world=None
         self.store.exec('CREATE TABLE IF NOT EXISTS node_nonces(node_id TEXT NOT NULL,nonce TEXT NOT NULL,expires REAL NOT NULL,PRIMARY KEY(node_id,nonce))')
     def _require_shared_secret(self):
         if not self.secret:raise PermissionError('federation shared secret is not configured')
@@ -13,27 +13,30 @@ class NodeRegistry:
         now=time.time();self.store.exec('DELETE FROM node_nonces WHERE expires<=?',(now,))
         try:self.store.exec('INSERT INTO node_nonces(node_id,nonce,expires) VALUES(?,?,?)',(node_id,nonce,now+ttl));return True
         except Exception:return False
+    def _publish_world(self,node_id,data):
+        if self.world is None:return
+        self.world.upsert(f'node:{node_id}','device',data.get('name') or node_id,{'node_id':node_id,'platform':data.get('platform','unknown'),'capabilities':data.get('capabilities',[]),'status':data.get('status','ONLINE'),'health':data.get('health',{}),'lease_expires':data.get('lease_expires'),'last_seen':data.get('last_seen',time.time())})
+        self.world.relate('NOTSIP','controls',f'node:{node_id}',.95,'federation')
     def register(self,node_id,name,platform,capabilities=None,public_key='',nonce='',signature=''):
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
-        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token);self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps({'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1}),node_id));return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds}
+        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token);data={'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps(data),node_id));self._publish_world(node_id,data);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds}
     def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature=''):
         if not self.store.device_token_valid(node_id,token):raise PermissionError('invalid node token')
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
-        data=self.store.row('SELECT data,status FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));return cur
+        data=self.store.row('SELECT data,status,name,platform,last_seen FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time(),'status':'ONLINE','name':data.get('name',node_id) if data else node_id,'platform':data.get('platform','unknown') if data else 'unknown','last_seen':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));self._publish_world(node_id,cur);return cur
     def rotate(self,node_id):
         if not self.store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise KeyError(node_id)
         token=secrets.token_urlsafe(32);self.store.exec('UPDATE devices SET token_hash=?,status=? WHERE id=?',(hashlib.sha256(token.encode()).hexdigest(),'ONLINE',node_id));return {'node_id':node_id,'token':token,'rotated_at':time.time()}
-    def revoke(self,node_id):self.store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));return {'node_id':node_id,'status':'REVOKED'}
+    def revoke(self,node_id):
+        self.store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));self._publish_world(node_id,{'name':node_id,'platform':'unknown','capabilities':[],'status':'REVOKED','last_seen':time.time()});return {'node_id':node_id,'status':'REVOKED'}
     def reconcile(self):
         now=time.time();out=[]
-        for r in self.store.rows('SELECT id,data,status FROM devices'):
-            d=json.loads(r['data'] or '{}');exp=d.get('lease_expires');
-            if exp is None:status=r['status']
-            else:status=r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
+        for r in self.store.rows('SELECT id,data,status,name,platform,last_seen FROM devices'):
+            d=json.loads(r['data'] or '{}');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
             if status!=r['status']:self.store.exec('UPDATE devices SET status=? WHERE id=?',(status,r['id']))
-            out.append({'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[])})
+            current={'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[]),'name':r.get('name') or r['id'],'platform':r.get('platform') or 'unknown','last_seen':r.get('last_seen')};self._publish_world(r['id'],current);out.append(current)
         return out
     def recovery_plan(self):
         nodes=self.reconcile();return {'generated_at':time.time(),'nodes':nodes,'actions':[{'node':n['id'],'action':'redispatch_or_recover'} for n in nodes if n['status']=='STALE']}
