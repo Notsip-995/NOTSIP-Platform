@@ -1,4 +1,4 @@
-import email,imaplib,ipaddress,json,smtplib,socket,ssl,urllib.parse,uuid
+import email,imaplib,ipaddress,json,smtplib,socket,ssl,urllib.parse,uuid,os,shutil,platform
 from email.message import EmailMessage
 from pathlib import Path
 import httpx
@@ -31,8 +31,7 @@ class Email:
         if not self.enabled or not self._smtp_host:raise RuntimeError('SMTP not configured')
         m=EmailMessage();m['From']=self._username;m['To']=to;m['Subject']=subject;m.set_content(body)
         if self._smtp_port==465:
-            with smtplib.SMTP_SSL(self._smtp_host,self._smtp_port,timeout=20,context=ssl.create_default_context()) as s:
-                s.login(self._username,self._password);s.send_message(m)
+            with smtplib.SMTP_SSL(self._smtp_host,self._smtp_port,timeout=20,context=ssl.create_default_context()) as s:s.login(self._username,self._password);s.send_message(m)
         else:
             with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:
                 if self._smtp_port!=25:s.starttls(context=ssl.create_default_context())
@@ -78,6 +77,24 @@ def _public_host(host):
         addrs=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)
         return bool(addrs) and all(not (ipaddress.ip_address(a[4][0]).is_private or ipaddress.ip_address(a[4][0]).is_loopback or ipaddress.ip_address(a[4][0]).is_link_local or ipaddress.ip_address(a[4][0]).is_multicast or ipaddress.ip_address(a[4][0]).is_reserved) for a in addrs)
     except Exception:return False
+
+def _browser_executable():
+    override=os.getenv('NOTSIP_BROWSER_EXECUTABLE','').strip()
+    if override and Path(override).is_file():return override
+    for name in ('chrome','google-chrome','chromium','chromium-browser','msedge'):
+        found=shutil.which(name)
+        if found:return found
+    if platform.system()=='Windows':
+        candidates=[
+            Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Google/Chrome/Application/chrome.exe',
+            Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Google/Chrome/Application/chrome.exe',
+            Path(os.getenv('LOCALAPPDATA',''))/'Google/Chrome/Application/chrome.exe',
+            Path(os.getenv('PROGRAMFILES','C:\\Program Files'))/'Microsoft/Edge/Application/msedge.exe',
+            Path(os.getenv('PROGRAMFILES(X86)','C:\\Program Files (x86)'))/'Microsoft/Edge/Application/msedge.exe'
+        ]
+        for p in candidates:
+            if p.is_file():return str(p)
+    return ''
 class Browser:
     async def extract(self,url,wait_ms=1000):
         if not settings.browser_enabled:raise RuntimeError('browser automation is disabled')
@@ -85,9 +102,15 @@ class Browser:
         if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser extraction requires a public http(s) URL')
         if not _public_host(parsed.hostname):raise ValueError('browser extraction blocks private, loopback, link-local, multicast, and reserved addresses')
         try:from playwright.async_api import async_playwright
-        except Exception as e:raise RuntimeError('Install Playwright and browser binaries') from e
+        except Exception as e:raise RuntimeError('Playwright is unavailable in this installation') from e
         async with async_playwright() as p:
-            b=await p.chromium.launch(headless=True);page=await b.new_page()
+            launch={}
+            executable=_browser_executable()
+            if executable:launch['executable_path']=executable
+            try:b=await p.chromium.launch(headless=True,**launch)
+            except Exception as exc:
+                raise RuntimeError('No usable Chromium-compatible browser is installed; install Google Chrome/Edge or set NOTSIP_BROWSER_EXECUTABLE') from exc
+            page=await b.new_page()
             async def guard(route):
                 target=urllib.parse.urlparse(route.request.url)
                 if target.scheme not in {'http','https'} or not target.hostname or not _public_host(target.hostname):await route.abort();return
