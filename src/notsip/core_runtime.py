@@ -41,6 +41,7 @@ from .notification_hardening import attach as attach_notification_hardening
 from .notifications import NotificationStore
 from .backup_hardening import install as install_backup_hardening
 from .external_domains import attach as attach_external_domains
+from .recovery_state_hardening import install_checkpoint_wrapper
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -51,6 +52,7 @@ from .product_layer import ConfigStore
 ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token')
 install_backup_hardening(backups)
 external_domains=attach_external_domains(registry,settings)
+install_checkpoint_wrapper(recovery,DATA)
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events,registry=registry,agent=agent)
