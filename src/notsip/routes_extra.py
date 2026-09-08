@@ -13,11 +13,22 @@ def _public_settings():
 
 def attach(app,require_auth,web,emailc):
     @app.middleware('http')
+    async def transport_security(request:Request,call_next):
+        response=await call_next(request)
+        if request.url.scheme=='https':
+            values=response.headers.getlist('set-cookie') if hasattr(response.headers,'getlist') else []
+            if values:
+                response.headers.__delitem__('set-cookie')
+                for value in values:
+                    if 'notsip_session=' in value and 'Secure' not in value: value=value+'; Secure'
+                    response.headers.append('set-cookie',value)
+            response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
+        response.headers.setdefault('X-Content-Type-Options','nosniff');response.headers.setdefault('Referrer-Policy','no-referrer');return response
+    @app.middleware('http')
     async def direct_capability_guard(request:Request,call_next):
         path=request.url.path
         if path.startswith('/api/integrations/accounts/') and path.endswith('/disconnect'):
-            await require_auth(request)
-            account_id=path[len('/api/integrations/accounts/'): -len('/disconnect')].strip('/')
+            await require_auth(request);account_id=path[len('/api/integrations/accounts/'): -len('/disconnect')].strip('/')
             if not account_id:return __import__('fastapi').responses.JSONResponse({'detail':'account id required'},status_code=400)
             from .account_store import AccountStore
             from .oauth_services import OAuthService
@@ -25,17 +36,13 @@ def attach(app,require_auth,web,emailc):
             accounts=AccountStore(auth.secrets);item=accounts.get(account_id)
             if not item:return __import__('fastapi').responses.JSONResponse({'detail':'account not found'},status_code=404)
             outcome=await OAuthService(accounts.secrets,accounts).revoke(item.get('provider',''),account_id)
-            if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:
-                accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
+            if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
             else:outcome['local_status']='CONNECTED';outcome['detail']='Local credentials retained because provider-side revocation was not confirmed.'
             return __import__('fastapi').responses.JSONResponse(outcome,status_code=200)
         cap='';risk=Risk.LOW;destructive=False
-        if path.startswith('/api/windows/'):
-            cap='CONTROL_COMPUTER';risk=Risk.MEDIUM
-        elif path.startswith('/api/files/'):
-            cap='WRITE_FILES';risk=Risk.HIGH if path.endswith('/delete') else Risk.MEDIUM;destructive=path.endswith('/delete')
-        elif path in {'/api/voice/native/start','/api/voice/native/stop'}:
-            cap='ACCESS_MICROPHONE';risk=Risk.MEDIUM
+        if path.startswith('/api/windows/'):cap='CONTROL_COMPUTER';risk=Risk.MEDIUM
+        elif path.startswith('/api/files/'):cap='WRITE_FILES';risk=Risk.HIGH if path.endswith('/delete') else Risk.MEDIUM;destructive=path.endswith('/delete')
+        elif path in {'/api/voice/native/start','/api/voice/native/stop'}:cap='ACCESS_MICROPHONE';risk=Risk.MEDIUM
         if cap:
             d=Policy(settings.autonomy_level).decide(risk,destructive,capability=cap)
             if not d.allowed:return __import__('fastapi').responses.JSONResponse({'detail':'capability authorization required','capability':cap,'required_level':d.required_level,'reason':d.reason,'hint':'Use NOTSIP agent execution for an approval-gated action.'},status_code=403)
