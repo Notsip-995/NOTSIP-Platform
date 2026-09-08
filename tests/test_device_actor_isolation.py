@@ -26,3 +26,11 @@ def test_legacy_unowned_device_defaults_to_primary_owner(tmp_path):
     ta=set_actor('actor:b')
     try:assert store.device_owned_by('legacy') is False
     finally:reset_actor(ta)
+
+
+def test_malformed_device_metadata_is_not_assigned_to_primary_owner(tmp_path):
+    store=Store(tmp_path)
+    store.exec("INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)",('corrupt','Corrupt','android','','hash',0,'ONLINE','{not-json'))
+    assert store.device_owner('corrupt') is None
+    assert store.device_owned_by('corrupt','primary-user') is False
+    assert all(row['id']!='corrupt' for row in store.devices('primary-user'))
