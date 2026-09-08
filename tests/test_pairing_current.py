@@ -14,3 +14,9 @@ def test_device_transport_rejects_revoked_devices_and_foreign_results():
     assert "status':'ALREADY_RECORDED'" in text
     assert "X-NOTSIP-Device-ID" in text
     assert "X-NOTSIP-Device-Token" in text
+
+
+def test_store_pairing_ownership_guard_is_installed_once():
+    text=Path('src/notsip/pairing_hardening.py').read_text(encoding='utf-8')
+    assert "_notsip_pairing_ownership_guarded" in text
+    assert "store.pair_device=guarded_pair_device" in text
