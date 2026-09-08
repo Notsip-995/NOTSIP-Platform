@@ -18,7 +18,10 @@ class NodeRegistry:
     def _consume_nonce(self,node_id,nonce,ttl=600):
         now=time.time();self.store.exec('DELETE FROM node_nonces WHERE expires<=?',(now,))
         try:self.store.exec('INSERT INTO node_nonces(node_id,nonce,expires) VALUES(?,?,?)',(node_id,nonce,now+ttl));return True
-        except Exception:return False
+        except Exception as exc:
+            existing=self.store.row('SELECT nonce FROM node_nonces WHERE node_id=? AND nonce=?',(node_id,nonce))
+            if existing:return False
+            raise RuntimeError('unable to persist federation nonce') from exc
     def _publish_world(self,node_id,data,owner=None):
         if self.world is None:return
         actor=self._owner(owner);self.world.upsert(f'node:{node_id}','device',data.get('name') or node_id,{'node_id':node_id,'platform':data.get('platform','unknown'),'capabilities':data.get('capabilities',[]),'status':data.get('status','ONLINE'),'health':data.get('health',{}),'lease_expires':data.get('lease_expires'),'last_seen':data.get('last_seen',time.time())},owner=actor)
@@ -44,7 +47,9 @@ class NodeRegistry:
         now=time.time();out=[]
         rows=self.store.devices(owner) if owner is not None else self.store.rows('SELECT id,name,platform,last_seen,status,data FROM devices')
         for r in rows:
-            d=json.loads(r.get('data') or '{}');actor=str(d.get('owner') or 'primary-user');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
+            try:d=json.loads(r.get('data') or '{}')
+            except (TypeError,ValueError) as exc:raise RuntimeError(f'corrupt federation node metadata for {r.get("id")}') from exc
+            actor=str(d.get('owner') or 'primary-user');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
             if status!=r['status']:self.store.exec('UPDATE devices SET status=? WHERE id=?',(status,r['id']))
             current={'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[]),'name':r.get('name') or r['id'],'platform':r.get('platform') or 'unknown','last_seen':r.get('last_seen'),'owner':actor};self._publish_world(r['id'],current,actor);out.append(current)
         return out
@@ -71,8 +76,7 @@ class RecoveryManager:
         if invalid:raise RuntimeError('no verified recovery checkpoint is available')
         return None,None,[]
     def latest(self):
-        p=self.latest_path()
-        return self._load_verified(p) if p else None
+        p=self.latest_path();return self._load_verified(p) if p else None
     def verify_latest(self):
         files=self._files()
         if not files:return {'valid':False,'reason':'no recovery checkpoint available'}
