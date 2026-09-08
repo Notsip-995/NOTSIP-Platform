@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from .actor_context import current_actor
 from .actor_workspace import ActorWorkspace
+from .execution_gate import ToolExecutionGate
 
 
 def attach(app, registry, data_root):
@@ -41,8 +42,16 @@ def attach(app, registry, data_root):
         'voice_transcribe': transcribe,
         'perception_observe': perceive,
     }
+    replaced=False
     for name, fn in wrappers.items():
         tool = registry.get(name)
-        if tool is not None:
-            tool.fn = fn
+        if tool is None:
+            continue
+        if getattr(tool,'_notsip_guarded',False):
+            delattr(tool,'_notsip_guarded')
+            if hasattr(tool,'_notsip_original_fn'):delattr(tool,'_notsip_original_fn')
+        tool.fn=fn
+        replaced=True
+    if replaced:
+        ToolExecutionGate.wrap_registry(registry)
     return manager
