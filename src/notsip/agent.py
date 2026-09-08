@@ -5,12 +5,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
 from .product_layer import ApprovalStore
 from .conversations import ConversationStore
+from .execution_gate import ToolExecutionGate
 
 class Agent:
     SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. Prefer real tool execution when authorized. State uncertainty clearly.'''
     CITY_TIMEZONES={'tokyo':'Asia/Tokyo','london':'Europe/London','new york':'America/New_York','los angeles':'America/Los_Angeles','paris':'Europe/Paris','berlin':'Europe/Berlin','kigali':'Africa/Kigali','kampala':'Africa/Kampala','nairobi':'Africa/Nairobi','dubai':'Asia/Dubai','singapore':'Asia/Singapore','sydney':'Australia/Sydney'}
     def __init__(self,settings,store,policy,registry,provider,world):
-        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create()
+        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
     @property
     def session_id(self):return self.session['id']
     def new_session(self,title='New conversation'):
@@ -56,14 +57,16 @@ class Agent:
     async def run_tool(self,name,args,approved=False):
         tool=self.registry.get(name)
         if not tool:return {'status':'FAILURE','error':'unknown tool'}
-        d=self.policy.decide(tool.risk,tool.destructive,tool.capability)
+        d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=approved)
         if not d.allowed:
             if d.needs_confirmation and not approved:
                 item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level})
                 self.store.audit(self.user,name,'approval','request','PENDING','approval requested')
                 return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
             return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
-        r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute','SUCCESS',json.dumps(r,default=str));return r
+        invoke_args=dict(args)
+        if approved:invoke_args['_notsip_approved']=True
+        r=tool.fn(**invoke_args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute','SUCCESS',json.dumps(r,default=str));return r
     def fallback(self,text):
         s=text.lower();clock=self._time_response(text)
         if clock:return clock
