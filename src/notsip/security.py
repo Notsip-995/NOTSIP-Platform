@@ -41,8 +41,7 @@ class SecretStore:
         return True
 
 class DurableState(dict):
-    def __init__(self,secrets_store,prefix='session:'):
-        super().__init__();self._store=secrets_store;self._prefix=prefix
+    def __init__(self,secrets_store,prefix='session:'):super().__init__();self._store=secrets_store;self._prefix=prefix
     def __setitem__(self,key,value):
         super().__setitem__(key,value)
         if str(key).startswith('oidc:'):self._store.set(self._prefix+str(key),value)
@@ -52,16 +51,14 @@ class DurableState(dict):
         return default
     def pop(self,key,default=None):
         if key in self:out=super().pop(key)
-        else:
-            out=self._store.get(self._prefix+str(key),default) if str(key).startswith('oidc:') else default
+        else:out=self._store.get(self._prefix+str(key),default) if str(key).startswith('oidc:') else default
         if str(key).startswith('oidc:'):self._store.delete(self._prefix+str(key))
         return out
-    def __contains__(self,key):
-        return dict.__contains__(self,key) or (str(key).startswith('oidc:') and self._store.get(self._prefix+str(key),None) is not None)
+    def __contains__(self,key):return dict.__contains__(self,key) or (str(key).startswith('oidc:') and self._store.get(self._prefix+str(key),None) is not None)
 
 class OIDCProvider:
     PRESETS={'google':'https://accounts.google.com','microsoft':'https://login.microsoftonline.com/common/v2.0'}
-    PROFILE_SCOPES={'google':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly','microsoft':'openid profile email offline_access User.Read Calendars.Read Mail.Read','generic':'openid profile email'}
+    PROFILE_SCOPES={'google':'openid profile email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly','microsoft':'openid profile email offline_access User.Read Calendars.ReadWrite Mail.Read Mail.Send','generic':'openid profile email'}
     def __init__(self,provider='',issuer='',client_id='',client_secret='',redirect_uri='',scopes=''):
         self.provider=provider or 'generic';self.issuer=(issuer or self.PRESETS.get(self.provider,'')).rstrip('/');self.client_id=client_id;self.client_secret=client_secret;self.redirect_uri=redirect_uri;self.scopes=scopes or self.PROFILE_SCOPES.get(self.provider,self.PROFILE_SCOPES['generic']);self.metadata={}
     @property
