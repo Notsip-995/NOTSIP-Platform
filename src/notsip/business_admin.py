@@ -36,7 +36,7 @@ class BusinessAdminAdapter:
         payload={'operation':str(operation or 'status'),'params':params or {}}
         async with httpx.AsyncClient(timeout=20) as client:
             response=await client.post(url,json=payload,headers=self._headers());response.raise_for_status();data=response.json()
-        return {'status':'SUCCESS','verified':True,'operation':payload['operation'],'data':data}
+        return {'status':'SUCCESS','verified':False,'operation':payload['operation'],'data':data,'verification':{'transport':'HTTP 2xx','authoritative_state':bool(data.get('authoritative',False)),'independently_verified':bool(data.get('independently_verified',False))}}
     async def action(self,operation,payload=None):
         url=self._url('action')
         name=str(operation or '').strip()
@@ -44,4 +44,5 @@ class BusinessAdminAdapter:
         body={'operation':name,'payload':payload or {}}
         async with httpx.AsyncClient(timeout=30) as client:
             response=await client.post(url,json=body,headers=self._headers());response.raise_for_status();data=response.json()
-        return {'status':'SUCCESS' if bool(data.get('success',True)) else 'FAILURE','verified':bool(data.get('verified',False)),'operation':name,'data':data}
+        independently_verified=bool(data.get('independently_verified',False))
+        return {'status':'SUCCESS' if bool(data.get('success',True)) else 'FAILURE','verified':independently_verified,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','independently_verified':independently_verified}}
