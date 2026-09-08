@@ -15,6 +15,20 @@ def attach(app,require_auth,web,emailc):
     @app.middleware('http')
     async def direct_capability_guard(request:Request,call_next):
         path=request.url.path
+        if path.startswith('/api/integrations/accounts/') and path.endswith('/disconnect'):
+            await require_auth(request)
+            account_id=path[len('/api/integrations/accounts/'): -len('/disconnect')].strip('/')
+            if not account_id:return __import__('fastapi').responses.JSONResponse({'detail':'account id required'},status_code=400)
+            from .account_store import AccountStore
+            from .oauth_services import OAuthService
+            from .runtime_prod import auth
+            accounts=AccountStore(auth.secrets);item=accounts.get(account_id)
+            if not item:return __import__('fastapi').responses.JSONResponse({'detail':'account not found'},status_code=404)
+            outcome=await OAuthService(accounts.secrets,accounts).revoke(item.get('provider',''),account_id)
+            if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:
+                accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
+            else:outcome['local_status']='CONNECTED';outcome['detail']='Local credentials retained because provider-side revocation was not confirmed.'
+            return __import__('fastapi').responses.JSONResponse(outcome,status_code=200)
         cap='';risk=Risk.LOW;destructive=False
         if path.startswith('/api/windows/'):
             cap='CONTROL_COMPUTER';risk=Risk.MEDIUM
@@ -24,17 +38,14 @@ def attach(app,require_auth,web,emailc):
             cap='ACCESS_MICROPHONE';risk=Risk.MEDIUM
         if cap:
             d=Policy(settings.autonomy_level).decide(risk,destructive,capability=cap)
-            if not d.allowed:
-                return __import__('fastapi').responses.JSONResponse({'detail':'capability authorization required','capability':cap,'required_level':d.required_level,'reason':d.reason,'hint':'Use NOTSIP agent execution for an approval-gated action.'},status_code=403)
+            if not d.allowed:return __import__('fastapi').responses.JSONResponse({'detail':'capability authorization required','capability':cap,'required_level':d.required_level,'reason':d.reason,'hint':'Use NOTSIP agent execution for an approval-gated action.'},status_code=403)
         return await call_next(request)
-
     @app.get('/api/search')
     async def search(q:str,count:int=5,_:None=Depends(require_auth)):
         if not web.enabled:raise HTTPException(503,'Web search not configured')
         return {'results':await web.search(q,max(1,min(int(count),20)))}
     @app.get('/api/email/status')
-    async def email_status(_:None=Depends(require_auth)):
-        return {'configured':emailc.enabled,'smtp':bool(settings.smtp_host),'imap':bool(settings.imap_host),'username_configured':bool(settings.email_username)}
+    async def email_status(_:None=Depends(require_auth)):return {'configured':emailc.enabled,'smtp':bool(settings.smtp_host),'imap':bool(settings.imap_host),'username_configured':bool(settings.email_username)}
     @app.get('/api/config/public')
     async def config_public(request:Request):
         client=request.client.host if request.client else ''
@@ -48,7 +59,6 @@ def attach(app,require_auth,web,emailc):
         accounts=AccountStore(auth.secrets);oauth=OAuthService(accounts.secrets,accounts);item=accounts.get(account_id)
         if not item or item.get('provider')!=provider:raise HTTPException(404,'OAuth account not found')
         outcome=await oauth.revoke(provider,account_id)
-        if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:
-            accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
+        if outcome.get('status') in {'PROVIDER_REVOKED','PROVIDER_TOKEN_ALREADY_INVALID','ALREADY_REVOKED'}:accounts.disconnect(account_id);outcome['local_status']='DISCONNECTED'
         else:outcome['local_status']='CONNECTED'
         return outcome
