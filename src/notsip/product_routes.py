@@ -8,20 +8,16 @@ from .tools import Tool
 from .execution_gate import ToolExecutionGate
 
 def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
-
 def _checkpoint_devices(store):return store.rows('SELECT id,name,platform,public_key,token_hash,last_seen,status,data FROM devices')
+def _checkpoint_commands(store):return store.rows('SELECT id,device_id,action,payload,status,created,updated,result FROM commands')
 
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
     updates=UpdateManager(DATA,settings)
-    if agent.registry.get('update_apply') is None:
-        agent.registry.add(Tool('update_apply','Apply a downloaded and cryptographically verified NOTSIP executable update.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:updates.install_and_verify(__import__('pathlib').Path(path).resolve()),True))
-    if agent.registry.get('federation_rotate') is None:
-        agent.registry.add(Tool('federation_rotate','Rotate credentials for an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.rotate,True))
-    if agent.registry.get('federation_revoke') is None:
-        agent.registry.add(Tool('federation_revoke','Revoke an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.revoke,True))
-    if agent.registry.get('recovery_restore') is None:
-        agent.registry.add(Tool('recovery_restore','Restore persistent runtime state from the latest verified checkpoint.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{}},lambda:store.restore_runtime_state(recovery.restore_state()['state']),True))
+    if agent.registry.get('update_apply') is None:agent.registry.add(Tool('update_apply','Apply a downloaded and cryptographically verified NOTSIP executable update.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:updates.install_and_verify(__import__('pathlib').Path(path).resolve()),True))
+    if agent.registry.get('federation_rotate') is None:agent.registry.add(Tool('federation_rotate','Rotate credentials for an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.rotate,True))
+    if agent.registry.get('federation_revoke') is None:agent.registry.add(Tool('federation_revoke','Revoke an authorized federation node.','CONTROL_SERVER',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'}},'required':['node_id']},nodes.revoke,True))
+    if agent.registry.get('recovery_restore') is None:agent.registry.add(Tool('recovery_restore','Restore persistent runtime state from the latest verified checkpoint.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{}},lambda:store.restore_runtime_state(recovery.restore_state()['state']),True))
     ToolExecutionGate.wrap_registry(agent.registry)
     @app.get('/api/recovery/check')
     async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
@@ -47,14 +43,12 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     async def federation_revoke(node_id:str,_:None=Depends(require_auth)):return await agent.run_tool('federation_revoke',{'node_id':node_id})
     @app.post('/api/recovery/checkpoint')
     async def checkpoint(_:None=Depends(require_auth)):
-        state={'tasks':store.tasks(),'devices':_checkpoint_devices(store),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()}
-        return {'status':'SUCCESS','path':recovery.checkpoint(state)}
+        state={'tasks':store.tasks(),'devices':_checkpoint_devices(store),'commands':_checkpoint_commands(store),'world':getattr(agent,'world',None).snapshot() if getattr(agent,'world',None) else {},'timestamp':time.time()};return {'status':'SUCCESS','path':recovery.checkpoint(state)}
     @app.get('/api/recovery/latest')
     async def latest_checkpoint(_:None=Depends(require_auth)):return {'checkpoint':recovery.latest(),'verified':recovery.verify_latest()}
     @app.post('/api/recovery/restore')
     async def restore(_:None=Depends(require_auth)):
-        result=await agent.run_tool('recovery_restore',{})
-        return {'status':result.get('status','SUCCESS'),'result':result,'restart_required':result.get('status') in {'SUCCESS','PARTIAL_SUCCESS'},'action':'restart_runtime_to_rebuild_in_memory_state'}
+        result=await agent.run_tool('recovery_restore',{});return {'status':result.get('status','SUCCESS'),'result':result,'restart_required':result.get('status') in {'SUCCESS','PARTIAL_SUCCESS'},'action':'restart_runtime_to_rebuild_in_memory_state'}
     @app.get('/api/update/check')
     async def update_check(_:None=Depends(require_auth)):return await updates.check()
     @app.post('/api/update/download')
