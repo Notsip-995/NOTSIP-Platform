@@ -6,26 +6,26 @@ from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
 from .product_layer import ApprovalStore
 from .conversations import ConversationStore
 from .execution_gate import ToolExecutionGate
+from .user_profile import UserProfileStore
 
 class Agent:
-    SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. Prefer real tool execution when authorized. State uncertainty clearly.'''
+    SYSTEM='''You are NOTSIP, a persistent AI operating layer. Use memory, world state, current time, user profile, information, tools and authorization. Never claim external actions succeeded without verified tool output. Never invent devices, accounts, credentials, sensor readings or access. Respect autonomy boundaries. Prefer real tool execution when authorized. State uncertainty clearly.'''
     CITY_TIMEZONES={'tokyo':'Asia/Tokyo','london':'Europe/London','new york':'America/New_York','los angeles':'America/Los_Angeles','paris':'Europe/Paris','berlin':'Europe/Berlin','kigali':'Africa/Kigali','kampala':'Africa/Kampala','nairobi':'Africa/Nairobi','dubai':'Asia/Dubai','singapore':'Asia/Singapore','sydney':'Australia/Sydney'}
     WEEKDAYS={'monday':0,'tuesday':1,'wednesday':2,'thursday':3,'friday':4,'saturday':5,'sunday':6}
     def __init__(self,settings,store,policy,registry,provider,world):
-        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
+        self.settings=settings;self.store=store;self.policy=policy;self.registry=registry;self.provider=provider;self.world=world;self.user='primary-user';self.approvals=ApprovalStore(Path(settings.data_dir));self.conversations=ConversationStore(Path(settings.data_dir),self.user);self.profile=UserProfileStore(Path(settings.data_dir),self.user);self.session=self.conversations.get_or_create();ToolExecutionGate.configure(policy,self.approvals);ToolExecutionGate.wrap_registry(registry)
     @property
     def session_id(self):return self.session['id']
     def new_session(self,title='New conversation'):
         self.session=self.conversations.create(title);return self.session
     def context(self,text):
-        now=datetime.now(ZoneInfo(self.settings.local_timezone));return {'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'memory':self.store.memories(self.user,text,15),'conversation':self.conversations.history(self.session_id,20),'summary':self.session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':self.approvals.pending()}
+        now=datetime.now(ZoneInfo(self.settings.local_timezone));return {'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':self.conversations.history(self.session_id,20),'summary':self.session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':self.approvals.pending()}
     def _time_response(self,text):
         s=text.strip().lower()
         try:local=datetime.now(ZoneInfo(self.settings.local_timezone))
         except ZoneInfoNotFoundError as exc:raise RuntimeError(f'invalid configured timezone: {self.settings.local_timezone}') from exc
         utc=local.astimezone(timezone.utc)
-        if s in {'time','date','today','day','what time is it','what date is it','what day is it'} or 'current time' in s or 'current date' in s or 'day of the week' in s:
-            return f"It is {local.strftime('%A, %Y-%m-%d %H:%M:%S %Z')} ({self.settings.local_timezone}); UTC is {utc.strftime('%Y-%m-%d %H:%M:%S UTC')}."
+        if s in {'time','date','today','day','what time is it','what date is it','what day is it'} or 'current time' in s or 'current date' in s or 'day of the week' in s:return f"It is {local.strftime('%A, %Y-%m-%d %H:%M:%S %Z')} ({self.settings.local_timezone}); UTC is {utc.strftime('%Y-%m-%d %H:%M:%S UTC')}."
         m=re.fullmatch(r'(?:what )?time (?:is it )?(?:in|at) ([a-z][a-z ._-]+)\??',s)
         if m:
             place=m.group(1).strip();tz_name=self.CITY_TIMEZONES.get(place,place if '/' in place else '')
@@ -49,6 +49,9 @@ class Agent:
         m=re.match(r'^remember(?: that)?\s+(.+)$',text,re.I)
         if m:
             v=m.group(1).strip();self.store.remember(self.user,'semantic',v,.95,'conversation',{'text':text});r=f"I'll remember that: {v}";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'memory','remember','execute',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
+        m=re.match(r'^(?:call me|my name is)\s+(.+)$',text,re.I)
+        if m:
+            name=m.group(1).strip().rstrip('.');self.profile.update(preferred_name=name,identity={'preferred_name':name});r=f"Understood. I'll call you {name}.";self.store.message('assistant',r);self.conversations.append(self.session_id,'assistant',r);self.store.audit(self.user,text,'profile','update','success',r);return {'response':r,'status':'SUCCESS','session_id':self.session_id}
         time_response=self._time_response(text)
         if time_response:
             self.store.message('assistant',time_response);self.conversations.append(self.session_id,'assistant',time_response);self.store.audit(self.user,text,'time','clock','success',time_response);return {'response':time_response,'status':'SUCCESS','session_id':self.session_id}
@@ -69,9 +72,7 @@ class Agent:
         d=self.policy.decide(tool.risk,tool.destructive,tool.capability,approved=approved)
         if not d.allowed:
             if d.needs_confirmation and not approved:
-                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level})
-                self.store.audit(self.user,name,'approval','request','PENDING','approval requested')
-                return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
+                item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level});self.store.audit(self.user,name,'approval','request','PENDING','approval requested');return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
             return {'status':'FAILURE','approval_required':d.needs_confirmation,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
         invoke_args=dict(args)
         if approved:invoke_args['_notsip_approved']=True
@@ -80,6 +81,8 @@ class Agent:
         s=text.lower();clock=self._time_response(text)
         if clock:return clock
         if 'what do you remember' in s or 'what do you know about me' in s:
-            m=self.store.memories(self.user,'',20);return 'I remember:\n'+'\n'.join('- '+x['content'] for x in m) if m else 'I have no stored memories yet.'
+            p=self.profile.load();m=self.store.memories(self.user,'',20);lines=[]
+            if p.get('preferred_name'):lines.append(f"Preferred name: {p['preferred_name']}")
+            lines.extend('- '+x['content'] for x in m);return 'I remember:\n'+'\n'.join(lines) if lines else 'I have no stored memories yet.'
         if 'status' in s:return 'NOTSIP is online. Ask for diagnostics for the detailed capability state.'
         return 'NOTSIP is online in degraded mode. Configure a primary or fallback reasoning provider during setup.'
