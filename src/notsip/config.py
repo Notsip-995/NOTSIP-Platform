@@ -1,5 +1,5 @@
 from pathlib import Path
-import json, os, sys
+import json, os, sys, ipaddress
 from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +11,12 @@ DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARC
 def _default_data_dir():
     if getattr(sys,'frozen',False):return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
     return './data'
+
+def _is_loopback_host(host):
+    value=str(host or '').strip().lower()
+    if value in {'localhost','localhost.localdomain'}:return True
+    try:return ipaddress.ip_address(value).is_loopback
+    except ValueError:return False
 
 class Settings(BaseSettings):
     host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str=_default_data_dir(); local_timezone:str='Africa/Kigali'; max_tool_rounds:int=Field(10,ge=1,le=100)
@@ -31,6 +37,9 @@ class Settings(BaseSettings):
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore',validate_assignment=True)
     def ensure(self):
         self.capability_levels={k:max(0,min(4,int(v))) for k,v in (self.capability_levels or DEFAULT_CAPABILITY_LEVELS).items()}
+        if not _is_loopback_host(self.host):
+            if self.auth_mode=='api_key' and not self.api_key:raise RuntimeError('Remote binding requires NOTSIP_API_KEY or OIDC authentication; refusing unauthenticated non-loopback bind')
+            if self.auth_mode=='oidc' and not (self.oidc_issuer and self.oidc_client_id and self.oidc_redirect_uri):raise RuntimeError('Remote binding with OIDC requires oidc_issuer, oidc_client_id and oidc_redirect_uri')
         root=Path(self.data_dir);root.mkdir(parents=True,exist_ok=True)
         for name in ('workspace','screenshots','audio','perception','recovery','runtime','backups','updates'):(root/name).mkdir(parents=True,exist_ok=True)
 settings=Settings()
@@ -50,6 +59,7 @@ try:
             _v=_secret_store.get('NOTSIP_'+_name.upper())
             if _v:setattr(settings,_name,_v)
     if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
+    settings.ensure()
 except Exception as exc:
     SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
     if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
