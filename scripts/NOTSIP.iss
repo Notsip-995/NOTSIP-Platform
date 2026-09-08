@@ -16,12 +16,20 @@ Source: "..\dist\NOTSIP.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\ui.html"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\setup.html"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\src\notsip\*"; DestDir: "{app}\source\notsip"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\tests\*"; DestDir: "{app}\source\tests"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\scripts\*.ps1"; DestDir: "{app}\source\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\pyproject.toml"; DestDir: "{app}\source"; Flags: ignoreversion
+Source: "..\README.md"; DestDir: "{app}\source"; Flags: ignoreversion
+Source: "..\docs\*.md"; DestDir: "{app}\source\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{app}\data"
 Name: "{app}\updates"
 Name: "{app}\runtime"
 Name: "{app}\source"
+Name: "{app}\source\tests"
+Name: "{app}\source\scripts"
+Name: "{app}\source\docs"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
