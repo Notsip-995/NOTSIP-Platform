@@ -9,7 +9,9 @@ class NativeVoiceWorker:
         if platform.system()!='Windows':return {'status':'UNAVAILABLE','reason':'Windows required'}
         try:import sounddevice as sd
         except Exception as e:return {'status':'UNAVAILABLE','reason':f'sounddevice unavailable: {e}'}
-        self.running=True;self.loop=asyncio.get_running_loop();self.thread=threading.Thread(target=self._capture,args=(sd,),daemon=True);self.thread.start();return {'status':'STARTED'}
+        try:self.loop=asyncio.get_running_loop()
+        except RuntimeError:return {'status':'FAILURE','error':'native voice must be started from an active async runtime'}
+        self.running=True;self.thread=threading.Thread(target=self._capture,args=(sd,),daemon=True);self.thread.start();return {'status':'STARTED'}
     def stop(self):
         self.running=False;self._playback_stop.set();return {'status':'STOPPING'}
     def interrupt(self):
@@ -41,10 +43,12 @@ class NativeVoiceWorker:
         with wave.open(out,'wb') as w:w.setnchannels(1);w.setsampwidth(2);w.setframerate(rate);w.writeframes(pcm)
         return out.getvalue()
     async def _utterance(self,pcm,rate):
+        wav=self._wav(pcm,rate)
         try:
-            blob=self._wav(pcm,rate);result=await self.media.transcribe(blob,'audio/wav',getattr(self.settings,'stt_language',''));text=result.get('text','').strip();wake=getattr(self.settings,'wake_word','').strip().lower()
+            result=await self.media.transcribe(wav,'audio/wav',getattr(self.settings,'stt_language',''));text=result.get('text','').strip();wake=getattr(self.settings,'wake_word','').strip().lower()
             if wake and not text.lower().startswith(wake):return
-            await self._emit('voice.transcript',{'text':text,'wake_word':wake})
+            evidence=result.get('path','')
+            await self._emit('voice.transcript',{'text':text,'wake_word':wake,'audio_path':evidence,'audio_mime':'audio/wav'})
         except Exception as e:await self._emit('native_voice.error',{'error':str(e)})
     async def speak_response(self,text):
         if not self.running or not getattr(self.settings,'native_voice_enabled',False):return {'status':'DISABLED'}
