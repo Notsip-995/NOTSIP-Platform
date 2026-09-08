@@ -39,9 +39,9 @@ class Email:
             with smtplib.SMTP_SSL(self._smtp_host,self._smtp_port,timeout=20,context=ssl.create_default_context()) as s:s.login(self._username,self._password);s.send_message(m)
         else:
             with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:
-                if self._smtp_port!=25:s.starttls(context=ssl.create_default_context())
+                s.starttls(context=ssl.create_default_context())
                 s.login(self._username,self._password);s.send_message(m)
-        return {'status':'SUCCESS','to':to,'subject':subject}
+        return {'status':'SUCCESS','to':to,'subject':subject,'transport_tls':True}
     def search(self,mailbox='INBOX',criteria='ALL',limit=20):
         if not self.enabled or not self._imap_host:raise RuntimeError('IMAP not configured')
         c=imaplib.IMAP4_SSL(self._imap_host);c.login(self._username,self._password);c.select(mailbox,readonly=True);_,d=c.search(None,criteria);ids=d[0].split()[-limit:];out=[]
