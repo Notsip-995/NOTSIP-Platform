@@ -32,6 +32,12 @@ _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
+# Keep newly added external credentials under the same secret/approval policy as
+# every other adapter credential, including the active ConfigStore serializer.
+app.CONFIG_SECRET_NAMES.add('business_admin_token')
+app.CONFIG_HIGH_RISK.add('business_admin_token')
+from .product_layer import ConfigStore
+ConfigStore.SECRET_NAMES.add('business_admin_token')
 attach_recovery_runtime(store)
 attach_product(app,require_auth=_require,settings=settings,auth=auth,pairing=pairing,nodes=nodes,recovery=recovery,store=store,agent=agent,events=events,accounts=accounts,maintenance=maintenance,DATA=DATA,native_voice=native_voice)
 attach_completion(app,require_auth=_require,media=media,maintenance=maintenance,store=store,nodes=nodes,oauth=oauth,settings=settings,events=events,registry=registry,agent=agent)
