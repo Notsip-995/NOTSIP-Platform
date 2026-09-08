@@ -1,4 +1,4 @@
-from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry,intellect,memory_service,backups
+from .app import app,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice,registry,intellect,memory_service,backups,web,emailc,policy
 from .runtime_prod import oauth, media, jobs
 from .product_routes import attach as attach_product
 from .completion_routes import attach as attach_completion
@@ -68,7 +68,7 @@ attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
 calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
-attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
+attach_information_fusion(app,_require,store,web)
 attach_perception(app,settings,win=__import__('notsip.app',fromlist=['win']).win,media=media,store=store,events=events,world=__import__('notsip.app',fromlist=['world']).world)
 sensor_world=__import__('notsip.app',fromlist=['world']).world
 attach_sensor_ingress(app,store,sensor_world,events)
@@ -80,7 +80,7 @@ attach_event_reconstruction(app,_require,store,journal)
 _health=HealthAnalytics(DATA)
 attach_health_routes(app,_require,DATA)
 attach_forensics(app,_require,DATA/'workspace')
-attach_advanced_intelligence(app,_require,store,__import__('notsip.app',fromlist=['web']).web,agent,registry,events,settings)
+attach_advanced_intelligence(app,_require,store,web,agent,registry,events,settings)
 attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
