@@ -3,6 +3,9 @@ import asyncio,hashlib,json,os,secrets,time
 from fastapi import Depends,HTTPException,Request,Header
 from fastapi.responses import RedirectResponse
 from .updater import UpdateManager
+from .policy import Risk
+from .tools import Tool
+from .execution_gate import ToolExecutionGate
 
 def _remove(app,paths):app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
 
@@ -12,6 +15,9 @@ def _checkpoint_devices(store):
 def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,events,accounts,maintenance,DATA,native_voice):
     _remove(app,['/api/oauth/login','/api/oauth/callback','/api/oauth/status','/api/federation/register','/api/federation/{node_id}/heartbeat','/api/federation/challenge','/api/federation/{node_id}/rotate','/api/federation/{node_id}/revoke','/api/recovery/checkpoint','/api/recovery/latest','/api/devices/result','/api/devices/heartbeat','/api/devices/{device_id}/commands'])
     updates=UpdateManager(DATA,settings)
+    if agent.registry.get('update_apply') is None:
+        agent.registry.add(Tool('update_apply','Apply a downloaded and cryptographically verified NOTSIP executable update.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:updates.install_and_verify(__import__('pathlib').Path(path).resolve()),True))
+        ToolExecutionGate.wrap_registry(agent.registry)
     @app.get('/api/recovery/check')
     async def recovery_check(_:None=Depends(require_auth)):return recovery.verify_latest()
     @app.get('/api/recovery/state')
@@ -58,9 +64,7 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
         candidate=__import__('pathlib').Path(str(payload.get('path',''))).resolve();update_dir=updates.dir.resolve()
         if update_dir not in candidate.parents or candidate.suffix.lower()!='.exe' or not candidate.is_file():raise HTTPException(400,'update path must point to a downloaded EXE inside NOTSIP updates directory')
-        result=updates.install_and_verify(candidate)
-        async def stop_after_response():await asyncio.sleep(1.0);os._exit(0)
-        asyncio.create_task(stop_after_response());return result
+        return await agent.run_tool('update_apply',{'path':str(candidate)})
     @app.get('/api/oauth/status')
     async def oauth_status(_:None=Depends(require_auth)):return {'mode':auth.mode,'provider':settings.oidc_provider,'configured':auth.oidc.configured,'issuer':auth.oidc.issuer,'client_id_configured':bool(auth.oidc.client_id),'accounts':accounts.list()}
     @app.get('/api/oauth/login')
