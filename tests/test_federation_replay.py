@@ -24,6 +24,17 @@ def test_federation_heartbeat_nonce_replay_is_rejected(tmp_path):
     else:raise AssertionError('replayed heartbeat nonce must be rejected')
 
 
+def test_revoked_federation_node_cannot_resurrect_with_old_token(tmp_path):
+    store=Store(tmp_path);nodes=NodeRegistry(store,'shared-secret')
+    reg_nonce='reg-2';reg_sig=nodes.sign('node-2',reg_nonce);token=nodes.register('node-2','Node','test',[],nonce=reg_nonce,signature=reg_sig)['token']
+    nodes.revoke('node-2',owner='primary-user')
+    nonce='beat-2';signature=nodes.sign('node-2',nonce)
+    try:nodes.heartbeat('node-2',token,[],{},nonce,signature)
+    except PermissionError as exc:assert 'revoked' in str(exc).lower()
+    else:raise AssertionError('revoked node must not be resurrected by heartbeat')
+    assert store.row('SELECT status FROM devices WHERE id=?',('node-2',))['status']=='REVOKED'
+
+
 def test_recovery_checkpoint_detects_tampering(tmp_path):
     recovery=RecoveryManager(tmp_path);path=recovery.checkpoint({'tasks':[],'devices':[],'commands':[],'world':{},'timestamp':time.time()});checkpoint=tmp_path/path
     checkpoint.write_text(checkpoint.read_text(encoding='utf-8').replace('"tasks": []','"tasks": [{"id":"tampered"}]'),encoding='utf-8')
