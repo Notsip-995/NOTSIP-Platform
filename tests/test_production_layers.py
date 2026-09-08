@@ -42,6 +42,18 @@ def test_agent_audit_paths_write_valid_records(tmp_path,monkeypatch):
 def test_intelligence_helpers(tmp_path):
     store=Store(tmp_path);store.fact('The sky is blue','source-a','u1',.8);store.fact('The sky is blue','source-b','u2',.7);world=WorldModel(store);i=Intelligence(store,world);assert i.corroborate('sky')[0]['support']==2;assert len(i.plan('do something')['steps'])==5
 
+def test_intelligence_does_not_count_same_source_as_independent(tmp_path):
+    store=Store(tmp_path)
+    store.fact('Server latency is high','same-source','u1',.8)
+    store.fact('Server latency is high','same-source','u2',.9)
+    store.fact('Server latency is high','second-source','u3',.7)
+    i=Intelligence(store,WorldModel(store));f=i.corroborate('latency')[0]
+    assert f['support']==3
+    assert f['independent_sources']==2
+    assert f['sources']==['same-source','second-source']
+    assert f['best_source_confidence']==.9
+    assert f['corroboration_score']==.7
+
 def test_production_routes_are_assembled():
     paths={r.path for r in app.routes};expected={'/api/voice/transcribe','/api/voice/speak','/api/perception/frame','/api/federation/register','/api/federation/nodes','/api/recovery/checkpoint','/api/integrations/{provider_name}/calendar','/api/update/check','/api/sessions','/api/memory/maintain','/api/diagnostics','/api/backups/{name}/restore'};assert expected <= paths
 
