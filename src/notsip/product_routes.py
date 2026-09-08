@@ -69,11 +69,17 @@ def attach(app,*,require_auth,settings,auth,pairing,nodes,recovery,store,agent,e
     async def update_download(payload:dict,_:None=Depends(require_auth)):
         _require_primary()
         if not settings.github_update_enabled:raise HTTPException(403,'automatic updates disabled')
-        asset_url=str(payload.get('asset_url',''));expected_repo=f"https://github.com/{settings.github_repository}/releases/"
-        if not asset_url.startswith(expected_repo):raise HTTPException(400,'update asset must originate from configured GitHub repository')
-        expected_sha=str(payload.get('sha256','')).strip()
-        if len(expected_sha)!=64:raise HTTPException(400,'update SHA-256 is required')
-        return await updates.download(asset_url,expected_sha)
+        asset_name=str(payload.get('asset_name') or 'NOTSIP.exe').strip()
+        if '/' in asset_name or '\\' in asset_name or asset_name != __import__('pathlib').Path(asset_name).name:raise HTTPException(400,'invalid update asset name')
+        supplied=str(payload.get('sha256','')).strip().lower()
+        try:
+            result=await updates.download_release_asset(asset_name)
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        if supplied and supplied!=str(result.get('sha256','')).lower():
+            try:__import__('pathlib').Path(result['path']).unlink(missing_ok=True)
+            except Exception:pass
+            raise HTTPException(400,'supplied SHA-256 does not match the trusted release manifest')
+        return result
     @app.post('/api/update/apply')
     async def update_apply(payload:dict,_:None=Depends(require_auth)):
         _require_primary()
