@@ -1,13 +1,13 @@
 from __future__ import annotations
-import hashlib,json,os,shutil,subprocess,sys,time
+import hashlib,json,os,shutil,subprocess,sys,time,uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin,urlparse
 import httpx
 from . import __version__
 
 class UpdateManager:
     def __init__(self,root:Path,settings,health_url=''):
-        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://127.0.0.1:{settings.port}/healthz';self.dir=self.root/'updates';self.dir.mkdir(parents=True,exist_ok=True)
+        self.root=Path(root);self.settings=settings;self.health_url=health_url or f'http://127.0.0.1:{settings.port}/healthz';self.dir=(self.root/'updates').resolve();self.dir.mkdir(parents=True,exist_ok=True)
     @property
     def frozen(self):return bool(getattr(sys,'frozen',False))
     @property
@@ -17,6 +17,13 @@ class UpdateManager:
     @staticmethod
     def _trusted_redirect(url:str)->bool:
         p=urlparse(str(url));host=(p.hostname or '').lower();return p.scheme=='https' and host in {'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
+    def _managed_update_path(self,new_exe:Path)->Path:
+        path=Path(new_exe).resolve();
+        try:path.relative_to(self.dir)
+        except ValueError:raise ValueError('self-update executable must reside in the managed updates directory') from None
+        if path.suffix.lower()!='.exe':raise ValueError('self-update executable must be an EXE')
+        if not path.is_file():raise FileNotFoundError(path)
+        return path
     @staticmethod
     def _version_tuple(value:str):
         raw=str(value or '').strip().lower().lstrip('v');parts=raw.split('.')
@@ -41,16 +48,24 @@ class UpdateManager:
     async def download(self,asset_url:str,sha256:str=''):
         if not self._trusted_asset(asset_url):raise ValueError('update asset is not from the configured GitHub release path or is not an EXE')
         if not sha256 or len(sha256.strip())!=64:raise ValueError('update SHA-256 is required')
-        token=os.getenv('NOTSIP_GITHUB_TOKEN','');headers={'Accept':'application/octet-stream'}
-        if token:headers['Authorization']='Bearer '+token
-        target=self.dir/f'update-{int(time.time())}.exe'
-        async with httpx.AsyncClient(timeout=120,follow_redirects=True) as c:
-            r=await c.get(asset_url,headers=headers);r.raise_for_status()
-            if not self._trusted_redirect(str(r.url)):raise ValueError(f'untrusted update redirect destination: {r.url}')
-            target.write_bytes(r.content)
+        token=os.getenv('NOTSIP_GITHUB_TOKEN','');current_url=asset_url;target=self.dir/f'update-{uuid.uuid4().hex}.exe';response=None
+        async with httpx.AsyncClient(timeout=120,follow_redirects=False) as c:
+            for _ in range(6):
+                headers={'Accept':'application/octet-stream'}
+                if token and urlparse(current_url).netloc.lower()=='github.com':headers['Authorization']='Bearer '+token
+                response=await c.get(current_url,headers=headers)
+                if response.is_redirect:
+                    location=response.headers.get('location','').strip()
+                    if not location:raise ValueError('update redirect did not provide a destination')
+                    destination=urljoin(current_url,location)
+                    if not self._trusted_redirect(destination):raise ValueError(f'untrusted update redirect destination: {destination}')
+                    current_url=destination;continue
+                response.raise_for_status();break
+            else:raise ValueError('too many update redirects')
+            target.write_bytes(response.content)
         digest=hashlib.sha256(target.read_bytes()).hexdigest()
         if digest.lower()!=sha256.lower():target.unlink(missing_ok=True);raise ValueError('update SHA-256 verification failed')
-        return {'status':'DOWNLOADED','path':str(target),'sha256':digest,'download_host':urlparse(str(r.url)).hostname}
+        return {'status':'DOWNLOADED','path':str(target),'sha256':digest,'download_host':urlparse(current_url).hostname}
     @staticmethod
     def _powershell_quote(value):return "'"+str(value).replace("'","''")+"'"
     def _verify_authenticode(self,new_exe:Path):
@@ -69,8 +84,7 @@ class UpdateManager:
         if not self.frozen:raise RuntimeError('binary self-update is only available from a frozen installation')
         current=self.current_exe
         if not current.exists():raise FileNotFoundError(current)
-        signer=self._verify_authenticode(new_exe)
+        new_path=self._managed_update_path(new_exe);signer=self._verify_authenticode(new_path)
         if signer.get('status')!='VALID':raise RuntimeError(signer.get('reason','publisher verification unavailable'))
-        backup=self.dir/f'previous-{int(time.time())}.exe';shutil.copy2(current,backup)
-        helper=self.dir/f'apply-{int(time.time())}.ps1';new_s=self._powershell_quote(new_exe);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url);pid=os.getpid()
+        suffix=uuid.uuid4().hex;backup=self.dir/f'previous-{suffix}.exe';helper=self.dir/f'apply-{suffix}.ps1';shutil.copy2(current,backup);new_s=self._powershell_quote(new_path);cur_s=self._powershell_quote(current);backup_s=self._powershell_quote(backup);health_s=self._powershell_quote(self.health_url);pid=os.getpid()
         helper.write_text(f'''param()\n$ErrorActionPreference="Stop"\nStart-Sleep -Seconds 1\ntry {{ Stop-Process -Id {pid} -Force -ErrorAction Stop }} catch {{ if($_.Exception.Message -notmatch "not found|cannot find"){{ throw }} }}\nStart-Sleep -Milliseconds 750\ntry {{ Copy-Item -Force {new_s} {cur_s}; Start-Process {cur_s}; Start-Sleep -Seconds 4; $r=Invoke-WebRequest {health_s} -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){{ throw "health check returned HTTP $($r.StatusCode)" }}; Remove-Item -Force {backup_s} -ErrorAction SilentlyContinue }} catch {{ try {{ Copy-Item -Force {backup_s} {cur_s}; Start-Process {cur_s} }} catch {{ }}; exit 2 }}\n''',encoding='utf-8');subprocess.Popen(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0));return {'status':'STAGED','backup':str(backup),'restart_required':True,'publisher':signer,'health_url':self.health_url}
