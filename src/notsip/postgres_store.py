@@ -52,9 +52,18 @@ class PostgreSQLStore:
     def restore_runtime_state(self,state):
         tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or []
         with self.conn() as c:
+            # Device tokens are intentionally omitted from normal checkpoints. Preserve
+            # existing token hashes for matching device IDs so recovery does not silently
+            # invalidate every paired node on PostgreSQL deployments.
+            existing_tokens={r['id']:r['token_hash'] for r in c.execute('SELECT id,token_hash FROM devices').fetchall()}
             for table in ('commands','tasks','devices','entities','relations','facts'):c.execute(f'DELETE FROM {table}')
             for t in tasks:c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(t.get('id') or str(uuid.uuid4()),t.get('objective',''),t.get('state','PENDING'),int(t.get('priority',0)),t.get('handler','agent'),t.get('data','{}') if isinstance(t.get('data','{}'),str) else json.dumps(t.get('data') or {}),t.get('run_at'),t.get('interval_sec'),int(t.get('retries',0)),float(t.get('created',time.time())),float(t.get('updated',time.time())),t.get('error','')))
-            for d in devices:c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),d.get('token_hash',''),d.get('last_seen'),d.get('status',''),d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
+            repair=[]
+            for d in devices:
+                device_id=d.get('id','');token_hash=d.get('token_hash') or existing_tokens.get(device_id,'')
+                status=d.get('status','') if token_hash else 'REPAIR_REQUIRED'
+                if not token_hash:repair.append(device_id)
+                c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(device_id,d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
             for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(%s,%s,%s,%s,%s)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
             for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(%s,%s,%s,%s,%s,%s,%s)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
             for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
