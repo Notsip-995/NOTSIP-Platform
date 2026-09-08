@@ -34,10 +34,7 @@ class Scheduler:
             except (TypeError,ValueError):return 'invalid task deadline'
         registry=getattr(self.agent,'registry',None);required=[str(x) for x in (payload.get('required_tools') or [])]
         if registry is None:return ''
-        concrete=[name for name in required if registry.get(name) is not None]
-        missing=[]
-        for name in concrete:
-            if self.agent.registry.get(name) is None:missing.append(name)
+        missing=[name for name in required if registry.get(name) is None]
         return f'required tools unavailable: {missing}' if missing else ''
     async def run_one(self,task):
         handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
@@ -54,7 +51,7 @@ class Scheduler:
             if inspect.isawaitable(result):result=await result
             status=str(result.get('status','SUCCESS')) if isinstance(result,dict) else 'SUCCESS';payload['finished_at']=time.time();payload['last_result']=result;self._outcome_metadata(payload,result,status)
             if status=='CONTINUE':
-                self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor});
+                self.store.task_update(task['id'],state='PENDING',run_at=float((result.get('run_at') if isinstance(result,dict) else None) or time.time()),data=json.dumps(payload),error='');event_errors=await self._publish('task.continued',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'actor':actor})
                 if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
                 return {'status':'CONTINUE','result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
             if status in {'UNKNOWN','PARTIAL_SUCCESS'}:self.store.task_update(task['id'],state=status,data=json.dumps(payload),error='' if status=='PARTIAL_SUCCESS' else str(result.get('error','')) if isinstance(result,dict) else '')
@@ -64,7 +61,7 @@ class Scheduler:
             if event_errors:payload['event_publish_errors']=event_errors;self.store.task_update(task['id'],data=json.dumps(payload))
             return {'status':status,'result':result,'execution_id':execution_id,'event_publish_errors':event_errors}
         except Exception as exc:
-            retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time(),'state':'PENDING' if retries<=max_retries else 'FAILED','result':{'status':'FAILURE','error':str(exc)}});verification=payload.get('verification') or {};verification['status']='UNVERIFIED';verification['verified']=False;payload['verification']=verification}
+            retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time(),'state':'PENDING' if retries<=max_retries else 'FAILED','result':{'status':'FAILURE','error':str(exc)}});verification=payload.get('verification') or {};verification['status']='UNVERIFIED';verification['verified']=False;payload['verification']=verification
             if retries<=max_retries:
                 backoff=min(900,2**min(retries,9));self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,data=json.dumps(payload),error=str(exc));event_errors=await self._publish('task.retrying',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retry':retries,'backoff':backoff,'task_data':payload,'actor':actor});return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff,'event_publish_errors':event_errors}
             self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=str(exc),retries=retries);event_errors=await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retries':retries,'task_data':payload,'actor':actor});return {'status':'FAILURE','error':str(exc),'retries':retries,'event_publish_errors':event_errors}
