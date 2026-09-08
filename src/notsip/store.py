@@ -77,7 +77,7 @@ class Store:
         fields['updated']=time.time();self.exec('UPDATE tasks SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',(*fields.values(),tid))
     def restore_runtime_state(self,state):
         if self._backend:return self._backend.restore_runtime_state(state)
-        tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or []
+        tasks=state.get('tasks') or [];world=state.get('world') or {};devices=state.get('devices') or [];commands=state.get('commands') or []
         with self.lock,self.conn() as c:
             existing_tokens={r['id']:r['token_hash'] for r in c.execute('SELECT id,token_hash FROM devices').fetchall()}
             c.execute('DELETE FROM commands');c.execute('DELETE FROM tasks');c.execute('DELETE FROM devices');c.execute('DELETE FROM entities');c.execute('DELETE FROM relations');c.execute('DELETE FROM facts')
@@ -87,10 +87,12 @@ class Store:
                 token_hash=d.get('token_hash') or existing_tokens.get(d.get('id',''),'');status=d.get('status','') if token_hash else 'REPAIR_REQUIRED'
                 if not token_hash:repair.append(d.get('id',''))
                 c.execute('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?)',(d.get('id',''),d.get('name',''),d.get('platform',''),d.get('public_key',''),token_hash,d.get('last_seen'),status,d.get('data','{}') if isinstance(d.get('data','{}'),str) else json.dumps(d.get('data') or {})))
+            for cmd in commands:
+                c.execute('INSERT INTO commands(id,device_id,action,payload,status,created,updated,result) VALUES(?,?,?,?,?,?,?,?)',(cmd.get('id') or str(uuid.uuid4()),cmd.get('device_id',''),cmd.get('action',''),cmd.get('payload','{}') if isinstance(cmd.get('payload','{}'),str) else json.dumps(cmd.get('payload') or {}),cmd.get('status','PENDING'),float(cmd.get('created',time.time())),float(cmd.get('updated',time.time())),cmd.get('result','{}') if isinstance(cmd.get('result','{}'),str) else json.dumps(cmd.get('result') or {})))
             for e in world.get('entities') or []:c.execute('INSERT INTO entities(id,kind,name,data,updated) VALUES(?,?,?,?,?)',(e.get('id',''),e.get('kind',''),e.get('name',''),e.get('data','{}') if isinstance(e.get('data','{}'),str) else json.dumps(e.get('data') or {}),float(e.get('updated',time.time()))))
             for r in world.get('relations') or []:c.execute('INSERT INTO relations(id,subject,predicate,object,confidence,source,ts) VALUES(?,?,?,?,?,?,?)',(r.get('id'),r.get('subject',''),r.get('predicate',''),r.get('object',''),float(r.get('confidence',1)),r.get('source','recovery'),float(r.get('ts',time.time()))))
             for f in world.get('facts') or []:c.execute('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(?,?,?,?,?,?,?)',(f.get('id') or str(uuid.uuid4()),f.get('statement',''),f.get('source','recovery'),f.get('url',''),float(f.get('confidence',.5)),float(f.get('retrieved',time.time())),f.get('metadata','{}') if isinstance(f.get('metadata','{}'),str) else json.dumps(f.get('metadata') or {})))
-        return {'status':'RESTORED','tasks':len(tasks),'devices':len(devices),'devices_requiring_repair':repair,'entities':len(world.get('entities') or []),'relations':len(world.get('relations') or []),'facts':len(world.get('facts') or [])}
+        return {'status':'RESTORED','tasks':len(tasks),'devices':len(devices),'commands':len(commands),'devices_requiring_repair':repair,'entities':len(world.get('entities') or []),'relations':len(world.get('relations') or []),'facts':len(world.get('facts') or [])}
     def audit(self,*args):
         if self._backend:return self._backend.audit(*args)
         self.exec('INSERT INTO audit(user_id,request,interpretation,tool,action,result,ts) VALUES(?,?,?,?,?,?,?)',(*args,time.time()))
