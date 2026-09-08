@@ -9,8 +9,7 @@ def _require_public_https(url):
     parsed=urlsplit(str(url).strip())
     if parsed.scheme!='https' or not parsed.hostname:raise ValueError('OIDC endpoint must use HTTPS')
     if parsed.username or parsed.password:raise ValueError('OIDC endpoint must not contain credentials')
-    try:
-        infos=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
+    try:infos=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
     except socket.gaierror as exc:raise ValueError(f'OIDC endpoint host resolution failed: {parsed.hostname}') from exc
     for info in infos:
         ip=ipaddress.ip_address(info[4][0])
@@ -45,8 +44,6 @@ class SecretStore:
             if os.name=='nt':
                 dec=self._dpapi(raw,True)
                 if dec is not None and len(dec)>=32:return dec[:32]
-                if len(raw)==32:
-                    self._persist_local_key(p,raw);return raw
                 raise RuntimeError('Windows master key cannot be decrypted; refusing insecure key fallback')
             if len(raw)<32:raise RuntimeError('local master key is corrupt')
             return raw[:32]
@@ -60,7 +57,7 @@ class SecretStore:
         with self._lock:
             n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
             try:self.path.chmod(0o600)
-            except OSError:pass
+            except OSError as exc:raise RuntimeError(f'unable to protect encrypted secret store permissions: {exc}') from exc
     def get(self,name,default=None):
         with self._lock:return self.load().get(name,default)
     def set(self,name,value):
@@ -128,7 +125,7 @@ class OIDCProvider:
             r.raise_for_status();return r.json()
     async def userinfo(self,access_token):
         import httpx
-        m=self.metadata or await self.discover();
+        m=self.metadata or await self.discover()
         if not (m.get('userinfo_endpoint') or '').strip():return {}
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.get(self._endpoint('userinfo_endpoint'),headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
