@@ -142,6 +142,13 @@ class Store:
             except Exception:c.rollback();raise
             for r in rows:r['payload']=json.loads(r['payload'])
             return rows
+    def reconcile_commands(self,lease_seconds=None):
+        if self._backend:return self._backend.reconcile_commands(lease_seconds)
+        lease=max(30,int(lease_seconds or os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
+        with self.lock,self.conn() as c:
+            rows=[dict(r) for r in c.execute("SELECT c.id,c.device_id,c.action,d.status AS device_status,d.last_seen FROM commands c JOIN devices d ON d.id=c.device_id WHERE c.status='DELIVERED' AND c.updated<? AND (d.status='STALE' OR d.status='REVOKED' OR d.last_seen<?)",(cutoff,cutoff)).fetchall()]
+            if rows:c.executemany("UPDATE commands SET status='UNKNOWN',updated=?,result=? WHERE id=? AND status='DELIVERED'",[(time.time(),json.dumps({'verified':False,'reason':'device lease expired before command result'}),r['id']) for r in rows])
+            return rows
     def command_result(self,cid,status,result,device_id=None):
         if self._backend:return self._backend.command_result(cid,status,result,device_id)
         with self.lock,self.conn() as c:
