@@ -16,16 +16,7 @@ class PostgreSQLStore:
     def init(self):
         sql='''CREATE TABLE IF NOT EXISTS messages(id BIGSERIAL PRIMARY KEY,role TEXT,content TEXT,ts DOUBLE PRECISION);CREATE TABLE IF NOT EXISTS memories(id BIGSERIAL PRIMARY KEY,user_id TEXT,kind TEXT,content TEXT,weight DOUBLE PRECISION,source TEXT,provenance TEXT,ts DOUBLE PRECISION);'''
         with self.conn() as c:
-            c.execute(sql)
-            c.execute('CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated DOUBLE PRECISION)')
-            c.execute('CREATE TABLE IF NOT EXISTS relations(id BIGSERIAL PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence DOUBLE PRECISION,source TEXT,ts DOUBLE PRECISION)')
-            c.execute('CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence DOUBLE PRECISION,retrieved DOUBLE PRECISION,metadata TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at DOUBLE PRECISION,interval_sec DOUBLE PRECISION,retries INTEGER,created DOUBLE PRECISION,updated DOUBLE PRECISION,error TEXT,idempotency_key TEXT DEFAULT \'\')')
-            c.execute('CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts DOUBLE PRECISION)')
-            c.execute('CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires DOUBLE PRECISION)')
-            c.execute('CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen DOUBLE PRECISION,status TEXT,data TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created DOUBLE PRECISION,updated DOUBLE PRECISION,result TEXT)')
-            cols={r['column_name'] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='tasks'").fetchall()}
+            c.execute(sql);c.execute('CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY,kind TEXT,name TEXT,data TEXT,updated DOUBLE PRECISION)');c.execute('CREATE TABLE IF NOT EXISTS relations(id BIGSERIAL PRIMARY KEY,subject TEXT,predicate TEXT,object TEXT,confidence DOUBLE PRECISION,source TEXT,ts DOUBLE PRECISION)');c.execute('CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,statement TEXT,source TEXT,url TEXT,confidence DOUBLE PRECISION,retrieved DOUBLE PRECISION,metadata TEXT)');c.execute('CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,objective TEXT,state TEXT,priority INTEGER,handler TEXT,data TEXT,run_at DOUBLE PRECISION,interval_sec DOUBLE PRECISION,retries INTEGER,created DOUBLE PRECISION,updated DOUBLE PRECISION,error TEXT,idempotency_key TEXT DEFAULT \'\')');c.execute('CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,user_id TEXT,request TEXT,interpretation TEXT,tool TEXT,action TEXT,result TEXT,ts DOUBLE PRECISION)');c.execute('CREATE TABLE IF NOT EXISTS pairing_codes(code TEXT PRIMARY KEY,expires DOUBLE PRECISION)');c.execute('CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,name TEXT,platform TEXT,public_key TEXT,token_hash TEXT,last_seen DOUBLE PRECISION,status TEXT,data TEXT)');c.execute('CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,device_id TEXT,action TEXT,payload TEXT,status TEXT,created DOUBLE PRECISION,updated DOUBLE PRECISION,result TEXT)');cols={r['column_name'] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='tasks'").fetchall()};
             if 'idempotency_key' not in cols:c.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT DEFAULT ''")
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks(idempotency_key) WHERE idempotency_key <> ''");c.commit()
     def exec(self,sql,args=()):
@@ -88,12 +79,19 @@ class PostgreSQLStore:
         with self.conn() as c:row=c.execute("DELETE FROM pairing_codes WHERE code=%s AND expires>%s RETURNING code",(code.upper(),time.time())).fetchone();c.commit();return bool(row)
     def _owner(self,owner=None):return str(owner or current_actor()).strip() or 'primary-user'
     def pair_device(self,id,name,platform,public_key,token,owner=None):
-        owner=self._owner(owner);existing=self.row('SELECT data FROM devices WHERE id=%s',(id,));data=json.loads(existing['data'] or '{}') if existing else {};data['owner']=owner
+        owner=self._owner(owner);existing=self.row('SELECT data FROM devices WHERE id=%s',(id,))
+        if existing:
+            try:existing_owner=json.loads(existing['data'] or '{}').get('owner')
+            except (TypeError,ValueError):raise PermissionError('existing device metadata is corrupt; ownership cannot be reassigned')
+            if existing_owner not in (None,owner):raise PermissionError('device is already owned by another actor')
+        data=json.loads(existing['data'] or '{}') if existing else {};data['owner']=owner
         self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,platform=EXCLUDED.platform,public_key=EXCLUDED.public_key,token_hash=EXCLUDED.token_hash,last_seen=EXCLUDED.last_seen,status=EXCLUDED.status,data=EXCLUDED.data',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE',json.dumps(data)))
     def device_owner(self,id):
         r=self.row('SELECT data FROM devices WHERE id=%s',(id,));
-        try:return json.loads(r['data'] or '{}').get('owner','primary-user') if r else None
-        except Exception:return 'primary-user'
+        if not r:return None
+        try:
+            data=json.loads(r.get('data') or '{}');owner=data.get('owner','primary-user');return owner if isinstance(owner,str) and owner.strip() else None
+        except (TypeError,ValueError):return None
     def device_owned_by(self,id,owner=None):return self.device_owner(id)==self._owner(owner)
     def device_token_valid(self,id,token):r=self.row('SELECT token_hash FROM devices WHERE id=%s',(id,));return bool(r and secrets.compare_digest(r['token_hash'],hashlib.sha256(token.encode()).hexdigest()))
     def heartbeat(self,id,status='ONLINE'):self.exec('UPDATE devices SET last_seen=%s,status=%s WHERE id=%s',(time.time(),status,id))
@@ -101,7 +99,7 @@ class PostgreSQLStore:
         owner=self._owner(owner);out=[]
         for row in self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name'):
             try:row_owner=json.loads(row.get('data') or '{}').get('owner','primary-user')
-            except Exception:row_owner='primary-user'
+            except (TypeError,ValueError):row_owner=None
             if row_owner==owner:out.append(row)
         return out
     def queue_command(self,device_id,action,payload):
