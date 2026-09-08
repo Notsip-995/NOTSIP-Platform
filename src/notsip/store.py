@@ -105,14 +105,20 @@ class Store:
     def pair_device(self,id,name,platform,public_key,token,owner=None):
         owner=self._owner(owner)
         if self._backend:return self._backend.pair_device(id,name,platform,public_key,token,owner)
-        row=self.row('SELECT data FROM devices WHERE id=?',(id,));data=json.loads(row['data'] or '{}') if row else {};data['owner']=owner
+        row=self.row('SELECT data FROM devices WHERE id=?',(id,))
+        if row:
+            try:existing_owner=json.loads(row.get('data') or '{}').get('owner')
+            except (TypeError,ValueError):raise PermissionError('existing device metadata is corrupt; ownership cannot be reassigned')
+            if existing_owner not in (None,owner):raise PermissionError('device is already owned by another actor')
+        data=json.loads(row['data'] or '{}') if row else {};data['owner']=owner
         self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,platform=excluded.platform,public_key=excluded.public_key,token_hash=excluded.token_hash,last_seen=excluded.last_seen,status=excluded.status,data=excluded.data',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE',json.dumps(data)))
     def _owner(self,owner=None):return str(owner or current_actor()).strip() or 'primary-user'
     def device_owner(self,id):
-        r=self.row('SELECT data FROM devices WHERE id=?',(id,));
+        r=self.row('SELECT data FROM devices WHERE id=?',(id,))
         if not r:return None
-        try:return json.loads(r.get('data') or '{}').get('owner','primary-user')
-        except Exception:return 'primary-user'
+        try:
+            data=json.loads(r.get('data') or '{}');owner=data.get('owner','primary-user');return owner if isinstance(owner,str) and owner.strip() else None
+        except (TypeError,ValueError):return None
     def device_owned_by(self,id,owner=None):return self.device_owner(id)==self._owner(owner)
     def device_token_valid(self,id,token):
         if self._backend:return self._backend.device_token_valid(id,token)
@@ -124,7 +130,7 @@ class Store:
         owner=self._owner(owner);rows=self._backend.devices() if self._backend else self.rows('SELECT id,name,platform,last_seen,status,data FROM devices ORDER BY name');out=[]
         for row in rows:
             try:row_owner=json.loads(row.get('data') or '{}').get('owner','primary-user')
-            except Exception:row_owner='primary-user'
+            except (TypeError,ValueError):row_owner=None
             if row_owner==owner:out.append(row)
         return out
     def queue_command(self,device_id,action,payload):return self._backend.queue_command(device_id,action,payload) if self._backend else self._queue_sqlite(device_id,action,payload)
@@ -137,7 +143,8 @@ class Store:
             c.execute('BEGIN IMMEDIATE')
             try:
                 rows=[dict(r) for r in c.execute("SELECT * FROM commands WHERE device_id=? AND status='PENDING' ORDER BY created LIMIT ?",(device_id,limit)).fetchall()]
-                if rows:ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
+                if rows:
+                    ids=[r['id'] for r in rows];c.executemany("UPDATE commands SET status='DELIVERED',updated=? WHERE id=? AND status='PENDING'",[(time.time(),cid) for cid in ids])
                 c.commit()
             except Exception:c.rollback();raise
             for r in rows:r['payload']=json.loads(r['payload'])
