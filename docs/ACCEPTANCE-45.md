@@ -55,3 +55,5 @@ This document is the implementation contract derived from the project defect aud
 A release is not considered production-ready until the latest CI Windows job passes the actual frozen `NOTSIP.exe` lifecycle: clean start, setup page, real configuration POST, operational console, health, status, diagnostics, persistence across restart, duplicate-launch behavior, installer creation, and installed-copy smoke.
 
 External account authorization, OS permissions, signing material and absent physical hardware remain user/environment gates rather than simulated “success.”
+
+Audit refresh: 2026-09-08 — current `main` was re-audited after the live-configuration fixes; no placeholder/simulator markers or legacy `server05.py`/`OpenAICompatible` path remain in the current source tree.
