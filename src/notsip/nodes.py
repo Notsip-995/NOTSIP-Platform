@@ -1,45 +1,53 @@
 from __future__ import annotations
 import hashlib,hmac,json,os,secrets,time,uuid
 from pathlib import Path
+from .actor_context import current_actor
 class NodeRegistry:
     def __init__(self,store,secret='',lease_seconds=None):
         self.store=store;self.secret=secret or '';self.lease_seconds=int(lease_seconds or os.getenv('NOTSIP_NODE_LEASE_SECONDS','90'));self.world=None
         self.store.exec('CREATE TABLE IF NOT EXISTS node_nonces(node_id TEXT NOT NULL,nonce TEXT NOT NULL,expires REAL NOT NULL,PRIMARY KEY(node_id,nonce))')
     def _require_shared_secret(self):
         if not self.secret:raise PermissionError('federation shared secret is not configured')
+    def _owner(self,owner=None):return str(owner or current_actor()).strip() or 'primary-user'
+    def _require_owner(self,node_id,owner=None):
+        actor=self._owner(owner)
+        if not self.store.device_owned_by(node_id,actor):raise PermissionError('federation node is not owned by current actor')
+        return actor
     def sign(self,node_id,nonce):self._require_shared_secret();return hmac.new(self.secret.encode(),f'{node_id}:{nonce}'.encode(),hashlib.sha256).hexdigest()
     def verify(self,node_id,nonce,signature):self._require_shared_secret();return bool(signature) and bool(nonce) and hmac.compare_digest(self.sign(node_id,nonce),signature)
     def _consume_nonce(self,node_id,nonce,ttl=600):
         now=time.time();self.store.exec('DELETE FROM node_nonces WHERE expires<=?',(now,))
         try:self.store.exec('INSERT INTO node_nonces(node_id,nonce,expires) VALUES(?,?,?)',(node_id,nonce,now+ttl));return True
         except Exception:return False
-    def _publish_world(self,node_id,data):
+    def _publish_world(self,node_id,data,owner=None):
         if self.world is None:return
-        self.world.upsert(f'node:{node_id}','device',data.get('name') or node_id,{'node_id':node_id,'platform':data.get('platform','unknown'),'capabilities':data.get('capabilities',[]),'status':data.get('status','ONLINE'),'health':data.get('health',{}),'lease_expires':data.get('lease_expires'),'last_seen':data.get('last_seen',time.time())})
-        self.world.relate('NOTSIP','controls',f'node:{node_id}',.95,'federation')
-    def register(self,node_id,name,platform,capabilities=None,public_key='',nonce='',signature=''):
+        actor=self._owner(owner);self.world.upsert(f'node:{node_id}','device',data.get('name') or node_id,{'node_id':node_id,'platform':data.get('platform','unknown'),'capabilities':data.get('capabilities',[]),'status':data.get('status','ONLINE'),'health':data.get('health',{}),'lease_expires':data.get('lease_expires'),'last_seen':data.get('last_seen',time.time())},owner=actor)
+        self.world.relate('NOTSIP','controls',f'node:{node_id}',.95,'federation',owner=actor)
+    def register(self,node_id,name,platform,capabilities=None,public_key='',nonce='',signature='',owner=None):
+        actor=self._owner(owner)
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
-        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token);data={'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps(data),node_id));self._publish_world(node_id,data);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds}
-    def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature=''):
+        token=secrets.token_urlsafe(32);now=time.time();self.store.pair_device(node_id,name,platform,public_key,token,owner=actor);data={'capabilities':capabilities or [],'lease_expires':now+self.lease_seconds,'registered_at':now,'node_epoch':1,'name':name,'platform':platform,'status':'ONLINE','last_seen':now};self.store.exec('UPDATE devices SET data=? WHERE id=?',(json.dumps({**data,'owner':actor}),node_id));self._publish_world(node_id,data,actor);return {'node_id':node_id,'token':token,'lease_seconds':self.lease_seconds,'owner':actor}
+    def heartbeat(self,node_id,token,capabilities=None,health=None,nonce='',signature='',owner=None):
+        actor=self._owner(owner)
+        if not self.store.device_owned_by(node_id,actor):raise PermissionError('federation node is not owned by current actor')
         if not self.store.device_token_valid(node_id,token):raise PermissionError('invalid node token')
         if not self.verify(node_id,nonce,signature):raise PermissionError('invalid federation signature')
         if not self._consume_nonce(node_id,nonce):raise PermissionError('replayed federation nonce')
-        data=self.store.row('SELECT data,status,name,platform,last_seen FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time(),'status':'ONLINE','name':data.get('name',node_id) if data else node_id,'platform':data.get('platform','unknown') if data else 'unknown','last_seen':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));self._publish_world(node_id,cur);return cur
-    def rotate(self,node_id):
-        if not self.store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise KeyError(node_id)
-        token=secrets.token_urlsafe(32);self.store.exec('UPDATE devices SET token_hash=?,status=? WHERE id=?',(hashlib.sha256(token.encode()).hexdigest(),'ONLINE',node_id));return {'node_id':node_id,'token':token,'rotated_at':time.time()}
-    def revoke(self,node_id):
-        self.store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));self._publish_world(node_id,{'name':node_id,'platform':'unknown','capabilities':[],'status':'REVOKED','last_seen':time.time()});return {'node_id':node_id,'status':'REVOKED'}
-    def reconcile(self):
-        now=time.time();out=[]
-        for r in self.store.rows('SELECT id,data,status,name,platform,last_seen FROM devices'):
-            d=json.loads(r['data'] or '{}');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
+        data=self.store.row('SELECT data,status,name,platform,last_seen FROM devices WHERE id=?',(node_id,));cur=json.loads(data['data'] or '{}') if data else {};cur.update({'owner':actor,'capabilities':capabilities or cur.get('capabilities',[]),'health':health or {},'lease_expires':time.time()+self.lease_seconds,'last_heartbeat':time.time(),'status':'ONLINE','name':data.get('name',node_id) if data else node_id,'platform':data.get('platform','unknown') if data else 'unknown','last_seen':time.time()});self.store.exec('UPDATE devices SET last_seen=?,status=?,data=? WHERE id=?',(time.time(),'ONLINE',json.dumps(cur),node_id));self._publish_world(node_id,cur,actor);return cur
+    def rotate(self,node_id,owner=None):
+        actor=self._require_owner(node_id,owner);token=secrets.token_urlsafe(32);self.store.exec('UPDATE devices SET token_hash=?,status=? WHERE id=?',(hashlib.sha256(token.encode()).hexdigest(),'ONLINE',node_id));return {'node_id':node_id,'token':token,'rotated_at':time.time(),'owner':actor}
+    def revoke(self,node_id,owner=None):
+        actor=self._require_owner(node_id,owner);self.store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));self._publish_world(node_id,{'name':node_id,'platform':'unknown','capabilities':[],'status':'REVOKED','last_seen':time.time()},actor);return {'node_id':node_id,'status':'REVOKED','owner':actor}
+    def reconcile(self,owner=None):
+        actor=self._owner(owner);now=time.time();out=[]
+        for r in self.store.devices(actor):
+            d=json.loads(r.get('data') or '{}');exp=d.get('lease_expires');status=r['status'] if exp is None else r['status'] if r['status']=='REVOKED' else ('ONLINE' if float(exp)>now else 'STALE')
             if status!=r['status']:self.store.exec('UPDATE devices SET status=? WHERE id=?',(status,r['id']))
-            current={'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[]),'name':r.get('name') or r['id'],'platform':r.get('platform') or 'unknown','last_seen':r.get('last_seen')};self._publish_world(r['id'],current);out.append(current)
+            current={'id':r['id'],'status':status,'lease_expires':exp,'capabilities':d.get('capabilities',[]),'name':r.get('name') or r['id'],'platform':r.get('platform') or 'unknown','last_seen':r.get('last_seen'),'owner':actor};self._publish_world(r['id'],current,actor);out.append(current)
         return out
-    def recovery_plan(self):
-        nodes=self.reconcile();return {'generated_at':time.time(),'nodes':nodes,'actions':[{'node':n['id'],'action':'redispatch_or_recover'} for n in nodes if n['status']=='STALE']}
+    def recovery_plan(self,owner=None):
+        nodes=self.reconcile(owner);return {'generated_at':time.time(),'nodes':nodes,'actions':[{'node':n['id'],'action':'redispatch_or_recover'} for n in nodes if n['status']=='STALE']}
 class RecoveryManager:
     def __init__(self,root:Path):self.root=Path(root);self.dir=self.root/'recovery';self.dir.mkdir(parents=True,exist_ok=True)
     def checkpoint(self,state):
