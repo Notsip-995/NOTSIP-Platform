@@ -4,9 +4,9 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token'}
+SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token'}
 CONFIG_LOAD_ERROR='';SECRET_LOAD_ERROR=''
-DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'WRITE_CALENDAR':2,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'DELETE_FILES':4,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2,'READ_WEATHER':0,'READ_NEWS':0,'NAVIGATION':1,'FLIGHT_PLANNING':3,'MANAGE_ACCOUNTS':3}
+DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'WRITE_CALENDAR':2,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'DELETE_FILES':4,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2,'READ_WEATHER':0,'READ_NEWS':0,'NAVIGATION':1,'FLIGHT_PLANNING':3,'MANAGE_ACCOUNTS':3,'BUSINESS_ADMIN':3}
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     perception_screen_enabled:bool=False; health_interval:int=Field(15,ge=5,le=3600); checkpoint_interval:int=Field(300,ge=30,le=86400); proactive_interval:int=Field(60,ge=15,le=86400); memory_maintenance_interval:int=Field(900,ge=60,le=604800)
     smtp_host:str=''; smtp_port:int=Field(587,ge=1,le=65535); imap_host:str=''; email_username:str=''; email_password:str=''; oauth_authorize_url:str=''; oauth_token_url:str=''; oauth_client_id:str=''; oauth_client_secret:str=''; oauth_redirect_uri:str=''; oauth_scopes:str=''
     android_poll_seconds:int=Field(3,ge=1,le=3600); node_lease_seconds:int=Field(90,ge=15,le=86400); node_shared_secret:str=''
-    remote_compute_url:str=''; remote_sensing_url:str=''; home_adapter_url:str=''; biometric_adapter_url:str=''; flight_planning_url:str=''
+    remote_compute_url:str=''; remote_sensing_url:str=''; home_adapter_url:str=''; biometric_adapter_url:str=''; flight_planning_url:str=''; business_admin_url:str=''
     database_url:str=''; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'; windows_publisher_thumbprint:str=''
     log_level:Literal['DEBUG','INFO','WARNING','ERROR']='INFO'; log_max_bytes:int=Field(10485760,ge=1024,le=1073741824); log_backup_count:int=Field(5,ge=1,le=50); open_browser:bool=True; node_name:str='NOTSIP'
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore',validate_assignment=True)
