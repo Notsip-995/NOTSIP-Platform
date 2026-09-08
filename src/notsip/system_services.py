@@ -21,19 +21,24 @@ def _telemetry():
     return out
 
 class WorkflowEngine:
+    MAX_STEPS=50
     def __init__(self,store,agent):self.store=store;self.agent=agent
     async def run(self,steps):
+        if not isinstance(steps,list) or not steps:return {'status':'FAILURE','error':'workflow steps required','steps':[]}
+        if len(steps)>self.MAX_STEPS:return {'status':'FAILURE','error':f'workflow too large; maximum is {self.MAX_STEPS} steps','steps':[]}
         normalized=[];ids=set()
         for index,step in enumerate(steps):
             if not isinstance(step,dict):return {'status':'FAILURE','error':f'step {index} must be an object','steps':[]}
             sid=str(step.get('id') or index+1)
             if sid in ids:return {'status':'FAILURE','error':f'duplicate step id: {sid}','steps':[]}
             ids.add(sid);normalized.append((sid,step))
-        results={};remaining={sid:step for sid,step in normalized};ordered=[]
+        results={};remaining={sid:step for sid,step in normalized}
         while remaining:
             progressed=False
             for sid,step in list(remaining.items()):
                 deps=[str(x) for x in step.get('depends_on',step.get('requires',[])) or []]
+                if any(d not in results and d not in remaining for d in deps):
+                    results[sid]={'status':'FAILURE','error':f'unknown dependency: {next(d for d in deps if d not in results and d not in remaining)}'};del remaining[sid];progressed=True;continue
                 if any(d not in results for d in deps):continue
                 condition=str(step.get('condition','always')).lower();dep_results=[results[d] for d in deps]
                 failed_dep=any(r.get('status') not in {'SUCCESS','DEGRADED','SKIPPED'} for r in dep_results)
@@ -41,16 +46,29 @@ class WorkflowEngine:
                     results[sid]={'status':'SKIPPED','reason':'dependency failed'};del remaining[sid];progressed=True;continue
                 if condition in {'on_failure','failure'} and not failed_dep:
                     results[sid]={'status':'SKIPPED','reason':'failure condition not met'};del remaining[sid];progressed=True;continue
-                objective=str(step.get('objective','')).strip()
-                if not objective:
-                    results[sid]={'status':'FAILURE','error':'empty workflow step'};del remaining[sid];progressed=True
-                    if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
-                    continue
-                result=await self.agent.handle(objective);results[sid]={'status':result.get('status','UNKNOWN'),'objective':objective,'result':result};del remaining[sid];ordered.append(sid);progressed=True
-                if result.get('status') not in {'SUCCESS','DEGRADED'} and not step.get('continue_on_failure',False):
-                    return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
-            if not progressed:return {'status':'FAILURE','error':'workflow dependency cycle or unknown dependency','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+                if condition in {'on_unknown','unknown'} and not any(r.get('status')=='UNKNOWN' for r in dep_results):
+                    results[sid]={'status':'SKIPPED','reason':'unknown condition not met'};del remaining[sid];progressed=True;continue
+                if 'tool' in step:
+                    tool=str(step.get('tool','')).strip();args=step.get('args') or {}
+                    if not tool or not isinstance(args,dict):
+                        results[sid]={'status':'FAILURE','error':'tool step requires a tool and object args'};del remaining[sid];progressed=True
+                        if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+                        continue
+                    result=await self.agent.run_tool(tool,args);objective=f'tool:{tool}'
+                else:
+                    objective=str(step.get('objective','')).strip()
+                    if not objective:
+                        results[sid]={'status':'FAILURE','error':'empty workflow step'};del remaining[sid];progressed=True
+                        if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+                        continue
+                    result=await self.agent.handle(objective)
+                status=str(result.get('status','UNKNOWN')) if isinstance(result,dict) else 'UNKNOWN';results[sid]={'status':status,'objective':objective,'result':result};del remaining[sid];progressed=True
+                accepted=status in {'SUCCESS','DEGRADED','SKIPPED'} or (status=='PARTIAL_SUCCESS' and step.get('accept_partial',False))
+                if not accepted and not step.get('continue_on_failure',False):return {'status':'UNKNOWN' if status=='UNKNOWN' else 'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+            if not progressed:return {'status':'FAILURE','error':'workflow dependency cycle or unsatisfied dependency','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
         final=[results[k]|{'id':k} for k,_ in normalized];return {'status':'SUCCESS' if all(r.get('status') in {'SUCCESS','DEGRADED','SKIPPED'} for r in final) else 'PARTIAL_SUCCESS','steps':final}
+
+# remaining file content unchanged from current branch
 
 def _search_workspace(workspace,query,limit=25,max_bytes=2_000_000):
     needle=str(query or '').strip().lower()
@@ -68,43 +86,6 @@ def _search_workspace(workspace,query,limit=25,max_bytes=2_000_000):
         results.append({'path':str(p.relative_to(workspace.root)),'snippet':text[max(0,idx-160):min(len(text),idx+len(needle)+240)],'match_offset':idx})
     return {'status':'SUCCESS','query':query,'results':results,'matches':len(results)}
 
-def attach(app,require_auth,settings_obj,store,agent,registry):
-    workspace=Workspace(Path(settings_obj.data_dir).resolve()/'workspace');workflow=WorkflowEngine(store,agent)
-    def register(name,desc,capability,risk,schema,fn,destructive=False):
-        if registry.get(name) is None:registry.add(Tool(name,desc,capability,risk,schema,fn,destructive))
-    register('current_time','Return current local time and date.','TIME',Risk.LOW,{'type':'object','properties':{}},lambda:_time_snapshot())
-    register('system_telemetry','Return host, CPU, memory, disk, network and battery telemetry when available.','SYSTEM_DIAGNOSTICS',Risk.LOW,{'type':'object','properties':{}},lambda:_telemetry())
-    register('search_workspace','Search authorized workspace file contents, not just filenames.','READ_FILES',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'limit':{'type':'integer'}},'required':['query']},lambda query,limit=25:_search_workspace(workspace,query,limit))
-    register('file_rename','Rename an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_rename(workspace,source,target))
-    register('file_copy','Copy an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_copy(workspace,source,target))
-    register('file_move','Move an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_move(workspace,source,target))
-    register('file_delete','Delete an authorized workspace file.','DELETE_FILES',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:_delete(workspace,path),True)
-    register('file_archive','Create a ZIP archive of authorized workspace paths.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'paths':{'type':'array','items':{'type':'string'}},'archive':{'type':'string'}},'required':['paths','archive']},lambda paths,archive:_archive(workspace,paths,archive))
-    register('python_exec','Run code in an isolated sandbox; requires approval.','CODE_EXECUTION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
-    register('simulate','Run a deterministic numeric simulation in an isolated sandbox; requires approval.','SIMULATION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
-    ToolExecutionGate.wrap_registry(registry)
-    @app.get('/api/time')
-    async def current_time(_:None=Depends(require_auth)):return _time_snapshot()
-    @app.get('/api/telemetry')
-    async def telemetry(_:None=Depends(require_auth)):return _telemetry()
-    @app.get('/api/files/search')
-    async def file_search(q:str,limit:int=25,_:None=Depends(require_auth)):return await agent.run_tool('search_workspace',{'query':q,'limit':limit})
-    @app.post('/api/files/rename')
-    async def file_rename(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_rename',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
-    @app.post('/api/files/copy')
-    async def file_copy(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_copy',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
-    @app.post('/api/files/move')
-    async def file_move(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_move',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
-    @app.post('/api/files/delete')
-    async def file_delete(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_delete',{'path':str(payload.get('path',''))})
-    @app.post('/api/files/archive')
-    async def file_archive(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_archive',{'paths':list(payload.get('paths') or []),'archive':str(payload.get('archive',''))})
-    @app.post('/api/workflows/run')
-    async def workflow_run(payload:dict,_:None=Depends(require_auth)):
-        steps=payload.get('steps') or []
-        if not isinstance(steps,list) or not steps:raise HTTPException(400,'workflow steps required')
-        if len(steps)>50:raise HTTPException(400,'workflow too large')
-        return await workflow.run(steps)
 
 def _rename(workspace,source,target):
     src=workspace.path(source);dst=workspace.path(target);dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst);return {'status':'SUCCESS','path':str(dst.relative_to(workspace.root))}
@@ -140,3 +121,39 @@ def _python_exec(workspace,code,timeout=30):
         else:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'isolated code sandbox is not configured; set NOTSIP_CODE_SANDBOX=docker with Docker available'}
         r=subprocess.run(cmd,cwd=str(workspace.root),capture_output=True,text=True,timeout=timeout);return {'status':'SUCCESS' if r.returncode==0 else 'FAILURE','returncode':r.returncode,'stdout':r.stdout[-20000:],'stderr':r.stderr[-20000:]}
     finally:script.unlink(missing_ok=True)
+
+def attach(app,require_auth,settings_obj,store,agent,registry):
+    workspace=Workspace(Path(settings_obj.data_dir).resolve()/'workspace');workflow=WorkflowEngine(store,agent)
+    def register(name,desc,capability,risk,schema,fn,destructive=False):
+        if registry.get(name) is None:registry.add(Tool(name,desc,capability,risk,schema,fn,destructive))
+    register('current_time','Return current local time and date.','TIME',Risk.LOW,{'type':'object','properties':{}},lambda:_time_snapshot())
+    register('system_telemetry','Return host, CPU, memory, disk, network and battery telemetry when available.','SYSTEM_DIAGNOSTICS',Risk.LOW,{'type':'object','properties':{}},lambda:_telemetry())
+    register('search_workspace','Search authorized workspace file contents, not just filenames.','READ_FILES',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'limit':{'type':'integer'}},'required':['query']},lambda query,limit=25:_search_workspace(workspace,query,limit))
+    register('file_rename','Rename an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_rename(workspace,source,target))
+    register('file_copy','Copy an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_copy(workspace,source,target))
+    register('file_move','Move an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_move(workspace,source,target))
+    register('file_delete','Delete an authorized workspace file.','DELETE_FILES',Risk.HIGH,{'type':'object','properties':{'path':{'type':'string'}},'required':['path']},lambda path:_delete(workspace,path),True)
+    register('file_archive','Create a ZIP archive of authorized workspace paths.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'paths':{'type':'array','items':{'type':'string'}},'archive':{'type':'string'}},'required':['paths','archive']},lambda paths,archive:_archive(workspace,paths,archive))
+    register('python_exec','Run code in an isolated sandbox; requires approval.','CODE_EXECUTION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
+    register('simulate','Run a deterministic numeric simulation in an isolated sandbox; requires approval.','SIMULATION',Risk.HIGH,{'type':'object','properties':{'code':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':60}},'required':['code']},lambda code,timeout=30:_python_exec(workspace,code,timeout),True)
+    ToolExecutionGate.wrap_registry(registry)
+    @app.get('/api/time')
+    async def current_time(_:None=Depends(require_auth)):return _time_snapshot()
+    @app.get('/api/telemetry')
+    async def telemetry(_:None=Depends(require_auth)):return _telemetry()
+    @app.get('/api/files/search')
+    async def file_search(q:str,limit:int=25,_:None=Depends(require_auth)):return await agent.run_tool('search_workspace',{'query':q,'limit':limit})
+    @app.post('/api/files/rename')
+    async def file_rename(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_rename',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
+    @app.post('/api/files/copy')
+    async def file_copy(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_copy',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
+    @app.post('/api/files/move')
+    async def file_move(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_move',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
+    @app.post('/api/files/delete')
+    async def file_delete(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_delete',{'path':str(payload.get('path',''))})
+    @app.post('/api/files/archive')
+    async def file_archive(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_archive',{'paths':list(payload.get('paths') or []),'archive':str(payload.get('archive',''))})
+    @app.post('/api/workflows/run')
+    async def workflow_run(payload:dict,_:None=Depends(require_auth)):
+        steps=payload.get('steps') or []
+        return await workflow.run(steps)
