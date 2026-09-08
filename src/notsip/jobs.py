@@ -2,8 +2,8 @@ from __future__ import annotations
 import asyncio, inspect, json, os, socket, time, uuid
 
 class Scheduler:
-    def __init__(self,store):
-        self.store=store; self.handlers={}; self.running=True; self.max_retries=4; self.worker_id=f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}'; self.reclaim_after=300
+    def __init__(self,store,events=None):
+        self.store=store; self.events=events; self.handlers={}; self.running=True; self.max_retries=4; self.worker_id=f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}'; self.reclaim_after=300
         self._recover_stale()
     def _recover_stale(self):
         now=time.time()
@@ -16,10 +16,19 @@ class Scheduler:
     def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key=''):
         payload=dict(data or {});key=idempotency_key or uuid.uuid4().hex;payload.setdefault('max_retries',self.max_retries);payload.setdefault('idempotency_key',key)
         return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,key)
+    async def _publish(self,event_type,payload):
+        if self.events is None:return
+        try:
+            from .events import Event
+            await self.events.publish(Event(event_type,payload,'scheduler'))
+        except Exception:
+            return
     async def run_one(self,task):
         handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
         if not fn:
-            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');return {'status':'FAILURE','error':'no handler registered'}
+            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}')
+            await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':f'no handler registered: {handler}','attempt':int(task.get('retries') or 0) + 1})
+            return {'status':'FAILURE','error':'no handler registered'}
         execution_id=uuid.uuid4().hex;started=time.time();payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id})
         claimed=self.store.claim_task(task['id'],json.dumps(payload))
         if not claimed:return {'status':'SKIPPED','reason':'task already claimed'}
@@ -27,14 +36,17 @@ class Scheduler:
             result=fn(dict(task, data=json.dumps(payload)))
             if inspect.isawaitable(result):result=await result
             payload.update({'finished_at':time.time(),'last_result':result})
-            if task.get('interval_sec'):self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
-            else:self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
+            if task.get('interval_sec'):
+                self.store.task_update(task['id'],state='PENDING',run_at=time.time()+task['interval_sec'],data=json.dumps(payload),error='')
+            else:
+                self.store.task_update(task['id'],state='COMPLETED',data=json.dumps(payload),error='')
+            await self._publish('task.completed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'result':result,'task_data':payload,'recurring':bool(task.get('interval_sec'))})
             return {'status':'SUCCESS','result':result,'execution_id':execution_id}
         except Exception as exc:
             retries=int(task.get('retries') or 0)+1;max_retries=int(payload.get('max_retries',self.max_retries));payload.update({'last_error':str(exc),'failed_at':time.time()})
             if retries<=max_retries:
-                backoff=min(900,2**min(retries,9));self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,data=json.dumps(payload),error=str(exc));return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff}
-            self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=str(exc),retries=retries);return {'status':'FAILURE','error':str(exc),'retries':retries}
+                backoff=min(900,2**min(retries,9));self.store.task_update(task['id'],state='PENDING',run_at=time.time()+backoff,retries=retries,data=json.dumps(payload),error=str(exc));await self._publish('task.retrying',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retry':retries,'backoff':backoff,'task_data':payload});return {'status':'RETRYING','error':str(exc),'retry':retries,'backoff':backoff}
+            self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=str(exc),retries=retries);await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'execution_id':execution_id,'error':str(exc),'retries':retries,'task_data':payload});return {'status':'FAILURE','error':str(exc),'retries':retries}
     async def tick(self):
         self._recover_stale();now=time.time()
         for task in self.store.tasks('PENDING'):
