@@ -31,6 +31,7 @@ def attach(app, *, require_auth, approvals, registry, audit_log, agent):
             if item['status']=='APPROVED' and payload.get('execute',True):
                 ctx=item.get('context') or {};name=str(ctx.get('tool',''));args=ctx.get('args') or {};tool=registry.get(name)
                 if not tool:raise HTTPException(400,'approved tool no longer exists')
+                if not getattr(tool,'_notsip_guarded',False):raise HTTPException(500,'approved tool is not protected by the central execution gate')
                 if str(ctx.get('actor') or 'primary-user')!=actor:raise HTTPException(403,'approval actor mismatch')
                 try:
                     result=tool.fn(**args);result=await result if hasattr(result,'__await__') else result
