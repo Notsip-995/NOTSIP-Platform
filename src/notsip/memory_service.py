@@ -1,4 +1,3 @@
-from __future__ import annotations
 import time
 
 KINDS={'episodic','semantic','procedural','working','preference','relationship','system','perception'}
@@ -19,13 +18,13 @@ class MemoryService:
         rows=self.store.rows('SELECT id,kind,content,weight,source,provenance,ts FROM memories WHERE user_id=? ORDER BY weight DESC,ts DESC LIMIT ?',(self.user_id,limit));seen=set();kept=[];duplicates=[]
         for r in rows:
             key=(r['kind'],' '.join(str(r['content']).lower().split()))
-            if key in seen:
-                duplicates.append(r['id']);continue
+            if key in seen:duplicates.append(r['id']);continue
             seen.add(key);kept.append(r)
         for memory_id in duplicates:self.store.exec('DELETE FROM memories WHERE id=? AND user_id=?',(memory_id,self.user_id))
-        if duplicates:
-            try:self.store.exec('DELETE FROM memory_fts WHERE rowid NOT IN (SELECT id FROM memories)',())
-            except Exception:pass
+        # PostgreSQL intentionally has no SQLite FTS shadow table; SQLite cleanup
+        # must surface actual failures instead of swallowing every exception.
+        if duplicates and not getattr(self.store,'_backend',None):
+            self.store.exec('DELETE FROM memory_fts WHERE rowid NOT IN (SELECT id FROM memories)',())
         return {'status':'SUCCESS','examined':len(rows),'unique':len(kept),'duplicates_removed':len(duplicates)}
     def snapshot(self,limit=200):
         return {'memory_kinds':sorted({r['kind'] for r in self.store.rows('SELECT kind FROM memories WHERE user_id=?',(self.user_id,))}),'items':self.store.memories(self.user_id,'',limit)}
