@@ -10,11 +10,12 @@ from .retrieval_router import RetrievalRouter
 from .compute_planner import ComputePlanner
 from .uncertainty_engine import UncertaintyEngine
 from .connectors import Browser
+from .information_services import WeatherService,NewsService,RoadNavigationService,FlightPlanningService,ExternalInformationUnavailable
 
 
 def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=None):
     decomposer=TaskDecomposer();predictor=PredictiveMaintenance();priority=EventPriorityEngine();router=ResourceRouter(store);robots=RobotGateway(store,router);retrieval=RetrievalRouter();uncertainty=UncertaintyEngine();settings=settings or getattr(agent,'settings',None);profile=agent.profile
-    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute);browser=Browser()
+    remote_compute=RemoteComputeAdapter(getattr(settings,'remote_compute_url',''),getattr(settings,'remote_compute_token',''));remote_sensing=RemoteSensingAdapter(getattr(settings,'remote_sensing_url',''),getattr(settings,'remote_sensing_token',''));home=HomeAdapter(getattr(settings,'home_adapter_url',''),getattr(settings,'home_adapter_token',''));biometrics=BiometricTelemetryAdapter(getattr(settings,'biometric_adapter_url',''),getattr(settings,'biometric_adapter_token',''));compute=ComputePlanner(router,remote_compute);browser=Browser();weather=WeatherService();news=NewsService(getattr(settings,'brave_api_key',''));navigation=RoadNavigationService();flight=FlightPlanningService(getattr(settings,'flight_planning_url',''),getattr(settings,'flight_planning_token',''))
     @app.get('/api/intelligence/decompose')
     async def decompose(objective:str,_:None=Depends(require_auth)):return decomposer.decompose(objective)
     @app.post('/api/intelligence/priority')
@@ -35,11 +36,27 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
     async def browser_extract(url:str,wait_ms:int=1000,_:None=Depends(require_auth)):return await browser.extract(url,max(0,min(int(wait_ms),5000)))
     @app.post('/api/intelligence/browser-interact')
     async def browser_interact(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('browser_interact',{'url':str(payload.get('url','')),'actions':payload.get('actions') or [],'wait_ms':int(payload.get('wait_ms',300))})
+    @app.get('/api/information/weather')
+    async def weather_route(location:str,days:int=2,timezone:str='auto',_:None=Depends(require_auth)):
+        try:return await weather.forecast(location,days,timezone)
+        except ExternalInformationUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+    @app.get('/api/information/news')
+    async def news_route(query:str,count:int=10,_:None=Depends(require_auth)):
+        try:return await news.search(query,count)
+        except ExternalInformationUnavailable as exc:return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+    @app.get('/api/information/route')
+    async def route_information(olat:float,olon:float,dlat:float,dlon:float,profile_name:str='driving',_:None=Depends(require_auth)):return await navigation.route(olat,olon,dlat,dlon,profile_name)
+    @app.post('/api/information/flight-plan')
+    async def flight_plan(payload:dict,_:None=Depends(require_auth)):
+        try:return await agent.run_tool('flight_plan',{'payload':payload or {}})
+        except Exception as exc:
+            if 'aviation/flight planning provider is not configured' in str(exc):return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':str(exc)}
+            raise
     @app.get('/api/profile')
     async def profile_get(_:None=Depends(require_auth)):return profile.load()
     @app.patch('/api/profile')
     async def profile_update(payload:dict,_:None=Depends(require_auth)):
-        allowed={'identity','preferred_name','communication_style','preferences','routines','important_people','projects','devices','accounts','locations','schedules','frequently_used_services','long_term_objectives'};unknown=set(payload)-allowed
+        allowed={'identity','preferred_name','communication_style','preferences','routines','important_people','projects','devices','accounts','locations','schedules','frequently_used_services','permissions','long_term_objectives'};unknown=set(payload)-allowed
         if unknown:raise HTTPException(400,f'unsupported profile fields: {sorted(unknown)}')
         return profile.update(**payload)
     @app.get('/api/resources')
@@ -80,6 +97,10 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('plan_compute','Determine whether compute should run locally or through the configured remote provider.','COMPUTE',Risk.LOW,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},lambda capability='COMPUTE',prefer_local=True:asdict(compute.choose(capability,prefer_local))))
         registry.add(Tool('uncertainty_assess','Assess evidence, conflicts and authorization before reasoning or acting.','INTELLIGENCE',Risk.LOW,{'type':'object','properties':{'evidence_count':{'type':'integer'},'confidence':{'type':'number'},'conflicts':{'type':'integer'},'missing_fields':{'type':'array'},'authorized':{'type':'boolean'},'reversible':{'type':'boolean'}}},lambda evidence_count=0,confidence=0,conflicts=0,missing_fields=None,authorized=True,reversible=True:asdict(uncertainty.evaluate(evidence_count=evidence_count,confidence=confidence,conflicts=conflicts,missing_fields=missing_fields or [],authorized=authorized,reversible=reversible))))
         registry.add(Tool('browser_interact','Interact with a public browser page using authorized Playwright actions; outcome includes verification.','CONTROL_COMPUTER',Risk.MEDIUM,{'type':'object','properties':{'url':{'type':'string'},'actions':{'type':'array'},'wait_ms':{'type':'integer'}},'required':['url','actions']},browser.interact))
+        registry.add(Tool('weather_forecast','Retrieve current/future weather from a public forecast provider.','READ_WEATHER',Risk.LOW,{'type':'object','properties':{'location':{'type':'string'},'days':{'type':'integer'},'timezone':{'type':'string'}},'required':['location']},weather.forecast))
+        registry.add(Tool('news_search','Retrieve current news with source/publication metadata when configured.','READ_NEWS',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'count':{'type':'integer'}},'required':['query']},news.search))
+        registry.add(Tool('route_navigation','Plan a road route without controlling a vehicle.','NAVIGATION',Risk.LOW,{'type':'object','properties':{'origin_lat':{'type':'number'},'origin_lon':{'type':'number'},'dest_lat':{'type':'number'},'dest_lon':{'type':'number'},'profile':{'type':'string'}},'required':['origin_lat','origin_lon','dest_lat','dest_lon']},navigation.route))
+        registry.add(Tool('flight_plan','Generate an authorized flight plan through the configured aviation provider without aircraft control.','FLIGHT_PLANNING',Risk.HIGH,{'type':'object','properties':{'payload':{'type':'object'}},'required':['payload']},flight.plan))
         registry.add(Tool('select_resource','Select a healthy authorized execution node.','CONTROL_SERVER',Risk.MEDIUM,{'type':'object','properties':{'capability':{'type':'string'},'prefer_local':{'type':'boolean'}},'required':['capability']},router.select))
         registry.add(Tool('remote_compute','Submit authorized compute work to the configured remote compute provider.','COMPUTE',Risk.MEDIUM,{'type':'object','properties':{'job_type':{'type':'string'},'payload':{'type':'object'}},'required':['job_type']},remote_compute.submit))
         registry.add(Tool('remote_sensing','Query the configured lawful remote-sensing provider.','INTERNET_SEARCH',Risk.MEDIUM,{'type':'object','properties':{'params':{'type':'object'}}},remote_sensing.query))
@@ -88,4 +109,4 @@ def attach(app,require_auth,store,web,agent,registry=None,events=None,settings=N
         registry.add(Tool('biometric_latest','Read authorized biometric telemetry; never a medical diagnosis.','ACCESS_CAMERA',Risk.MEDIUM,{'type':'object','properties':{}},biometrics.latest))
         registry.add(Tool('robot_command','Queue an authorized command for a connected robot and await device verification.','CONTROL_ROBOTICS',Risk.HIGH,{'type':'object','properties':{'node_id':{'type':'string'},'action':{'type':'string'},'payload':{'type':'object'}},'required':['node_id','action']},lambda node_id,action,payload=None:robots.command(node_id,action,payload),True))
         ToolExecutionGate=__import__('notsip.execution_gate',fromlist=['ToolExecutionGate']).ToolExecutionGate;ToolExecutionGate.wrap_registry(registry)
-    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'retrieval':retrieval,'compute':compute,'uncertainty':uncertainty,'profile':profile,'browser':browser,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
+    return {'decomposer':decomposer,'predictor':predictor,'priority':priority,'router':router,'retrieval':retrieval,'compute':compute,'uncertainty':uncertainty,'profile':profile,'browser':browser,'weather':weather,'news':news,'navigation':navigation,'flight':flight,'remote_compute':remote_compute,'remote_sensing':remote_sensing,'home':home,'biometrics':biometrics}
