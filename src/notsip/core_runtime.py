@@ -17,6 +17,7 @@ from .state_hardening import install as install_state_hardening
 from .calendar_service import attach as attach_calendar_service
 from .information_fusion import attach as attach_information_fusion
 from .event_reconstruction import attach as attach_event_reconstruction
+from .perception_loop import attach as attach_perception
 from .background import attach as attach_background
 from .health_analytics import HealthAnalytics
 from .health_routes import attach as attach_health_routes
@@ -41,6 +42,7 @@ attach_system_services(app,_require,settings,store,agent,registry)
 install_state_hardening(store,jobs,app)
 calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
+attach_perception(app,settings,win=__import__('notsip.app',fromlist=['win']).win,media=media,store=store,events=events,world=__import__('notsip.app',fromlist=['world']).world)
 journal=EventJournal(DATA)
 _original_publish=events.publish
 async def _journaled_publish(event):journal.append(event);return await _original_publish(event)
