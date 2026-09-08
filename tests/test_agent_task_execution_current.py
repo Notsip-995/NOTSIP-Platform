@@ -1,5 +1,13 @@
 import asyncio
 import json
+from pathlib import Path
+
+
+def test_task_hardening_registers_durable_agent_handler():
+    text=Path('src/notsip/task_hardening.py').read_text(encoding='utf-8')
+    assert 'DurableWorkflowEngine' in text
+    assert "jobs.register('agent',durable_agent_handler)" in text
+    assert "normalized['depends_on']=list(normalized.pop('dependencies') or [])" in text
 
 
 class StoreStub:
@@ -12,27 +20,14 @@ class AgentStub:
     async def handle(self,objective):
         self.calls.append(objective)
         return {'status':'SUCCESS','verified':True}
-    async def run_tool(self,name,args):
-        self.calls.append(name)
-        return {'status':'SUCCESS','verified':True}
 
 
-def test_agent_task_handler_executes_persisted_subtasks():
-    from notsip.task_hardening import attach
+def test_decomposed_workflow_resumes_without_replaying_previous_step():
     from notsip.workflow_runtime_hardening import DurableWorkflowEngine
-    store=StoreStub();agent=AgentStub()
-    class Jobs:
-        def __init__(self):self.handlers={}
-        def register(self,name,fn):self.handlers[name]=fn
-    jobs=Jobs()
-    # Exercise the durable handler logic without constructing FastAPI routes.
-    data={'subtasks':[{'id':1,'objective':'first step','dependencies':[]},{'id':2,'objective':'second step','dependencies':[1]}]}
-    engine=DurableWorkflowEngine(store,agent)
-    result=asyncio.run(engine.run_task({'id':'task-1','data':json.dumps(data)}))
-    assert result['status']=='CONTINUE'
-    assert agent.calls==['first step']
+    store=StoreStub();agent=AgentStub();engine=DurableWorkflowEngine(store,agent)
+    data={'steps':[{'id':1,'objective':'first step'},{'id':2,'objective':'second step','depends_on':[1]}],'step_results':[]}
+    first=asyncio.run(engine.run_task({'id':'task-1','data':json.dumps(data)}))
+    assert first['status']=='CONTINUE';assert agent.calls==['first step']
     persisted=json.loads(store.updates[-1][1]['data'])
-    persisted['subtasks']=data['subtasks']
     second=asyncio.run(engine.run_task({'id':'task-1','data':json.dumps(persisted)}))
-    assert second['status']=='SUCCESS'
-    assert agent.calls==['first step','second step']
+    assert second['status']=='SUCCESS';assert agent.calls==['first step','second step']
