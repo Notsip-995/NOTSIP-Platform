@@ -14,7 +14,6 @@ def _time_snapshot():
     now=datetime.now(ZoneInfo(settings.local_timezone));utc=datetime.now(timezone.utc)
     return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
 
-
 def _telemetry():
     disk=shutil.disk_usage(Path(settings.data_dir).resolve());out={'host':socket.gethostname(),'platform':platform.platform(),'python':platform.python_version(),'cpu_count':os.cpu_count(),'disk':{'total':disk.total,'used':disk.used,'free':disk.free},'timestamp':time.time()}
     try:
@@ -34,12 +33,29 @@ class WorkflowEngine:
             if result.get('status')=='UNKNOWN':break
         return {'status':'SUCCESS' if all(r.get('result',{}).get('status') in {'SUCCESS','DEGRADED'} for r in results) else 'PARTIAL_SUCCESS','steps':results}
 
+def _search_workspace(workspace, query, limit=25, max_bytes=2_000_000):
+    needle=str(query or '').strip().lower()
+    if not needle:raise ValueError('query is required')
+    results=[];total=0
+    for p in workspace.root.rglob('*'):
+        if len(results)>=max(1,min(int(limit),100)):break
+        if not p.is_file():continue
+        try:
+            if p.stat().st_size>max_bytes:continue
+            text=p.read_text(encoding='utf-8')
+        except (UnicodeDecodeError,OSError):continue
+        low=text.lower();idx=low.find(needle)
+        if idx<0:continue
+        start=max(0,idx-160);end=min(len(text),idx+len(needle)+240);results.append({'path':str(p.relative_to(workspace.root)),'snippet':text[start:end],'match_offset':idx});total+=1
+    return {'status':'SUCCESS','query':query,'results':results,'matches':total}
+
 def attach(app,require_auth,settings_obj,store,agent,registry):
     workspace=Workspace(Path(settings_obj.data_dir).resolve()/'workspace');workflow=WorkflowEngine(store,agent)
     def register(name,desc,capability,risk,schema,fn,destructive=False):
         if registry.get(name) is None:registry.add(Tool(name,desc,capability,risk,schema,fn,destructive))
     register('current_time','Return current local time and date.','TIME',Risk.LOW,{'type':'object','properties':{}},lambda:_time_snapshot())
     register('system_telemetry','Return host, CPU, memory, disk, network and battery telemetry when available.','SYSTEM_DIAGNOSTICS',Risk.LOW,{'type':'object','properties':{}},lambda:_telemetry())
+    register('search_workspace','Search authorized workspace file contents, not just filenames.','READ_FILES',Risk.LOW,{'type':'object','properties':{'query':{'type':'string'},'limit':{'type':'integer'}},'required':['query']},lambda query,limit=25:_search_workspace(workspace,query,limit))
     register('file_rename','Rename an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_rename(workspace,source,target))
     register('file_copy','Copy an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_copy(workspace,source,target))
     register('file_move','Move an authorized workspace file.','WRITE_FILES',Risk.MEDIUM,{'type':'object','properties':{'source':{'type':'string'},'target':{'type':'string'}},'required':['source','target']},lambda source,target:_move(workspace,source,target))
@@ -52,6 +68,8 @@ def attach(app,require_auth,settings_obj,store,agent,registry):
     async def current_time(_:None=Depends(require_auth)):return _time_snapshot()
     @app.get('/api/telemetry')
     async def telemetry(_:None=Depends(require_auth)):return _telemetry()
+    @app.get('/api/files/search')
+    async def file_search(q:str,limit:int=25,_:None=Depends(require_auth)):return await agent.run_tool('search_workspace',{'query':q,'limit':limit})
     @app.post('/api/files/rename')
     async def file_rename(payload:dict,_:None=Depends(require_auth)):return await agent.run_tool('file_rename',{'source':str(payload.get('source','')),'target':str(payload.get('target',''))})
     @app.post('/api/files/copy')
@@ -71,19 +89,15 @@ def attach(app,require_auth,settings_obj,store,agent,registry):
 
 def _rename(workspace,source,target):
     src=workspace.path(source);dst=workspace.path(target);dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst);return {'status':'SUCCESS','path':str(dst.relative_to(workspace.root))}
-
 def _copy(workspace,source,target):
     src=workspace.path(source);dst=workspace.path(target);dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(src,dst);return {'status':'SUCCESS','path':str(dst.relative_to(workspace.root)),'bytes':dst.stat().st_size}
-
 def _move(workspace,source,target):return _rename(workspace,source,target)
-
 def _delete(workspace,path):
     p=workspace.path(path)
     if not p.exists():raise FileNotFoundError(path)
     if p.is_dir():shutil.rmtree(p)
     else:p.unlink()
     return {'status':'SUCCESS','deleted':path}
-
 def _archive(workspace,paths,archive):
     ap=workspace.path(archive);ap.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(ap,'w',zipfile.ZIP_DEFLATED) as z:
@@ -95,7 +109,6 @@ def _archive(workspace,paths,archive):
             elif p.is_file():z.write(p,p.relative_to(workspace.root).as_posix())
             else:raise FileNotFoundError(rel)
     return {'status':'SUCCESS','archive':str(ap.relative_to(workspace.root)),'bytes':ap.stat().st_size}
-
 def _python_exec(workspace,code,timeout=30):
     p=workspace.root/'runtime_exec';p.mkdir(parents=True,exist_ok=True);script=p/'run.py';script.write_text(code,encoding='utf-8')
     try:
