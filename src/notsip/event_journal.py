@@ -1,12 +1,21 @@
 from __future__ import annotations
-import json, threading, time
+import json,threading,time
 from pathlib import Path
+
+_SENSITIVE={'password','passwd','secret','token','api_key','access_token','refresh_token','client_secret','authorization','cookie','set-cookie','device_token','event_hmac_secret','pairing_secret','node_shared_secret'}
+
+def _redact(value):
+    if isinstance(value,dict):
+        return {str(k):('[REDACTED]' if str(k).lower().replace('-','_') in _SENSITIVE or any(part in str(k).lower() for part in ('password','secret','token')) else _redact(v)) for k,v in value.items()}
+    if isinstance(value,list):return [_redact(v) for v in value]
+    if isinstance(value,tuple):return [_redact(v) for v in value]
+    return value
 
 class EventJournal:
     def __init__(self, root, max_events=20000):
         self.path=Path(root)/'runtime'/'events.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.max_events=max(1000,int(max_events));self.lock=threading.RLock()
     def append(self,event):
-        row={'ts':time.time(),'type':event.type,'source':event.source,'timestamp':event.timestamp,'payload':event.payload}
+        row={'ts':time.time(),'type':event.type,'source':event.source,'timestamp':event.timestamp,'payload':_redact(event.payload)}
         with self.lock,self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,default=str)+'\n')
         self._trim();return row
     def _trim(self):
