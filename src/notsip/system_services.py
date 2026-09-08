@@ -1,42 +1,61 @@
 from __future__ import annotations
-import json, os, platform, shutil, socket, subprocess, time, zipfile
-from datetime import datetime, timezone
+import json,os,platform,shutil,socket,subprocess,time,zipfile
+from datetime import datetime,timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from fastapi import Depends, HTTPException
+from fastapi import Depends,HTTPException
 from .config import settings
-from .tools import Workspace, Registry, Tool
+from .tools import Workspace,Registry,Tool
 from .policy import Risk
 from .execution_gate import ToolExecutionGate
 
 
 def _time_snapshot():
-    now=datetime.now(ZoneInfo(settings.local_timezone));utc=datetime.now(timezone.utc)
-    return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
+    now=datetime.now(ZoneInfo(settings.local_timezone));utc=datetime.now(timezone.utc);return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
 
 def _telemetry():
     disk=shutil.disk_usage(Path(settings.data_dir).resolve());out={'host':socket.gethostname(),'platform':platform.platform(),'python':platform.python_version(),'cpu_count':os.cpu_count(),'disk':{'total':disk.total,'used':disk.used,'free':disk.free},'timestamp':time.time()}
     try:
-        import psutil
-        vm=psutil.virtual_memory();out['memory']={'total':vm.total,'available':vm.available,'used':vm.used,'percent':vm.percent};out['cpu_percent']=psutil.cpu_percent(interval=0.1);out['boot_time']=psutil.boot_time();out['net']={name:{'is_up':stats.isup,'speed':stats.speed,'mtu':stats.mtu} for name,stats in psutil.net_if_stats().items()};battery=psutil.sensors_battery();out['battery']=None if battery is None else {'percent':battery.percent,'plugged':battery.power_plugged}
+        import psutil;vm=psutil.virtual_memory();out['memory']={'total':vm.total,'available':vm.available,'used':vm.used,'percent':vm.percent};out['cpu_percent']=psutil.cpu_percent(interval=.1);out['boot_time']=psutil.boot_time();out['net']={name:{'is_up':stats.isup,'speed':stats.speed,'mtu':stats.mtu} for name,stats in psutil.net_if_stats().items()};battery=psutil.sensors_battery();out['battery']=None if battery is None else {'percent':battery.percent,'plugged':battery.power_plugged}
     except Exception as exc:out['metrics_note']=f'extended psutil metrics unavailable: {exc}'
     return out
 
 class WorkflowEngine:
     def __init__(self,store,agent):self.store=store;self.agent=agent
     async def run(self,steps):
-        results=[]
+        normalized=[];ids=set()
         for index,step in enumerate(steps):
-            objective=str(step.get('objective','')).strip()
-            if not objective:results.append({'index':index,'status':'FAILURE','error':'empty workflow step'});break
-            result=await self.agent.handle(objective);results.append({'index':index,'objective':objective,'result':result})
-            if result.get('status')=='UNKNOWN':break
-        return {'status':'SUCCESS' if all(r.get('result',{}).get('status') in {'SUCCESS','DEGRADED'} for r in results) else 'PARTIAL_SUCCESS','steps':results}
+            if not isinstance(step,dict):return {'status':'FAILURE','error':f'step {index} must be an object','steps':[]}
+            sid=str(step.get('id') or index+1)
+            if sid in ids:return {'status':'FAILURE','error':f'duplicate step id: {sid}','steps':[]}
+            ids.add(sid);normalized.append((sid,step))
+        results={};remaining={sid:step for sid,step in normalized};ordered=[]
+        while remaining:
+            progressed=False
+            for sid,step in list(remaining.items()):
+                deps=[str(x) for x in step.get('depends_on',step.get('requires',[])) or []]
+                if any(d not in results for d in deps):continue
+                condition=str(step.get('condition','always')).lower();dep_results=[results[d] for d in deps]
+                failed_dep=any(r.get('status') not in {'SUCCESS','DEGRADED','SKIPPED'} for r in dep_results)
+                if condition in {'on_success','success'} and failed_dep:
+                    results[sid]={'status':'SKIPPED','reason':'dependency failed'};del remaining[sid];progressed=True;continue
+                if condition in {'on_failure','failure'} and not failed_dep:
+                    results[sid]={'status':'SKIPPED','reason':'failure condition not met'};del remaining[sid];progressed=True;continue
+                objective=str(step.get('objective','')).strip()
+                if not objective:
+                    results[sid]={'status':'FAILURE','error':'empty workflow step'};del remaining[sid];progressed=True
+                    if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+                    continue
+                result=await self.agent.handle(objective);results[sid]={'status':result.get('status','UNKNOWN'),'objective':objective,'result':result};del remaining[sid];ordered.append(sid);progressed=True
+                if result.get('status') not in {'SUCCESS','DEGRADED'} and not step.get('continue_on_failure',False):
+                    return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+            if not progressed:return {'status':'FAILURE','error':'workflow dependency cycle or unknown dependency','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
+        final=[results[k]|{'id':k} for k,_ in normalized];return {'status':'SUCCESS' if all(r.get('status') in {'SUCCESS','DEGRADED','SKIPPED'} for r in final) else 'PARTIAL_SUCCESS','steps':final}
 
-def _search_workspace(workspace, query, limit=25, max_bytes=2_000_000):
+def _search_workspace(workspace,query,limit=25,max_bytes=2_000_000):
     needle=str(query or '').strip().lower()
     if not needle:raise ValueError('query is required')
-    results=[];total=0
+    results=[]
     for p in workspace.root.rglob('*'):
         if len(results)>=max(1,min(int(limit),100)):break
         if not p.is_file():continue
@@ -44,10 +63,10 @@ def _search_workspace(workspace, query, limit=25, max_bytes=2_000_000):
             if p.stat().st_size>max_bytes:continue
             text=p.read_text(encoding='utf-8')
         except (UnicodeDecodeError,OSError):continue
-        low=text.lower();idx=low.find(needle)
+        idx=text.lower().find(needle)
         if idx<0:continue
-        start=max(0,idx-160);end=min(len(text),idx+len(needle)+240);results.append({'path':str(p.relative_to(workspace.root)),'snippet':text[start:end],'match_offset':idx});total+=1
-    return {'status':'SUCCESS','query':query,'results':results,'matches':total}
+        results.append({'path':str(p.relative_to(workspace.root)),'snippet':text[max(0,idx-160):min(len(text),idx+len(needle)+240)],'match_offset':idx})
+    return {'status':'SUCCESS','query':query,'results':results,'matches':len(results)}
 
 def attach(app,require_auth,settings_obj,store,agent,registry):
     workspace=Workspace(Path(settings_obj.data_dir).resolve()/'workspace');workflow=WorkflowEngine(store,agent)
