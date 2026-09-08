@@ -35,8 +35,8 @@ def attach(app,require_auth,store,jobs):
         actor=current_actor();objective=str(payload.get('objective','')).strip();handler=str(payload.get('handler','agent')).strip()
         if not objective:raise HTTPException(400,'objective is required')
         if handler not in jobs.handlers:raise HTTPException(400,f'unknown task handler: {handler}')
+        explicit_subtasks='subtasks' in payload or bool((payload.get('data') or {}).get('subtasks'))
         data=_task_data(payload,actor)
-        explicit_subtasks='subtasks' in payload or 'subtasks' in data
         if not data['subtasks'] and handler=='agent' and not explicit_subtasks:
             plan=decomposer.decompose(objective)
             if plan.get('status')=='SUCCESS':
