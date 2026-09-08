@@ -3,83 +3,76 @@ import json
 import threading
 import time
 from functools import wraps
-from pathlib import Path
-
 
 class ToolExecutionGate:
     """Central guard used by Tool.fn so every invocation observes policy."""
-    _policy = None
-    _approvals = None
-    _lock = threading.RLock()
+    _policy=None
+    _approvals=None
+    _lock=threading.RLock()
 
     @classmethod
-    def configure(cls, policy, approvals):
-        cls._policy = policy
-        cls._approvals = approvals
+    def configure(cls,policy,approvals):
+        cls._policy=policy;cls._approvals=approvals
 
     @classmethod
-    def _approved(cls, name, args):
-        approvals = cls._approvals
-        if approvals is None:
-            return False
+    def _approved(cls,name,args):
+        approvals=cls._approvals
+        if approvals is None:return False
         with cls._lock:
             try:
-                data = approvals._load()
-                now = time.time()
-                canonical = json.dumps(args, sort_keys=True, separators=(',', ':'), default=str)
-                candidates=[]
+                data=approvals._load();now=time.time();canonical=json.dumps(args,sort_keys=True,separators=(',',':'),default=str);candidates=[]
                 for item in data.values():
-                    if item.get('status') != 'APPROVED' or float(item.get('decided',0)) + 60 < now:
-                        continue
+                    if item.get('status')!='APPROVED' or float(item.get('decided',0))+60<now:continue
                     context=item.get('context') or {}
-                    if context.get('tool') != name:
-                        continue
-                    expected=json.dumps(context.get('args') or {}, sort_keys=True, separators=(',', ':'), default=str)
-                    if expected == canonical:
-                        candidates.append(item)
-                if not candidates:
-                    return False
-                item=min(candidates,key=lambda x:float(x.get('decided',0)))
-                item['status']='EXECUTING'
-                item['execution_claimed']=now
-                approvals._save(data)
-                return item['id']
-            except Exception:
-                return False
+                    if context.get('tool')!=name:continue
+                    expected=json.dumps(context.get('args') or {},sort_keys=True,separators=(',',':'),default=str)
+                    if expected==canonical:candidates.append(item)
+                if not candidates:return False
+                item=min(candidates,key=lambda x:float(x.get('decided',0)));item['status']='EXECUTING';item['execution_claimed']=now;approvals._save(data);return item['id']
+            except Exception:return False
 
     @classmethod
-    def wrap_registry(cls, registry):
+    def wrap_registry(cls,registry):
         for tool in registry.all():
-            if getattr(tool,'_notsip_guarded',False):
-                continue
+            if getattr(tool,'_notsip_guarded',False):continue
             original=tool.fn
             @wraps(original)
-            def guarded(*args, __tool=tool, __original=original, **kwargs):
+            def guarded(*args,__tool=tool,__original=original,**kwargs):
                 approved=bool(kwargs.pop('_notsip_approved',False))
-                grant=cls._approved(__tool.name,args and args[0] if len(args)==1 else kwargs) if not approved else True
+                grant=True if approved else cls._approved(__tool.name,args[0] if len(args)==1 and isinstance(args[0],dict) else kwargs)
                 policy=cls._policy
-                if policy is None:
-                    raise RuntimeError('NOTSIP tool policy gate is not configured')
+                if policy is None:raise RuntimeError('NOTSIP tool policy gate is not configured')
                 d=policy.decide(__tool.risk,__tool.destructive,__tool.capability,approved=bool(grant))
                 if not d.allowed:
+                    if grant and grant is not True:cls._release_approval(grant,d.reason)
                     raise PermissionError(d.reason)
-                result=__original(*args,**kwargs)
-                if grant and grant is not True:
-                    cls._finish_approval(grant)
+                try:result=__original(*args,**kwargs)
+                except Exception as exc:
+                    if grant and grant is not True:cls._finish_approval(grant,False,str(exc))
+                    raise
+                if grant and grant is not True:cls._finish_approval(grant,True,'')
                 return result
-            tool.fn=guarded
-            tool._notsip_original_fn=original
-            tool._notsip_guarded=True
+            tool.fn=guarded;tool._notsip_original_fn=original;tool._notsip_guarded=True
 
     @classmethod
-    def _finish_approval(cls, approval_id):
+    def _release_approval(cls,approval_id,reason):
         approvals=cls._approvals
-        if approvals is None:
-            return
+        if approvals is None:return
+        with cls._lock:
+            try:
+                data=approvals._load();item=data.get(approval_id)
+                if item and item.get('status')=='EXECUTING':item['status']='APPROVED';item['execution_claimed']=None;item['execution_blocked']=reason;approvals._save(data)
+            except Exception:return
+
+    @classmethod
+    def _finish_approval(cls,approval_id,success,error=''):
+        approvals=cls._approvals
+        if approvals is None:return
         with cls._lock:
             try:
                 data=approvals._load();item=data.get(approval_id)
                 if item and item.get('status')=='EXECUTING':
-                    item['status']='EXECUTED';item['executed']=time.time();approvals._save(data)
-            except Exception:
-                return
+                    item['status']='EXECUTED' if success else 'FAILED';item['executed']=time.time()
+                    if error:item['execution_error']=error
+                    approvals._save(data)
+            except Exception:return
