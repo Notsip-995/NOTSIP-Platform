@@ -1,11 +1,10 @@
 from __future__ import annotations
 import json,time
 from collections import Counter
-from pathlib import Path
-from fastapi import Depends, HTTPException
+from fastapi import Depends,HTTPException
 
 class EventReconstructor:
-    def __init__(self,store,journal=None): self.store,self.journal=store,journal
+    def __init__(self,store,journal=None):self.store,self.journal=store,journal
     def reconstruct(self,since=None,until=None,limit=500):
         lo=float(since) if since is not None else 0;hi=float(until) if until is not None else float('inf');events=[]
         if self.journal:
@@ -18,8 +17,12 @@ class EventReconstructor:
         events.sort(key=lambda x:x['ts']);gaps=[]
         for a,b in zip(events,events[1:]):
             delta=b['ts']-a['ts']
-            if delta>300:gaps.append({'from':a['ts'],'to':b['ts'],'seconds':delta})
-        return {'status':'SUCCESS','generated_at':time.time(),'window':{'since':lo,'until':None if hi==float('inf') else hi},'events':events[-max(1,min(int(limit),5000)):],'counts':dict(Counter(e.get('type') or 'unknown' for e in events)),'gaps':gaps,'confidence':0.9 if events else 0.25}
+            if delta>300:gaps.append({'from':a['ts'],'to':b['ts'],'seconds':delta,'impact':'timeline may be incomplete'})
+        counts=dict(Counter(e.get('type') or 'unknown' for e in events));coverage=min(1.0,len(events)/20);gap_penalty=min(.5,len(gaps)*.1);confidence=max(.1,min(.95,.25+.65*coverage-gap_penalty)) if events else .1
+        hypotheses=[]
+        if gaps:hypotheses.append({'type':'missing_observations','confidence':min(.8,.4+.1*len(gaps)),'evidence':gaps})
+        if counts.get('audit',0) and any(k in counts for k in ('perception.observed','health.warning','maintenance.prediction')):hypotheses.append({'type':'mixed_operational_and_observation_timeline','confidence':.7,'evidence_types':sorted(counts)})
+        return {'status':'SUCCESS','generated_at':time.time(),'window':{'since':lo,'until':None if hi==float('inf') else hi},'events':events[-max(1,min(int(limit),5000)):],'counts':counts,'gaps':gaps,'hypotheses':hypotheses,'confidence':confidence,'confidence_explanation':'confidence estimates event coverage and penalizes detected timeline gaps; it is not causal proof'}
 
 def attach(app,require_auth,store,journal=None):
     recon=EventReconstructor(store,journal)
@@ -28,5 +31,4 @@ def attach(app,require_auth,store,journal=None):
         if since is not None and until is not None and until<since:raise HTTPException(400,'until must be >= since')
         return recon.reconstruct(since,until,limit)
     @app.get('/api/events/recent')
-    async def recent_events(limit:int=200,_:None=Depends(require_auth)):
-        return {'events':journal.recent(limit) if journal else []}
+    async def recent_events(limit:int=200,_:None=Depends(require_auth)):return {'events':journal.recent(limit) if journal else []}
