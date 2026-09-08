@@ -1,13 +1,13 @@
 from __future__ import annotations
 import ipaddress,json,socket,time
-from urllib.parse import urlparse
+from urllib.parse import urlparse,quote
 import httpx
 
 class AdapterUnavailable(RuntimeError): pass
 
 def _public_url(url: str) -> bool:
-    p=urlparse(str(url));
-    if p.scheme not in {'https','http'} or not p.hostname:return False
+    p=urlparse(str(url))
+    if p.scheme!='https' or not p.hostname:return False
     host=p.hostname
     try:
         ip=ipaddress.ip_address(socket.gethostbyname(host))
@@ -40,8 +40,9 @@ class HomeAdapter:
     def configured(self):return bool(self.endpoint and self.token and _public_url(self.endpoint))
     async def command(self, device_id, action, payload=None):
         if not self.configured:raise AdapterUnavailable('home/building adapter is not configured')
+        path=quote(str(device_id),safe='')
         async with httpx.AsyncClient(timeout=20) as c:
-            r=await c.post(self.endpoint+'/devices/'+device_id+'/commands',json={'action':action,'payload':payload or {}},headers={'Authorization':'Bearer '+self.token});r.raise_for_status();d=r.json()
+            r=await c.post(self.endpoint+'/devices/'+path+'/commands',json={'action':action,'payload':payload or {}},headers={'Authorization':'Bearer '+self.token});r.raise_for_status();d=r.json()
         return {'status':'QUEUED' if d.get('status') in {'QUEUED','ACCEPTED'} else d.get('status','UNKNOWN'),'device_id':device_id,'action':action,'provider_result':d}
 
 class BiometricTelemetryAdapter:
@@ -52,4 +53,4 @@ class BiometricTelemetryAdapter:
         if not self.configured:raise AdapterUnavailable('biometric telemetry adapter is not configured')
         async with httpx.AsyncClient(timeout=20) as c:
             r=await c.get(self.endpoint+'/latest',headers={'Authorization':'Bearer '+self.token});r.raise_for_status();data=r.json()
-        return {'status':'SUCCESS','measurement':data,'is_diagnosis':False,'retrieved_at':time.time()}
+        return {'status':'SUCCESS','measurement':data,'interpretation':None,'warning':None,'diagnosis':None,'is_diagnosis':False,'retrieved_at':time.time()}
