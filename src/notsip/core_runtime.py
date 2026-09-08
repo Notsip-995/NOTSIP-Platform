@@ -33,6 +33,7 @@ from .session_hardening import attach as attach_session_hardening
 from .task_hardening import attach as attach_task_hardening
 from .pairing_hardening import attach as attach_pairing_hardening
 from .windows_hardening import attach as attach_windows_hardening
+from .distributed_failover import attach as attach_distributed_failover
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 oauth.accounts=accounts
 jobs.events=events
@@ -57,7 +58,8 @@ install_state_hardening(store,jobs,app)
 calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
 attach_information_fusion(app,_require,store,__import__('notsip.app',fromlist=['web']).web)
 attach_perception(app,settings,win=__import__('notsip.app',fromlist=['win']).win,media=media,store=store,events=events,world=__import__('notsip.app',fromlist=['world']).world)
-attach_sensor_ingress(app,store,__import__('notsip.app',fromlist=['world']).world,events)
+sensor_world=__import__('notsip.app',fromlist=['world']).world
+attach_sensor_ingress(app,store,sensor_world,events)
 journal=EventJournal(DATA)
 _original_publish=events.publish
 async def _journaled_publish(event):journal.append(event);return await _original_publish(event)
@@ -74,6 +76,7 @@ attach_session_hardening(app,_require,agent,DATA)
 attach_task_hardening(app,_require,store,jobs)
 attach_pairing_hardening(app,_require,store,pairing)
 attach_windows_hardening(registry,__import__('notsip.app',fromlist=['win']).win)
+attach_distributed_failover(events,store)
 event_reasoning=EventReasoningLoop(events,jobs).attach()
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval,_health,_telemetry)
 @app.get('/healthz',include_in_schema=False)
