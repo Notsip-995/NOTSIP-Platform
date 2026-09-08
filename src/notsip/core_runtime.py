@@ -47,6 +47,7 @@ from .browser_hardening import attach as attach_browser_hardening
 from .database_router import attach as attach_database_router
 from .threat_assessment import ThreatAssessor
 from .workspace_scope_hardening import attach as attach_workspace_scope_hardening
+from .workflow_runtime_hardening import attach as attach_workflow_runtime
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .tools import Tool
@@ -75,6 +76,7 @@ attach_voice_bridge(app,events,agent,native_voice,settings)
 attach_config_hardening(app)
 attach_maintenance_hardening(maintenance)
 attach_system_services(app,_require,settings,store,agent,registry)
+attach_workflow_runtime(jobs,store,agent)
 install_state_hardening(store,jobs,app)
 calendar_store=attach_calendar_service(app,_require,DATA,settings.local_timezone,agent,registry)
 attach_information_fusion(app,_require,store,web)
