@@ -63,9 +63,6 @@ from .tools import Tool
 from .policy import Risk
 import notsip.runtime_prod as _runtime_prod
 
-# app.py is the authoritative configured runtime. Rebind compatibility-route globals
-# before any route hardening/normalization so legacy handlers cannot retain stale
-# provider/policy/agent/store/auth instances.
 _runtime_prod.settings=settings
 _runtime_prod.store=store
 _runtime_prod.policy=policy
@@ -83,7 +80,6 @@ _runtime_prod.oauth=oauth
 _require=__import__('notsip.app',fromlist=['require_auth']).require_auth
 _runtime_prod.require_auth=_require
 
-# Keep the scheduler/event subsystem on the same authoritative objects.
 oauth.accounts=accounts
 jobs.events=events
 nodes.world=__import__('notsip.app',fromlist=['world']).world
@@ -91,8 +87,7 @@ install_device_ownership_hardening(store)
 app.CONFIG_SECRET_NAMES.add('business_admin_token');app.CONFIG_HIGH_RISK.add('business_admin_token')
 app.CONFIG_SECRET_NAMES.add('speaker_identity_token');app.CONFIG_HIGH_RISK.add('speaker_identity_token')
 from .product_layer import ConfigStore
-ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token')
-ConfigStore.SECRET_NAMES.add('database_url')
+ConfigStore.SECRET_NAMES.add('business_admin_token');ConfigStore.SECRET_NAMES.add('speaker_identity_token');ConfigStore.SECRET_NAMES.add('database_url')
 install_backup_hardening(backups)
 external_domains=attach_external_domains(registry,settings)
 external_adapters=attach_external_adapters(registry,settings)
@@ -130,7 +125,7 @@ attach_linux_routes(app,_require,agent,registry,settings)
 attach_business_routes(app,_require,agent,registry,settings)
 attach_actor_middleware(app,auth)
 attach_oidc_session_guard(app,auth)
-attach_session_hardening(app,_require,agent,DATA)
+attach_session_hardening(app,_require,agent,DATA,auth=auth)
 attach_memory_scope_hardening(app,_require,store)
 attach_setup_readiness(app,_require,settings,store)
 attach_task_hardening(app,_require,store,jobs)
