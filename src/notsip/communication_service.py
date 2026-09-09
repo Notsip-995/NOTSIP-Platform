@@ -1,17 +1,24 @@
 from __future__ import annotations
 import re,time
+from pathlib import Path
+from .actor_context import current_actor
+from .user_profile import UserProfileStore
 
 class CommunicationService:
-    def __init__(self,profile,store):self.profile=profile;self.store=store
+    def __init__(self,profile,store,data_dir=None):self.profile=profile;self.store=store;self.data_dir=Path(data_dir or getattr(profile,'root','.')).resolve()
+    def _profile_for_actor(self):
+        actor=current_actor()
+        if actor=='primary-user' and getattr(self.profile,'user_id','primary-user')=='primary-user':return self.profile
+        return UserProfileStore(self.data_dir,actor)
     def contact(self,name):
         needle=' '.join(str(name or '').lower().split())
         if not needle:raise ValueError('contact name is required')
-        people=self.profile.load().get('important_people') or {}
+        people=self._profile_for_actor().load().get('important_people') or {}
         exact=next((v for k,v in people.items() if ' '.join(str(k).lower().split())==needle),None)
         if exact is None:raise LookupError(f'contact not found: {name}')
         if not isinstance(exact,dict):raise ValueError('contact record must be an object')
         return exact
-    def contacts(self):return self.profile.load().get('important_people') or {}
+    def contacts(self):return self._profile_for_actor().load().get('important_people') or {}
     def _android(self):
         rows=self.store.devices();online=[r for r in rows if str(r.get('platform','')).lower()=='android' and r.get('status')=='ONLINE']
         if not online:raise RuntimeError('no online authorized Android device is available')
