@@ -57,7 +57,7 @@ class SecretStore:
         with self._lock:
             n=secrets.token_bytes(12);ct=AESGCM(self._key).encrypt(n,json.dumps(data,sort_keys=True).encode(),None);tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'nonce':base64.b64encode(n).decode(),'data':base64.b64encode(ct).decode()}),encoding='utf-8');os.replace(tmp,self.path)
             try:self.path.chmod(0o600)
-            except OSError as exc:raise RuntimeError(f'unable to protect encrypted secret store permissions: {exc}') from exc
+            except OSError as exc:raise RuntimeError(f'unable to protect encrypted secret store permissions: {exc}')
     def get(self,name,default=None):
         with self._lock:return self.load().get(name,default)
     def set(self,name,value):
@@ -71,7 +71,6 @@ class SecretStore:
             return True
 
 class DurableState(dict):
-    """Encrypted persistent mapping used for authenticated session/OIDC state."""
     def __init__(self,secrets_store,prefix='session:'):super().__init__();self._store=secrets_store;self._prefix=prefix;self._lock=threading.RLock()
     def _key(self,key):return self._prefix+str(key)
     def __setitem__(self,key,value):
@@ -125,8 +124,7 @@ class OIDCProvider:
             r.raise_for_status();return r.json()
     async def userinfo(self,access_token):
         import httpx
-        m=self.metadata or await self.discover()
-        if not (m.get('userinfo_endpoint') or '').strip():return {}
+        if not (self.metadata or {}).get('userinfo_endpoint'):return {}
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.get(self._endpoint('userinfo_endpoint'),headers={'Authorization':'Bearer '+access_token});r.raise_for_status();return r.json()
     async def validate_id_token(self,id_token,nonce=''):
@@ -151,3 +149,8 @@ class AuthManager:
     def mode(self):return self.settings.auth_mode
     def mint_session(self,claims):t=secrets.token_urlsafe(48);self.sessions[t]={'claims':claims,'expires':time.time()+self.settings.session_ttl};return t
     def validate_session(self,token):s=self.sessions.get(token);return bool(s and float(s.get('expires',0))>time.time())
+    def revoke_session(self,token):
+        if not token:return False
+        existed=self.sessions.get(token) is not None
+        self.sessions.pop(token,None)
+        return existed
