@@ -95,6 +95,18 @@ class Agent:
                 item=self.approvals.request(name,f'NOTSIP wants to execute {name}',{'tool':name,'args':args,'risk':int(tool.risk),'capability':tool.capability,'required_level':d.required_level,'actor':self.user});self.store.audit(self.user,name,'approval','request','PENDING','approval requested');return {'status':'PARTIAL_SUCCESS','approval_required':True,'approval_id':item['id'],'action':name,'reason':d.reason,'capability':d.capability,'required_level':d.required_level}
             return {'status':'FAILURE','approval_required':False,'error':d.reason,'capability':d.capability,'required_level':d.required_level}
         r=tool.fn(**args);r=await r if inspect.isawaitable(r) else r;r=r if isinstance(r,dict) else {'status':'SUCCESS','result':r};self.store.audit(self.user,name,name,'execute',str(r.get('status','SUCCESS')),json.dumps(r,default=str));return r
+    async def run_approved_tool(self,approval_id):
+        item=self.approvals._load().get(str(approval_id));actor=self.user
+        if not item or str((item.get('context') or {}).get('actor') or 'primary-user')!=actor:return {'status':'FAILURE','error':'approval not found for current actor'}
+        if item.get('status')!='APPROVED':return {'status':'FAILURE','error':f"approval is {item.get('status','unknown')}"}
+        name=str((item.get('context') or {}).get('tool') or '');args=(item.get('context') or {}).get('args') or {}
+        if not name or not isinstance(args,dict):return {'status':'FAILURE','error':'invalid approved tool context'}
+        tool=self.registry.get(name)
+        if not tool:return {'status':'FAILURE','error':'approved tool no longer exists'}
+        if not getattr(tool,'_notsip_guarded',False):return {'status':'FAILURE','error':'approved tool is not protected by the central execution gate'}
+        result=tool.fn(**args)
+        if inspect.isawaitable(result):result=await result
+        return result if isinstance(result,dict) else {'status':'SUCCESS','result':result}
     def fallback(self,text):
         s=text.lower();clock=self._time_response(text)
         if clock:return clock
