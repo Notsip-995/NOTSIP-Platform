@@ -38,9 +38,7 @@ class Email:
         if self._smtp_port==465:
             with smtplib.SMTP_SSL(self._smtp_host,self._smtp_port,timeout=20,context=ssl.create_default_context()) as s:s.login(self._username,self._password);s.send_message(m)
         else:
-            with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:
-                s.starttls(context=ssl.create_default_context())
-                s.login(self._username,self._password);s.send_message(m)
+            with smtplib.SMTP(self._smtp_host,self._smtp_port,timeout=20) as s:s.starttls(context=ssl.create_default_context());s.login(self._username,self._password);s.send_message(m)
         return {'status':'SUCCESS','to':to,'subject':subject,'transport_tls':True}
     def search(self,mailbox='INBOX',criteria='ALL',limit=20):
         if not self.enabled or not self._imap_host:raise RuntimeError('IMAP not configured')
@@ -73,8 +71,7 @@ class OAuth:
         parsed=urllib.parse.urlparse(str(url).strip())
         if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password:raise ValueError('OAuth endpoint must use HTTPS without embedded credentials')
         if parsed.query or parsed.fragment:raise ValueError('OAuth endpoint must not contain query or fragment')
-        try:
-            addrs=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
+        try:addrs=socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM)
         except socket.gaierror as exc:raise ValueError(f'OAuth endpoint host resolution failed: {parsed.hostname}') from exc
         for addr in addrs:
             ip=ipaddress.ip_address(addr[4][0])
@@ -93,10 +90,19 @@ class OAuth:
             if len(r.content)>10*1024*1024:raise RuntimeError('OAuth token response exceeded safety limit')
             return r.json()
 def _public_host(host):
+    normalized=str(host).strip().lower()
+    if normalized in {'localhost','localhost.localdomain'}:return False
     try:
-        if host.lower() in {'localhost','localhost.localdomain'}:return False
-        addrs=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM);return bool(addrs) and all(not (ipaddress.ip_address(a[4][0]).is_private or ipaddress.ip_address(a[4][0]).is_loopback or ipaddress.ip_address(a[4][0]).is_link_local or ipaddress.ip_address(a[4][0]).is_multicast or ipaddress.ip_address(a[4][0]).is_reserved) for a in addrs)
-    except Exception:return False
+        ip=ipaddress.ip_address(normalized)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+    except ValueError:pass
+    addrs=socket.getaddrinfo(normalized,None,type=socket.SOCK_STREAM)
+    if not addrs:return False
+    for addr in addrs:
+        try:ip=ipaddress.ip_address(addr[4][0])
+        except ValueError:return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:return False
+    return True
 
 def _browser_executable():
     override=os.getenv('NOTSIP_BROWSER_EXECUTABLE','').strip()
@@ -116,7 +122,7 @@ class Browser:
         if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('browser automation requires a public http(s) URL')
         if not _public_host(parsed.hostname):raise ValueError('browser automation blocks private, loopback, link-local, multicast, and reserved addresses')
         try:from playwright.async_api import async_playwright
-        except Exception as e:raise RuntimeError('Playwright is unavailable in this installation') from e
+        except ImportError as exc:raise RuntimeError('Playwright is unavailable in this installation') from exc
         p=await async_playwright().start();launch={};executable=_browser_executable()
         if executable:launch['executable_path']=executable
         try:b=await p.chromium.launch(headless=True,**launch)
