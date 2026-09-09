@@ -34,16 +34,23 @@ class ProcessGuard:
             fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,json.dumps({'pid':os.getpid(),'created':time.time(),'host':socket.gethostname()}).encode());os.close(fd);self._owned=True;return True
         except FileExistsError:
             try:
-                pid=int(json.loads(self.path.read_text()).get('pid',0))
-                if pid and self._pid_alive(pid):return False
-            except Exception:pass
+                raw=self.path.read_text(encoding='utf-8');data=json.loads(raw)
+            except FileNotFoundError:return self.acquire()
+            except (OSError,json.JSONDecodeError,ValueError) as exc:raise RuntimeError('instance lock is corrupt or unreadable; refusing to remove it automatically') from exc
+            pid=int(data.get('pid') or 0);host=str(data.get('host') or '')
+            if pid<=0 or not host:raise RuntimeError('instance lock is missing required ownership metadata')
+            if host==socket.gethostname() and self._pid_alive(pid):return False
+            if host!=socket.gethostname() and time.time()-float(data.get('created') or 0)<86400:return False
             try:self.path.unlink()
-            except Exception:return False
+            except FileNotFoundError:return self.acquire()
+            except OSError as exc:raise RuntimeError('unable to remove stale NOTSIP instance lock') from exc
             return self.acquire()
     @staticmethod
     def _pid_alive(pid):
         if platform.system()=='Windows':return str(pid) in subprocess.run(['tasklist','/FI',f'PID eq {pid}','/NH'],capture_output=True,text=True,timeout=5).stdout
         try:os.kill(pid,0);return True
+        except ProcessLookupError:return False
+        except PermissionError:return True
         except OSError:return False
     def release(self):
         if self._owned:
@@ -53,15 +60,27 @@ class ProcessGuard:
 
 class ConfigStore:
     SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','business_admin_token','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','speaker_identity_token'}
+    DATABASE_SECRET='NOTSIP_DATABASE_URL'
     def __init__(self,root):self.root=Path(root);self.path=self.root/'config.json';self.root.mkdir(parents=True,exist_ok=True)
+    def _secret_store(self):
+        from .security import SecretStore
+        return SecretStore(self.root)
     def load(self):
-        if not self.path.exists():return {'version':CONFIG_VERSION,'settings':{}}
-        d=json.loads(self.path.read_text(encoding='utf-8'));return self.migrate(d)
+        if not self.path.exists():
+            data={'version':CONFIG_VERSION,'settings':{}}
+        else:
+            data=json.loads(self.path.read_text(encoding='utf-8'));data=self.migrate(data)
+        if 'database_url' not in data.get('settings',{}):
+            stored=self._secret_store().get(self.DATABASE_SECRET)
+            if stored:data['settings']['database_url']=stored
+        return data
     def migrate(self,d):
         if int(d.get('version',1))<CONFIG_VERSION:d['migrated_from']=d.get('version',1)
         d['version']=CONFIG_VERSION;d.setdefault('settings',{});d['migrated_at']=d.get('migrated_at',time.time());return d
     def save(self,settings):
-        clean={k:v for k,v in settings.items() if k not in self.SECRET_NAMES};tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'version':CONFIG_VERSION,'settings':clean,'updated_at':time.time()},indent=2,sort_keys=True));os.replace(tmp,self.path)
+        settings=dict(settings or {});database_url=settings.pop('database_url',None)
+        if database_url not in (None,''):self._secret_store().set(self.DATABASE_SECRET,str(database_url))
+        clean={k:v for k,v in settings.items() if k not in self.SECRET_NAMES and k!='database_url'};tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'version':CONFIG_VERSION,'settings':clean,'updated_at':time.time()},indent=2,sort_keys=True));os.replace(tmp,self.path)
     def backup(self):
         if not self.path.exists():self.save({})
         dst=self.root/'runtime'/f'config-{time.strftime("%Y%m%d-%H%M%S")}.json';dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(self.path,dst);return str(dst.relative_to(self.root))
@@ -92,7 +111,7 @@ class AuditLog:
                 if stored_prev!=previous or digest!=actual:return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
                 previous=digest;entries+=1
             return {'valid':True,'entries':entries,'head':previous}
-        except Exception as exc:return {'valid':False,'entries':entries,'reason':f'audit verification error: {exc}','failed_entry':entries+1}
+        except (OSError,json.JSONDecodeError,ValueError) as exc:return {'valid':False,'entries':entries,'reason':f'audit verification error: {exc}','failed_entry':entries+1}
     def tail(self,n=200):
         if not self.path.exists():return []
         return [json.loads(x) for x in self.path.read_text(encoding='utf-8').splitlines()[-n:] if x.strip()]
@@ -148,12 +167,14 @@ class BackupManager:
                         if existed and backup_target.exists():shutil.move(str(backup_target),str(target))
                         raise
                 return {'status':'SUCCESS','restored':name,'restart_required':True}
-            except Exception:
+            except Exception as exc:
+                rollback_errors=[]
                 for target,backup_target,existed in reversed(changes):
                     try:
                         if target.exists():shutil.rmtree(target) if target.is_dir() else target.unlink()
                         if existed and backup_target.exists():target.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(backup_target),str(target))
-                    except Exception:pass
+                    except (OSError,shutil.Error) as rollback_exc:rollback_errors.append(f'{target}: {rollback_exc}')
+                if rollback_errors:raise RuntimeError('backup restore failed and rollback is incomplete: '+'; '.join(rollback_errors)) from exc
                 raise
             finally:shutil.rmtree(stage,ignore_errors=True);shutil.rmtree(rollback,ignore_errors=True)
 
@@ -204,7 +225,7 @@ class CapabilityProbe:
     def __init__(self,settings=None,store=None,provider=None,web=None,email=None):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email
     def snapshot(self):
         s=self.settings
-        checks={'llm':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'web_search':bool(self.web and self.web.enabled),'email':bool(self.email and self.email.enabled),'android':bool(self.store and self.store.devices()),'windows_uia':platform.system()=='Windows','database':bool(self.store),'stt':bool(s and s.stt_base_url and s.stt_model),'tts':bool(s and s.tts_base_url and s.tts_model),'vision':bool(s and s.vision_enabled),'browser':bool(getattr(s,'browser_enabled',True)),'federation':bool(getattr(s,'node_lease_seconds',0))}
+        checks={'llm':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'web_search':bool(self.web and self.web.enabled),'email':bool(self.email and self.email.enabled),'android':bool(self.store and self.store.devices()),'windows_uia':platform.system()=='Windows','database':bool(self.store),'stt':bool(s and s.stt_base_url and s.stt_model),'tts':bool(s and s.tts_base_url and s.tts_model),'voice':bool(s and s.voice_enabled and s.stt_base_url and s.tts_base_url),'perception':bool(s and s.perception_enabled),'browser':bool(getattr(s,'browser_enabled',True)),'federation':bool(getattr(s,'node_lease_seconds',0))}
         return {'capabilities':checks,'available':[k for k,v in checks.items() if v],'unavailable':[k for k,v in checks.items() if not v],'timestamp':time.time()}
 
 class Maintenance:
@@ -214,7 +235,7 @@ class Maintenance:
         for p in self.root.rglob('*'):
             if p.is_file():
                 try:out.append({'path':str(p.relative_to(self.root)).replace('\\','/'),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size})
-                except Exception:pass
+                except (OSError,ValueError) as exc:raise RuntimeError(f'unable to hash repository file {p}: {exc}') from exc
         return out[:10000]
     def read(self,path):
         p=(self.root/path).resolve()
