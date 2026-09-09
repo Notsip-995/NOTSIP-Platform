@@ -102,11 +102,13 @@ class AuditLog:
         try:
             for raw in self.path.read_text(encoding='utf-8').splitlines():
                 if not raw.strip():continue
-                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''))
+                try:row=json.loads(raw)
+                except json.JSONDecodeError as exc:return {'valid':False,'entries':entries,'reason':f'audit log is corrupt: {exc}','failed_entry':entries+1}
+                digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''))
                 if stored_prev!=previous or digest!=self._digest(row):return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
                 previous=digest;entries+=1
             return {'valid':True,'entries':entries,'head':previous}
-        except (OSError,json.JSONDecodeError,ValueError) as exc:return {'valid':False,'entries':entries,'reason':f'audit verification error: {exc}','failed_entry':entries+1}
+        except OSError as exc:return {'valid':False,'entries':entries,'reason':f'audit log read failed: {exc}','failed_entry':entries+1}
     def _last_hash(self):
         result=self.verify()
         if not result['valid']:raise RuntimeError(result.get('reason','audit log integrity verification failed'))
@@ -224,7 +226,17 @@ class Diagnostics:
         if self.store:
             try:self.store.row('SELECT 1');checks['database']={'ok':True,'detail':'connected'}
             except Exception as e:checks['database']={'ok':False,'detail':str(e)}
-        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'};checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'};checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'};checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'};checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'};checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'};checks['browser']={'ok':bool(s and getattr(s,'browser_enabled',True)),'detail':'enabled' if s and getattr(s,'browser_enabled',True) else 'disabled'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'};checks['scheduler']={'ok':True,'detail':'durable scheduler available'};checks['federation']={'ok':bool(self.nodes and any(str(n.get('status','')).upper()=='ONLINE' for n in self.nodes.reconcile()) if self.nodes else False),'detail':'online node available' if self.nodes and any(str(n.get('status','')).upper()=='ONLINE' for n in self.nodes.reconcile()) else 'no online node'};checks['recovery']={'ok':True,'detail':'checkpoint available' if self.recovery and self.recovery.verify_latest()['valid'] else 'checkpoint not yet created'};checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
+        checks['llm']={'ok':bool(self.provider and (self.provider.enabled or self.provider.fallback_enabled)),'detail':'primary/fallback configured' if self.provider and (self.provider.enabled or self.provider.fallback_enabled) else 'not configured'};checks['stt']={'ok':bool(s and s.stt_base_url and s.stt_model),'detail':'configured' if s and s.stt_base_url and s.stt_model else 'not configured'};checks['tts']={'ok':bool(s and s.tts_base_url and s.tts_model),'detail':'configured' if s and s.tts_base_url and s.tts_model else 'not configured'};checks['web_search']={'ok':bool(self.web and self.web.enabled),'detail':'configured' if self.web and self.web.enabled else 'not configured'};checks['email']={'ok':bool(self.email and self.email.enabled),'detail':'configured' if self.email and self.email.enabled else 'not configured'};checks['oauth']={'ok':bool(self.auth and self.auth.oidc.configured),'detail':'configured' if self.auth and self.auth.oidc.configured else 'not configured'};checks['browser']={'ok':bool(s and getattr(s,'browser_enabled',True)),'detail':'enabled' if s and getattr(s,'browser_enabled',True) else 'disabled'};checks['windows_uia']={'ok':platform.system()=='Windows','detail':'ready' if platform.system()=='Windows' else 'Windows node required'};checks['android']={'ok':bool(self.store and self.store.devices()),'detail':'paired device present' if self.store and self.store.devices() else 'no paired Android device'};checks['scheduler']={'ok':True,'detail':'durable scheduler available'}
+        federation_ok=False;federation_detail='node registry unavailable'
+        if self.nodes:
+            try:
+                node_rows=self.nodes.reconcile();federation_ok=any(str(n.get('status','')).upper()=='ONLINE' for n in node_rows);federation_detail='online node available' if federation_ok else 'no online node'
+            except (AttributeError,TypeError,ValueError,RuntimeError) as exc:federation_detail=f'node registry unavailable: {exc}'
+        checks['federation']={'ok':federation_ok,'detail':federation_detail};recovery_ok=False
+        if self.recovery:
+            try:recovery_ok=bool(self.recovery.verify_latest().get('valid'))
+            except (AttributeError,TypeError,ValueError,RuntimeError):recovery_ok=False
+        checks['recovery']={'ok':recovery_ok,'detail':'checkpoint available' if recovery_ok else 'checkpoint not yet created'};checks['security']={'ok':bool(self.auth),'detail':'security manager initialized' if self.auth else 'security manager unavailable'}
         core_names={'python','platform','storage','database','llm','scheduler','federation','security'};optional_names=set(checks)-core_names;core_ok=all(checks[k]['ok'] for k in core_names if k in checks);optional_missing=[k for k in optional_names if not checks[k]['ok']]
         return {'ok':core_ok,'core_ok':core_ok,'optional_missing':optional_missing,'checks':checks,'timestamp':time.time()}
 
@@ -232,8 +244,7 @@ class CapabilityProbe:
     """Report configured and available product capabilities without inventing readiness."""
     def __init__(self,settings=None,store=None,provider=None,web=None,email=None,nodes=None):self.settings=settings;self.store=store;self.provider=provider;self.web=web;self.email=email;self.nodes=nodes
     def snapshot(self):
-        s=self.settings
-        online_nodes=False
+        s=self.settings;online_nodes=False
         if self.nodes is not None:
             try:online_nodes=any(str(n.get('status','')).upper()=='ONLINE' for n in self.nodes.reconcile(current_actor()))
             except (AttributeError,TypeError,ValueError,RuntimeError):online_nodes=False
