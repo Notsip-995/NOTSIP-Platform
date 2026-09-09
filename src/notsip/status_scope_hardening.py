@@ -26,7 +26,7 @@ def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth
         actor=current_actor();tasks=[x for x in store.tasks() if _own_task(x,actor)];live_policy=getattr(agent,'policy',policy);level=getattr(live_policy,'current_level',getattr(live_policy,'level',0));devices=store.devices(actor)
         recovery_ok=False
         try:recovery_ok=bool(getattr(__import__('notsip.app',fromlist=['recovery']),'recovery').verify_latest().get('valid'))
-        except Exception:recovery_ok=False
+        except (AttributeError,TypeError,ValueError,RuntimeError):recovery_ok=False
         distributed_nodes=False
         try:
             nodes=getattr(__import__('notsip.app',fromlist=['nodes']),'nodes');distributed_nodes=any(str(n.get('status','')).upper()=='ONLINE' for n in nodes.reconcile(actor))
@@ -38,8 +38,7 @@ def attach(app,require_auth,store,policy,agent,settings,registry,web,emailc,auth
     @app.get('/api/remote/satellite')
     async def satellite_route(bbox:str,start:str,end:str,scene_id:str='',_:None=Depends(require_auth)):
         if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required for satellite access')
-        if not str(getattr(settings,'remote_sensing_url','')).strip() or not str(getattr(settings,'remote_sensing_token','')).strip():
-            return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'authorized remote-sensing provider is not configured'}
+        if not str(getattr(settings,'remote_sensing_url','')).strip() or not str(getattr(settings,'remote_sensing_token','')).strip():return {'status':'BLOCKED_BY_EXTERNAL_ENVIRONMENT','error':'authorized remote-sensing provider is not configured'}
         return await agent.run_tool('satellite_query',{'bbox':bbox,'start':start,'end':end,'scene_id':scene_id})
     if registry is not None:
         from .external_adapters import RemoteSensingAdapter,AdapterUnavailable
