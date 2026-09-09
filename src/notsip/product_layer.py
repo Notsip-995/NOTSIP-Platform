@@ -33,8 +33,7 @@ class ProcessGuard:
         try:
             fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,json.dumps({'pid':os.getpid(),'created':time.time(),'host':socket.gethostname()}).encode());os.close(fd);self._owned=True;return True
         except FileExistsError:
-            try:
-                raw=self.path.read_text(encoding='utf-8');data=json.loads(raw)
+            try:raw=self.path.read_text(encoding='utf-8');data=json.loads(raw)
             except FileNotFoundError:return self.acquire()
             except (OSError,json.JSONDecodeError,ValueError) as exc:raise RuntimeError('instance lock is corrupt or unreadable; refusing to remove it automatically') from exc
             pid=int(data.get('pid') or 0);host=str(data.get('host') or '')
@@ -55,8 +54,8 @@ class ProcessGuard:
     def release(self):
         if self._owned:
             try:self.path.unlink()
-            except FileNotFoundError:pass
-            self._owned=False
+            except FileNotFoundError:self._owned=False
+            else:self._owned=False
 
 class ConfigStore:
     SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','business_admin_token','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','speaker_identity_token'}
@@ -66,10 +65,8 @@ class ConfigStore:
         from .security import SecretStore
         return SecretStore(self.root)
     def load(self):
-        if not self.path.exists():
-            data={'version':CONFIG_VERSION,'settings':{}}
-        else:
-            data=json.loads(self.path.read_text(encoding='utf-8'));data=self.migrate(data)
+        if not self.path.exists():data={'version':CONFIG_VERSION,'settings':{}}
+        else:data=self.migrate(json.loads(self.path.read_text(encoding='utf-8')))
         if 'database_url' not in data.get('settings',{}):
             stored=self._secret_store().get(self.DATABASE_SECRET)
             if stored:data['settings']['database_url']=stored
@@ -188,25 +185,30 @@ class ApprovalStore:
         return data
     def _save(self,d):tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps(d,indent=2,sort_keys=True));os.replace(tmp,self.path)
     @staticmethod
-    def _actor(context,actor=None):return str(actor or (context or {}).get('actor') or current_actor()).strip() or 'primary-user'
+    def _current_actor(actor=None):
+        current=current_actor()
+        if actor is not None and str(actor).strip()!=current:raise PermissionError('approval actor must match authenticated actor')
+        return current
     def request(self,action,reason,context=None,ttl=900,actor=None):
         with self.lock:
-            d=self._load();aid=uuid.uuid4().hex;ctx=dict(context or {});ctx['actor']=self._actor(ctx,actor);d[aid]={'id':aid,'action':action,'reason':reason,'context':ctx,'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
+            current=self._current_actor(actor);d=self._load();aid=uuid.uuid4().hex;ctx=dict(context or {});requested=str(ctx.get('actor') or current).strip() or current
+            if requested!=current:raise PermissionError('approval actor must match authenticated actor')
+            ctx['actor']=current;d[aid]={'id':aid,'action':action,'reason':reason,'context':ctx,'status':'PENDING','expires':time.time()+ttl};self._save(d);return d[aid]
     def decide(self,aid,approved,actor=None):
         with self.lock:
-            d=self._load();x=d.get(aid)
+            current=self._current_actor(actor);d=self._load();x=d.get(aid)
             if not x:return None
-            expected=self._actor(x.get('context') or {},actor)
-            if expected!=current_actor():return None
+            expected=str((x.get('context') or {}).get('actor') or 'primary-user')
+            if expected!=current:return None
             if x.get('status')!='PENDING':return x
             if float(x.get('expires',0))<=time.time():x['status']='EXPIRED';x['decided']=time.time();self._save(d);return x
             x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
     def pending(self,actor=None):
-        actor=self._actor({},actor)
+        current=self._current_actor(actor)
         with self.lock:
             out=[];now=time.time()
             for x in self._load().values():
-                if x.get('status')=='PENDING' and x.get('expires',0)>now and self._actor(x.get('context') or {},actor)==actor:out.append(x)
+                if x.get('status')=='PENDING' and x.get('expires',0)>now and str((x.get('context') or {}).get('actor') or 'primary-user')==current:out.append(x)
             return out
 
 class Diagnostics:
