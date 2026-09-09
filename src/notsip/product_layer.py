@@ -65,50 +65,56 @@ class ConfigStore:
         from .security import SecretStore
         return SecretStore(self.root)
     def load(self):
+        legacy_db=None
         if not self.path.exists():data={'version':CONFIG_VERSION,'settings':{}}
-        else:data=self.migrate(json.loads(self.path.read_text(encoding='utf-8')))
-        if 'database_url' not in data.get('settings',{}):
-            stored=self._secret_store().get(self.DATABASE_SECRET)
-            if stored:data['settings']['database_url']=stored
+        else:
+            data=self.migrate(json.loads(self.path.read_text(encoding='utf-8')))
+            legacy_db=(data.get('settings') or {}).get('database_url')
+        stored=self._secret_store().get(self.DATABASE_SECRET)
+        if stored:data['settings']['database_url']=stored
+        elif legacy_db:data['settings']['database_url']=legacy_db
+        if legacy_db:
+            self._secret_store().set(self.DATABASE_SECRET,str(legacy_db));data['settings'].pop('database_url',None);data['settings']['database_url']=legacy_db;self._write_clean(data['settings'])
         return data
+    def _write_clean(self,settings):
+        clean={k:v for k,v in dict(settings or {}).items() if k not in self.SECRET_NAMES and k!='database_url'};tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'version':CONFIG_VERSION,'settings':clean,'updated_at':time.time()},indent=2,sort_keys=True));os.replace(tmp,self.path)
     def migrate(self,d):
         if int(d.get('version',1))<CONFIG_VERSION:d['migrated_from']=d.get('version',1)
         d['version']=CONFIG_VERSION;d.setdefault('settings',{});d['migrated_at']=d.get('migrated_at',time.time());return d
     def save(self,settings):
-        settings=dict(settings or {});database_url=settings.pop('database_url',None)
-        if database_url not in (None,''):self._secret_store().set(self.DATABASE_SECRET,str(database_url))
-        clean={k:v for k,v in settings.items() if k not in self.SECRET_NAMES and k!='database_url'};tmp=self.path.with_suffix('.tmp');tmp.write_text(json.dumps({'version':CONFIG_VERSION,'settings':clean,'updated_at':time.time()},indent=2,sort_keys=True));os.replace(tmp,self.path)
+        settings=dict(settings or {});database_url=settings.pop('database_url',None);secret_store=self._secret_store()
+        if database_url is not None:
+            if str(database_url).strip():secret_store.set(self.DATABASE_SECRET,str(database_url))
+            else:secret_store.delete(self.DATABASE_SECRET)
+        self._write_clean(settings)
     def backup(self):
         if not self.path.exists():self.save({})
         dst=self.root/'runtime'/f'config-{time.strftime("%Y%m%d-%H%M%S")}.json';dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(self.path,dst);return str(dst.relative_to(self.root))
 
 class AuditLog:
     def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
-    def _last_hash(self):
-        if not self.path.exists():return '0'*64
-        lines=self.path.read_text(encoding='utf-8').splitlines()
-        for line in reversed(lines):
-            if not line.strip():continue
-            try:row=json.loads(line);digest=str(row.get('digest',''))
-            except json.JSONDecodeError as exc:raise RuntimeError('audit log is corrupt; refusing to append') from exc
-            if len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest.lower()):raise RuntimeError('audit log contains an invalid digest; refusing to append')
-            return digest
-        return '0'*64
-    def write(self,event,**fields):
-        with self.lock:
-            row={'ts':time.time(),'event':event,**fields};row['prev_digest']=self._last_hash();canonical=json.dumps(row,sort_keys=True,separators=(',',':'),default=str);row['digest']=hashlib.sha256(canonical.encode()).hexdigest()
-            with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
+    @staticmethod
+    def _digest(row):
+        unsigned=dict(row);unsigned.pop('digest',None);return hashlib.sha256(json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
     def verify(self):
-        if not self.path.exists():return {'valid':True,'entries':0}
+        if not self.path.exists():return {'valid':True,'entries':0,'head':'0'*64}
         previous='0'*64;entries=0
         try:
             for raw in self.path.read_text(encoding='utf-8').splitlines():
                 if not raw.strip():continue
-                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''));unsigned=dict(row);unsigned.pop('digest',None);canonical=json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str);actual=hashlib.sha256(canonical.encode()).hexdigest()
-                if stored_prev!=previous or digest!=actual:return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
+                row=json.loads(raw);digest=str(row.get('digest',''));stored_prev=str(row.get('prev_digest',''))
+                if stored_prev!=previous or digest!=self._digest(row):return {'valid':False,'entries':entries,'reason':'audit hash chain verification failed','failed_entry':entries+1}
                 previous=digest;entries+=1
             return {'valid':True,'entries':entries,'head':previous}
         except (OSError,json.JSONDecodeError,ValueError) as exc:return {'valid':False,'entries':entries,'reason':f'audit verification error: {exc}','failed_entry':entries+1}
+    def _last_hash(self):
+        result=self.verify()
+        if not result['valid']:raise RuntimeError(result.get('reason','audit log integrity verification failed'))
+        return result.get('head','0'*64)
+    def write(self,event,**fields):
+        with self.lock:
+            row={'ts':time.time(),'event':event,**fields};row['prev_digest']=self._last_hash();row['digest']=self._digest(row)
+            with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
     def tail(self,n=200):
         if not self.path.exists():return []
         return [json.loads(x) for x in self.path.read_text(encoding='utf-8').splitlines()[-n:] if x.strip()]
