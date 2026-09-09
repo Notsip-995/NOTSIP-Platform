@@ -8,37 +8,30 @@ class ConversationStore:
         self.path=Path(root)/'runtime'/'conversations.json';self.path.parent.mkdir(parents=True,exist_ok=True);self.user_id=user_id
     def _load(self):
         if not self.path.exists():return {'sessions':{}}
-        try:
-            data=json.loads(self.path.read_text(encoding='utf-8'))
-        except Exception as exc:
+        try:data=json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError,UnicodeDecodeError) as exc:
             raise RuntimeError(f'conversation state is unreadable: {exc}') from exc
-        if not isinstance(data,dict) or not isinstance(data.get('sessions'),dict):
-            raise RuntimeError('conversation state is structurally invalid')
+        if not isinstance(data,dict) or not isinstance(data.get('sessions'),dict):raise RuntimeError('conversation state is structurally invalid')
         return data
     def _save(self,d):
         if not isinstance(d,dict) or not isinstance(d.get('sessions'),dict):raise ValueError('conversation state is structurally invalid')
         t=self.path.with_suffix('.tmp');t.write_text(json.dumps(d,sort_keys=True,ensure_ascii=False));t.replace(self.path)
-    def _owned(self,s):
-        return bool(s and s.get('user_id')==self.user_id)
+    def _owned(self,s):return bool(s and s.get('user_id')==self.user_id)
     def create(self,title='New conversation'):
         with self._lock:
             d=self._load();sid=uuid.uuid4().hex;d['sessions'][sid]={'id':sid,'user_id':self.user_id,'title':title,'created':time.time(),'updated':time.time(),'summary':'','messages':[]};self._save(d);return d['sessions'][sid]
     def get_or_create(self,sid=''):
         with self._lock:
             d=self._load()
-            if sid and self._owned(d['sessions'].get(sid)):
-                return d['sessions'][sid]
+            if sid and self._owned(d['sessions'].get(sid)):return d['sessions'][sid]
             candidates=[s for s in d['sessions'].values() if self._owned(s)]
-            if candidates:
-                return max(candidates,key=lambda s:s.get('updated',0))
+            if candidates:return max(candidates,key=lambda s:s.get('updated',0))
             return self.create()
     def append(self,sid,role,content):
         with self._lock:
             d=self._load();s=d['sessions'].get(sid)
-            if s is not None and not self._owned(s):
-                raise PermissionError('conversation does not belong to this user')
-            if s is None:
-                s={'id':sid,'user_id':self.user_id,'title':'Conversation','created':time.time(),'updated':time.time(),'summary':'','messages':[]};d['sessions'][sid]=s
+            if s is not None and not self._owned(s):raise PermissionError('conversation does not belong to this user')
+            if s is None:s={'id':sid,'user_id':self.user_id,'title':'Conversation','created':time.time(),'updated':time.time(),'summary':'','messages':[]};d['sessions'][sid]=s
             s['messages'].append({'role':role,'content':content,'ts':time.time()});s['updated']=time.time();self._save(d);return s
     def history(self,sid,limit=20):
         with self._lock:
