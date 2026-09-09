@@ -1,11 +1,12 @@
 from __future__ import annotations
-from fastapi import Depends,HTTPException
+from fastapi import Depends,HTTPException,Request
 from .actor_context import current_actor
 from .conversations import ConversationStore
 
 
-def attach(app,require_auth,agent,root):
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/sessions','/api/sessions/{session_id}','/api/sessions/{session_id}/select'}]
+def attach(app,require_auth,agent,root,auth=None):
+    paths={'/api/sessions','/api/sessions/{session_id}','/api/sessions/{session_id}/select','/api/logout'}
+    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
     def store_for_actor():return ConversationStore(root,current_actor())
     @app.get('/api/sessions')
     async def list_sessions(_:None=Depends(require_auth)):
@@ -23,3 +24,11 @@ def attach(app,require_auth,agent,root):
         store=store_for_actor();session=next((x for x in store.list() if x.get('id')==session_id),None)
         if not session:raise HTTPException(404,'session not found')
         agent.session=session;return session
+    @app.post('/api/logout')
+    async def logout(request:Request,_:None=Depends(require_auth)):
+        if auth is None:raise HTTPException(503,'session manager unavailable')
+        token=(request.cookies.get('notsip_session') or '').strip()
+        revoked=auth.revoke_session(token)
+        response={'status':'LOGGED_OUT' if revoked else 'ALREADY_LOGGED_OUT','actor':current_actor()}
+        from fastapi.responses import JSONResponse
+        out=JSONResponse(response);out.delete_cookie('notsip_session',path='/');return out
