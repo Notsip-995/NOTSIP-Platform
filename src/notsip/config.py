@@ -52,13 +52,13 @@ if cfg.exists():
         data=raw['settings']
         for k,v in data.items():
             if k in Settings.model_fields and k not in SECRET_FIELDS and ('NOTSIP_'+k.upper()) not in os.environ:setattr(settings,k,v)
-    except Exception as exc:
+    except (OSError,json.JSONDecodeError,UnicodeDecodeError,ValueError,TypeError) as exc:
         CONFIG_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
         raise RuntimeError(f'failed to load persisted NOTSIP configuration: {CONFIG_LOAD_ERROR}') from exc
+Path(settings.data_dir).mkdir(parents=True,exist_ok=True)
+from .security import SecretStore
+_secret_store=SecretStore(Path(settings.data_dir).resolve())
 try:
-    Path(settings.data_dir).mkdir(parents=True,exist_ok=True)
-    from .security import SecretStore
-    _secret_store=SecretStore(Path(settings.data_dir).resolve())
     for _name in SECRET_FIELDS:
         if not getattr(settings,_name,None):
             _v=_secret_store.get('NOTSIP_'+_name.upper())
@@ -68,6 +68,6 @@ try:
         if _db_secret and 'NOTSIP_DATABASE_URL' not in os.environ:settings.database_url=_db_secret
     if not settings.database_url:settings.database_url='sqlite:///data/notsip.db'
     settings.ensure()
-except Exception as exc:
+except (OSError,ValueError,TypeError,RuntimeError) as exc:
     SECRET_LOAD_ERROR=f'{type(exc).__name__}: {exc}'
     raise RuntimeError(f'failed to initialize NOTSIP configuration/security state: {SECRET_LOAD_ERROR}') from exc
