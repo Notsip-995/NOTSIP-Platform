@@ -10,7 +10,7 @@ class WorldModel:
             try:
                 value=json.loads(row.get(field) or '{}')
                 if isinstance(value,dict) and value.get('owner') is not None:return str(value.get('owner'))
-            except Exception:continue
+            except (TypeError,ValueError):continue
         return None
     @staticmethod
     def _relation_owner(row):
@@ -18,8 +18,6 @@ class WorldModel:
         if source.startswith('actor:'):
             owner,_,_source=source.partition('|')
             return owner[6:].strip() or 'primary-user'
-        # Legacy relations were created before relation ownership existed.
-        # They are primary-user data and must not become visible to other actors.
         return 'primary-user'
     def snapshot(self,owner=None):
         actor=current_actor() if owner is None else str(owner)
@@ -35,7 +33,4 @@ class WorldModel:
     def upsert(self,eid,kind,name,data,owner=None):
         actor=current_actor() if owner is None else str(owner);payload=dict(data or {});payload['owner']=actor;self.store.entity(eid,kind,name,payload);return {'status':'SUCCESS','id':eid,'owner':actor}
     def relate(self,a,p,b,confidence=.8,source='system',owner=None):
-        actor=current_actor() if owner is None else str(owner)
-        provenance=f'actor:{actor}|{source}'
-        self.store.relation(a,p,b,confidence,provenance)
-        return {'subject':a,'predicate':p,'object':b,'owner':actor}
+        actor=current_actor() if owner is None else str(owner);provenance=f'actor:{actor}|{source}';self.store.relation(a,p,b,confidence,provenance);return {'subject':a,'predicate':p,'object':b,'owner':actor}
