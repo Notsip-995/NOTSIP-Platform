@@ -24,19 +24,15 @@ def attach(app, *, require_auth, approvals, registry, audit_log, agent):
             if not current or not _owned(current,actor):raise HTTPException(404,'approval not found')
             if current.get('status')!='PENDING':raise HTTPException(409,f"approval already {current.get('status','resolved')}")
             if float(current.get('expires',0))<=time.time():
-                approvals.decide(approval_id,False);raise HTTPException(409,'approval expired')
-            item=approvals.decide(approval_id,bool(payload.get('approved')))
+                approvals.decide(approval_id,False,actor=actor);raise HTTPException(409,'approval expired')
+            item=approvals.decide(approval_id,bool(payload.get('approved')),actor=actor)
             if not item or item.get('status')=='PENDING':raise HTTPException(409,'approval state transition failed')
             audit_log.write('approval.decided',approval_id=approval_id,status=item['status'],actor=actor)
             if item['status']=='APPROVED' and payload.get('execute',True):
-                ctx=item.get('context') or {};name=str(ctx.get('tool',''));args=ctx.get('args') or {};tool=registry.get(name)
-                if not tool:raise HTTPException(400,'approved tool no longer exists')
-                if not getattr(tool,'_notsip_guarded',False):raise HTTPException(500,'approved tool is not protected by the central execution gate')
-                if str(ctx.get('actor') or 'primary-user')!=actor:raise HTTPException(403,'approval actor mismatch')
-                try:
-                    result=tool.fn(**args);result=await result if hasattr(result,'__await__') else result
-                except Exception as exc:
-                    audit_log.write('approval.execution_failed',approval_id=approval_id,tool=name,error=str(exc),actor=actor);raise
-                result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result}
-                current=approvals._load().get(approval_id) or item;current['execution']=result;current['executed']=time.time();current['status']=result.get('status','SUCCESS') if result.get('status') in {'FAILED','PARTIAL_SUCCESS','UNKNOWN'} else 'EXECUTED';approvals._save({**approvals._load(),approval_id:current});audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result,actor=actor);item=current
+                result=await agent.run_approved_tool(approval_id)
+                if not isinstance(result,dict):result={'status':'SUCCESS','result':result}
+                current=approvals._load().get(approval_id) or item
+                if result.get('status')=='FAILURE' and current.get('status')=='APPROVED':
+                    current['status']='FAILED';current['execution_error']=result.get('error','approval execution failed');current['executed']=time.time();approvals._save({**approvals._load(),approval_id:current})
+                audit_log.write('approval.executed',approval_id=approval_id,tool=(current.get('context') or {}).get('tool',''),result=result,actor=actor);item=current
             return item
