@@ -20,13 +20,14 @@ class SecretStore:
     def __init__(self,root:Path):self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.path=self.root/'secrets.enc';self._lock=threading.RLock();self._key=self._load_or_create_key()
     def _dpapi(self,data,decrypt=False):
         if os.name!='nt':return None
+        class BLOB(ctypes.Structure):_fields_=[('cbData',ctypes.c_uint32),('pbData',ctypes.POINTER(ctypes.c_byte))]
         try:
-            class BLOB(ctypes.Structure):_fields_=[('cbData',ctypes.c_uint32),('pbData',ctypes.POINTER(ctypes.c_byte))]
-            crypt32=ctypes.windll.crypt32;kernel32=ctypes.windll.kernel32;raw=ctypes.create_string_buffer(data);inp=BLOB(len(data),ctypes.cast(raw,ctypes.POINTER(ctypes.c_byte)));out=BLOB();fn=crypt32.CryptUnprotectData if decrypt else crypt32.CryptProtectData
-            if not fn(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)):return None
-            try:return ctypes.string_at(out.pbData,out.cbData)
-            finally:kernel32.LocalFree(out.pbData)
-        except Exception:return None
+            crypt32=ctypes.windll.crypt32;kernel32=ctypes.windll.kernel32
+            raw=ctypes.create_string_buffer(data);inp=BLOB(len(data),ctypes.cast(raw,ctypes.POINTER(ctypes.c_byte)));out=BLOB();fn=crypt32.CryptUnprotectData if decrypt else crypt32.CryptProtectData
+        except (AttributeError,TypeError,OSError) as exc:raise RuntimeError('Windows DPAPI API is unavailable') from exc
+        if not fn(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)):raise RuntimeError(f'Windows DPAPI operation failed while {"decrypting" if decrypt else "protecting"} NOTSIP secret material')
+        try:return ctypes.string_at(out.pbData,out.cbData)
+        finally:kernel32.LocalFree(out.pbData)
     def _persist_local_key(self,path,key):
         if os.name=='nt':
             protected=self._dpapi(key,False)
@@ -111,12 +112,12 @@ class OIDCProvider:
         _require_public_https(endpoint);return endpoint
     async def authorize_url(self,state,challenge,nonce=''):
         from urllib.parse import urlencode
-        m=self.metadata or await self.discover();p={'client_id':self.client_id,'redirect_uri':self.redirect_uri,'response_type':'code','scope':self.scopes,'state':state,'code_challenge':challenge,'code_challenge_method':'S256'}
+        self.metadata or await self.discover();p={'client_id':self.client_id,'redirect_uri':self.redirect_uri,'response_type':'code','scope':self.scopes,'state':state,'code_challenge':challenge,'code_challenge_method':'S256'}
         if nonce:p['nonce']=nonce
         return self._endpoint('authorization_endpoint')+'?'+urlencode(p)
     async def exchange(self,code,verifier):
         import httpx
-        m=self.metadata or await self.discover();d={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect_uri,'code_verifier':verifier}
+        self.metadata or await self.discover();d={'grant_type':'authorization_code','code':code,'client_id':self.client_id,'redirect_uri':self.redirect_uri,'code_verifier':verifier}
         if self.client_secret:d['client_secret']=self.client_secret
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self._endpoint('token_endpoint'),data=d)
