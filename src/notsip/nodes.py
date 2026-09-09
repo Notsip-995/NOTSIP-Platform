@@ -73,7 +73,7 @@ class RecoveryManager:
         invalid=[]
         for p in self._files():
             try:return p,self._load_verified(p),invalid
-            except Exception as exc:invalid.append({'path':str(p.relative_to(self.root)),'reason':str(exc)})
+            except (OSError,UnicodeError,ValueError,TypeError,json.JSONDecodeError,RuntimeError) as exc:invalid.append({'path':str(p.relative_to(self.root)),'reason':str(exc)})
         if invalid:raise RuntimeError('no verified recovery checkpoint is available')
         return None,None,[]
     def latest(self):p=self.latest_path();return self._load_verified(p) if p else None
