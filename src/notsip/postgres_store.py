@@ -5,7 +5,7 @@ import psycopg
 from .actor_context import current_actor
 
 class PostgreSQLStore:
-    def __init__(self,root,url):self.root=Path(root);self.url=url;self.lock=None;self.init()
+    def __init__(self,root,url):self.root=Path(root);self.url=url;self.init()
     def conn(self):return psycopg.connect(self.url,row_factory=psycopg.rows.dict_row)
     def init(self):
         with self.conn() as c:
@@ -25,10 +25,13 @@ class PostgreSQLStore:
     def fact(self,statement,source,url='',confidence=.5,metadata=None):fid=str(uuid.uuid4());self.exec('INSERT INTO facts(id,statement,source,url,confidence,retrieved,metadata) VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb)',(fid,statement,source,url,confidence,time.time(),json.dumps(metadata or {})));return fid
     def facts(self,n=100):return [dict(r) for r in self.rows('SELECT * FROM facts ORDER BY retrieved DESC LIMIT %s',(n,))]
     def task(self,objective,state='PENDING',priority=0,handler='',data=None,run_at=None,interval_sec=None,idempotency_key=''):
-        if idempotency_key:
-            existing=self.row('SELECT id FROM tasks WHERE idempotency_key=%s',(idempotency_key,))
-            if existing:return existing['id']
-        tid=str(uuid.uuid4());now=time.time();self.exec('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,0,%s,%s,%s,%s)',(tid,objective,state,priority,handler,json.dumps(data or {}),run_at,interval_sec,now,now,'',idempotency_key or ''));return tid
+        tid=str(uuid.uuid4());now=time.time();payload=json.dumps(data or {})
+        with self.conn() as c:
+            if idempotency_key:
+                cur=c.execute("INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,0,%s,%s,%s,%s) ON CONFLICT (idempotency_key) WHERE idempotency_key <> '' DO NOTHING RETURNING id",(tid,objective,state,priority,handler,payload,run_at,interval_sec,now,now,'',idempotency_key));row=cur.fetchone();c.commit()
+                if row:return row['id']
+                existing=c.execute('SELECT id FROM tasks WHERE idempotency_key=%s',(idempotency_key,)).fetchone();return existing['id'] if existing else None
+            c.execute('INSERT INTO tasks(id,objective,state,priority,handler,data,run_at,interval_sec,retries,created,updated,error,idempotency_key) VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,0,%s,%s,%s,%s)',(tid,objective,state,priority,handler,payload,run_at,interval_sec,now,now,'',''));c.commit();return tid
     def tasks(self,state=None):return [dict(r) for r in self.rows('SELECT * FROM tasks WHERE state=%s ORDER BY priority DESC,created ASC',(state,))] if state else [dict(r) for r in self.rows('SELECT * FROM tasks ORDER BY priority DESC,created ASC')]
     def claim_task(self,tid,data):
         with self.conn() as c:cur=c.execute("UPDATE tasks SET state='RUNNING',data=%s::jsonb,error='',updated=%s WHERE id=%s AND state='PENDING'",(data,time.time(),tid));c.commit();return cur.rowcount==1
@@ -54,11 +57,11 @@ class PostgreSQLStore:
     def device_owner(self,id):r=self.row('SELECT data FROM devices WHERE id=%s',(id,));return (r.get('data') or {}).get('owner') if r else None
     def device_owned_by(self,id,owner=None):return self.device_owner(id)==str(owner or current_actor()).strip()
     def pair_device(self,id,name,platform,public_key,token,owner=None):
-        owner=str(owner or current_actor()).strip() or 'primary-user';row=self.row('SELECT data FROM devices WHERE id=%s',(id,))
-        if row:
-            existing=(row.get('data') or {}).get('owner')
-            if existing not in (None,owner):raise PermissionError('device is already owned by another actor')
-        data=(row.get('data') or {}) if row else {};data['owner']=owner;self.exec('INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,platform=EXCLUDED.platform,public_key=EXCLUDED.public_key,token_hash=EXCLUDED.token_hash,last_seen=EXCLUDED.last_seen,status=EXCLUDED.status,data=EXCLUDED.data',(id,name,platform,public_key,hashlib.sha256(token.encode()).hexdigest(),time.time(),'ONLINE',json.dumps(data)))
+        owner=str(owner or current_actor()).strip() or 'primary-user';payload={'owner':owner};token_hash=hashlib.sha256(token.encode()).hexdigest();now=time.time()
+        with self.conn() as c:
+            cur=c.execute("INSERT INTO devices(id,name,platform,public_key,token_hash,last_seen,status,data) VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,platform=EXCLUDED.platform,public_key=EXCLUDED.public_key,token_hash=EXCLUDED.token_hash,last_seen=EXCLUDED.last_seen,status=EXCLUDED.status,data=EXCLUDED.data WHERE COALESCE(devices.data->>'owner','') IN ('',%s) RETURNING id",(id,name,platform,public_key,token_hash,now,'ONLINE',json.dumps(payload),owner));row=cur.fetchone()
+            if not row: c.rollback();raise PermissionError('device is already owned by another actor')
+            c.commit()
     def devices(self,owner=None):
         owner=str(owner or current_actor()).strip() or 'primary-user';return [dict(r) for r in self.rows("SELECT id,name,platform,last_seen,status,data FROM devices WHERE data->>'owner'=%s ORDER BY name",(owner,))]
     def device_token_valid(self,id,token):r=self.row('SELECT token_hash FROM devices WHERE id=%s',(id,));return bool(r and secrets.compare_digest(r['token_hash'],hashlib.sha256(token.encode()).hexdigest()))
