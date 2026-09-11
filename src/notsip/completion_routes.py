@@ -2,8 +2,12 @@ from __future__ import annotations
 import base64,binascii
 from fastapi import Depends,File,Header,HTTPException,Request,UploadFile
 from .events import Event
+from .oauth_services import OAuthService
+from .policy import Risk
+from .tools import Tool
+from .actor_context import current_actor
 
-def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None):
+def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settings, events=None, registry=None, agent=None):
     async def require_user_or_device(request:Request):
         try:
             await require_auth(request);return {'kind':'user'}
@@ -11,6 +15,10 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
             device_id=request.headers.get('X-NOTSIP-Device-ID','').strip();token=request.headers.get('X-NOTSIP-Device-Token','').strip()
             if device_id and token and store.device_token_valid(device_id,token):return {'kind':'device','device_id':device_id}
             raise user_error
+
+    def require_agent():
+        if agent is None:raise HTTPException(503,'authorized agent is not available for mutation')
+        return agent
 
     @app.post('/api/voice/transcribe')
     async def voice_transcribe(file:UploadFile=File(...),language:str='',_:dict=Depends(require_user_or_device)):
@@ -56,6 +64,24 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         if provider_name not in oauth.PROFILES:raise HTTPException(400,'unsupported OAuth provider')
         try:return await oauth.mail(provider_name,account_id or None)
         except Exception as exc:raise HTTPException(503,str(exc))
+    def provider_guard(provider):
+        if provider not in oauth.PROFILES:raise HTTPException(400,'unsupported OAuth provider')
+        if provider not in {'google','microsoft'}:raise HTTPException(400,'provider does not support this operation')
+    @app.post('/api/integrations/{provider_name}/calendar/events')
+    async def integration_calendar_create(provider_name:str,payload:dict,_:None=Depends(require_auth)):
+        provider_guard(provider_name);a=require_agent()
+        return await a.run_tool('oauth_calendar_create',{'provider':provider_name,'account_id':str(payload.get('account_id','')) or None,'title':str(payload.get('title','')).strip(),'start':str(payload.get('start','')),'end':str(payload.get('end','')),'description':str(payload.get('description','')),'location':str(payload.get('location','')),'timezone':str(payload.get('timezone','UTC'))})
+    @app.patch('/api/integrations/{provider_name}/calendar/events/{event_id}')
+    async def integration_calendar_update(provider_name:str,event_id:str,payload:dict,_:None=Depends(require_auth)):
+        provider_guard(provider_name);a=require_agent();changes=dict(payload);account_id=str(changes.pop('account_id','')) or None
+        return await a.run_tool('oauth_calendar_update',{'provider':provider_name,'account_id':account_id,'event_id':event_id,'changes':changes})
+    @app.delete('/api/integrations/{provider_name}/calendar/events/{event_id}')
+    async def integration_calendar_delete(provider_name:str,event_id:str,account_id:str='',_:None=Depends(require_auth)):
+        provider_guard(provider_name);a=require_agent();return await a.run_tool('oauth_calendar_delete',{'provider':provider_name,'account_id':account_id or None,'event_id':event_id})
+    @app.post('/api/integrations/{provider_name}/mail/send')
+    async def integration_mail_send(provider_name:str,payload:dict,_:None=Depends(require_auth)):
+        provider_guard(provider_name);a=require_agent()
+        return await a.run_tool('oauth_mail_send',{'provider':provider_name,'account_id':str(payload.get('account_id','')) or None,'to':str(payload.get('to','')),'subject':str(payload.get('subject','')),'body':str(payload.get('body',''))})
     @app.post('/api/events/signed')
     async def signed_event(payload:dict,signature:str='',x_notsip_event_signature:str=Header('',alias='X-NOTSIP-Event-Signature'),_:None=Depends(require_auth)):
         import hashlib,hmac,json
@@ -66,7 +92,13 @@ def attach(app, *, require_auth, media, maintenance, store, nodes, oauth, settin
         event=Event(payload.get('type','signed.external'),payload,'signed-external')
         if events is not None:await events.publish(event)
         return {'status':'ACCEPTED','event':payload,'published':events is not None}
+    if registry is not None:
+        registry.add(Tool('oauth_calendar_create','Create an event in an authorized Google or Microsoft calendar.','WRITE_CALENDAR',Risk.MEDIUM,{'type':'object','properties':{'provider':{'type':'string'},'account_id':{'type':'string'},'title':{'type':'string'},'start':{'type':'string'},'end':{'type':'string'},'description':{'type':'string'},'location':{'type':'string'},'timezone':{'type':'string'}},'required':['provider','title','start','end']},oauth.calendar_create))
+        registry.add(Tool('oauth_calendar_update','Update an authorized Google or Microsoft calendar event.','WRITE_CALENDAR',Risk.MEDIUM,{'type':'object','properties':{'provider':{'type':'string'},'account_id':{'type':'string'},'event_id':{'type':'string'},'changes':{'type':'object'}},'required':['provider','event_id','changes']},oauth.calendar_update))
+        registry.add(Tool('oauth_calendar_delete','Delete an authorized Google or Microsoft calendar event.','WRITE_CALENDAR',Risk.HIGH,{'type':'object','properties':{'provider':{'type':'string'},'account_id':{'type':'string'},'event_id':{'type':'string'}},'required':['provider','event_id']},oauth.calendar_delete,True))
+        registry.add(Tool('oauth_mail_send','Send mail through an authorized Google or Microsoft account. Provider response is reported without claiming delivery.','SEND_EMAIL',Risk.HIGH,{'type':'object','properties':{'provider':{'type':'string'},'account_id':{'type':'string'},'to':{'type':'string'},'subject':{'type':'string'},'body':{'type':'string'}},'required':['provider','to','subject','body']},oauth.send_mail,True))
 
 def store_fact_if_present(store,result,payload):
     observation=result.get('observation') if isinstance(result,dict) else None
-    if observation:store.fact(observation,'vision','',0.65,{'prompt':payload.get('prompt','')})
+    if observation:
+        store.fact(observation,'vision','',0.65,{'prompt':payload.get('prompt',''),'actor':current_actor()})

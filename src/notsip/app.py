@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid, inspect
+import json, os, socket, time, uuid, inspect, copy, secrets
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -8,7 +8,7 @@ from .runtime_prod import policy
 from .provider import Provider
 from .connectors import Web, Email
 from .security import OIDCProvider
-from .policy import Policy
+from .policy import Policy, Risk
 from .nodes import NodeRegistry
 from .streaming import attach as attach_streaming
 from .background import attach as attach_background
@@ -20,9 +20,63 @@ from .account_store import AccountStore
 from .conversations import ConversationStore
 from .logging_setup import configure as configure_logging
 from .native_voice import NativeVoiceWorker
+from .tools import Tool
+from .execution_gate import ToolExecutionGate
+from .actor_context import current_actor
 attach_streaming(app,media,settings,settings.api_key)
 attach_extra(app,require_auth,web,emailc)
 PRODUCT_ROOT=repo_root();DATA=Path(settings.data_dir).resolve();config_store=ConfigStore(DATA);audit_log=AuditLog(DATA);backups=BackupManager(DATA);approvals=ApprovalStore(DATA);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);maintenance=Maintenance(PRODUCT_ROOT);probes=CapabilityProbe(settings,store,provider,web,emailc);memory_service=MemoryService(store);accounts=AccountStore(auth.secrets);conversations=ConversationStore(DATA);logger=configure_logging(DATA,settings.log_level,settings.log_max_bytes,settings.log_backup_count);native_voice=NativeVoiceWorker(settings,media,events)
+CONFIG_SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','flight_planning_token','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','speaker_identity_token','business_admin_token'}
+CONFIG_HIGH_RISK={'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint',*CONFIG_SECRET_NAMES}
+CONFIG_RUNTIME_UNSUPPORTED={'data_dir','database_url'}
+CONFIG_RESTART_KEYS={'host','port','auth_mode','oidc_provider','oidc_issuer','oidc_client_id','oidc_redirect_uri','oidc_scopes','llm_base_url','llm_api_key','llm_model','fallback_llm_base_url','fallback_llm_api_key','fallback_llm_model','stt_base_url','stt_api_key','stt_model','stt_language','stt_stream_url','tts_base_url','tts_api_key','tts_model','tts_voice','tts_format','voice_enabled','native_voice_enabled','voice_sample_rate','vad_rms_threshold','vad_silence_blocks','wake_word','vision_enabled','perception_enabled','perception_interval','perception_screen_enabled','brave_api_key','browser_enabled','smtp_host','smtp_port','imap_host','email_username','email_password','oauth_authorize_url','oauth_token_url','oauth_client_id','oauth_client_secret','oauth_redirect_uri','oauth_scopes','android_poll_seconds','node_lease_seconds','node_shared_secret','remote_compute_url','remote_compute_token','remote_sensing_url','remote_sensing_token','home_adapter_url','home_adapter_token','biometric_adapter_url','biometric_adapter_token','flight_planning_url','flight_planning_token','business_admin_url','business_admin_token','speaker_identity_url','speaker_identity_token','github_repository','windows_publisher_thumbprint','github_update_enabled'}
+
+def _rebuild_runtime_after_config():
+    global provider,web,emailc,policy,diagnostics,probes,auth_token
+    provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
+    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
+    ToolExecutionGate.configure(policy,agent.approvals)
+    auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
+
+def _apply_config(requested,bootstrap=False):
+    allowed={k for k in settings.__class__.model_fields.keys() if k not in CONFIG_SECRET_NAMES|{'database_url','data_dir'}}
+    snapshot={k:copy.deepcopy(getattr(settings,k)) for k in set(requested)|{'host','port','auth_mode','oidc_issuer','oidc_client_id','oidc_redirect_uri','self_modify_enabled','capability_levels','github_update_enabled','windows_publisher_thumbprint','database_url','data_dir'}}
+    secret_snapshot={k:auth.secrets.get('NOTSIP_'+k.upper()) for k in CONFIG_SECRET_NAMES if k in requested}
+    try:
+        if not bootstrap:
+            candidate=copy.deepcopy(settings)
+            for k,v in requested.items():
+                if k in allowed:setattr(candidate,k,v)
+                elif k in CONFIG_SECRET_NAMES:setattr(candidate,k,str(v))
+            candidate.ensure()
+            for key,value in requested.items():
+                if key in CONFIG_SECRET_NAMES:
+                    if str(value or '').strip():auth.secrets.set('NOTSIP_'+key.upper(),str(value))
+                    else:auth.secrets.delete('NOTSIP_'+key.upper())
+            persisted={k:getattr(settings,k) for k in allowed};persisted.update({k:v for k,v in requested.items() if k in allowed});config_store.save(persisted)
+            return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':True,'applied_to_runtime':False,'restart_reason':'configuration was validated and persisted; restart NOTSIP to atomically rebuild all adapters','diagnostics':diagnostics.run()}
+        for k,v in requested.items():
+            if k in allowed:setattr(settings,k,v)
+            elif k in CONFIG_SECRET_NAMES:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
+        settings.ensure();config_store.save({k:getattr(settings,k) for k in allowed});_rebuild_runtime_after_config();return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':bool(set(requested)&CONFIG_RESTART_KEYS),'applied_to_runtime':True,'diagnostics':diagnostics.run()}
+    except Exception as exc:
+        for k,v in snapshot.items():setattr(settings,k,v)
+        for k,v in secret_snapshot.items():
+            if v is None:auth.secrets.delete('NOTSIP_'+k.upper())
+            else:auth.secrets.set('NOTSIP_'+k.upper(),v)
+        if bootstrap:_rebuild_runtime_after_config()
+        raise RuntimeError(f'configuration rejected: {exc}') from exc
+
+def _config_admin(pending_id,keys):
+    pending=auth.secrets.get('config:pending:'+str(pending_id))
+    if not isinstance(pending,dict):raise RuntimeError('pending configuration change not found or expired')
+    try:return _apply_config(pending,bootstrap=False)
+    finally:auth.secrets.delete('config:pending:'+str(pending_id))
+if registry.get('config_admin') is None:registry.add(Tool('config_admin','Authorize and apply security-sensitive configuration changes from an encrypted pending record.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'pending_id':{'type':'string'},'keys':{'type':'array'}},'required':['pending_id','keys']},_config_admin,True))
+if registry.get('backup_restore') is None:registry.add(Tool('backup_restore','Restore a verified NOTSIP backup after explicit confirmation.','SELF_MAINTENANCE',Risk.HIGH,{'type':'object','properties':{'name':{'type':'string'}},'required':['name']},lambda name:backups.restore(name,True),True))
+if registry.get('native_voice_start') is None:registry.add(Tool('native_voice_start','Start the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object','properties':{}},lambda:native_voice.start()))
+if registry.get('native_voice_stop') is None:registry.add(Tool('native_voice_stop','Stop the configured native microphone voice worker.','ACCESS_MICROPHONE',Risk.MEDIUM,{'type':'object', 'properties':{}},lambda:native_voice.stop()))
+ToolExecutionGate.wrap_registry(registry)
 attach_background(app,store,nodes,recovery,intellect,events,memory_service,settings.health_interval,settings.checkpoint_interval,settings.proactive_interval,settings.memory_maintenance_interval)
 attach_perception(app,settings,win,media,store,events)
 app.router.routes=[r for r in app.router.routes if not (getattr(r,'path',None)=='/' and 'GET' in getattr(r,'methods',set()))]
@@ -68,8 +122,8 @@ async def production_security(request:Request,call_next):
 @app.post('/api/login')
 async def api_login(payload:dict):
     if not settings.api_key:raise HTTPException(503,'API key authentication is disabled; local access is open')
-    if not __import__('secrets').compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
-    token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=False,max_age=settings.session_ttl);return r
+    if not secrets.compare_digest(str(payload.get('api_key','')),settings.api_key):raise HTTPException(401,'invalid API key')
+    token=auth.mint_session({'mode':'api_key','sub':'primary-user'});r=JSONResponse({'authenticated':True});r.set_cookie('notsip_session',token,httponly=True,samesite='lax',secure=not str(settings.host) in {'127.0.0.1','::1','localhost'},max_age=settings.session_ttl);return r
 @app.post('/api/logout')
 async def api_logout(request:Request):
     s=request.cookies.get('notsip_session');d=_sessions();d.pop(s,None);_save_sessions(d);auth.sessions.pop(s,None);r=Response(status_code=204);r.delete_cookie('notsip_session');return r
@@ -81,46 +135,61 @@ async def diagnostics_route(_:None=Depends(require_auth)):return diagnostics.run
 async def audit_log_route(_:None=Depends(require_auth)):return {'events':audit_log.tail()}
 @app.get('/api/config')
 async def config_get(_:None=Depends(require_auth)):
-    data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret'))};return data
+    data=config_store.load();data['settings']={k:v for k,v in data.get('settings',{}).items() if not any(x in k.lower() for x in ('key','password','secret','token'))};return data
 @app.post('/api/config')
 async def config_set(payload:dict,_:None=Depends(require_auth)):
-    requested=dict(payload.get('settings') or {});allowed={k for k in settings.__class__.model_fields.keys() if k not in {'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url'}};secret_names={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key'}
-    for k,v in requested.items():
-        if k in allowed:setattr(settings,k,v)
-        elif k in secret_names:auth.secrets.set('NOTSIP_'+k.upper(),str(v));setattr(settings,k,str(v))
-    config_store.save({k:getattr(settings,k) for k in allowed})
-    global provider,web,emailc,policy,diagnostics,probes,auth_token
-    provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
-    web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level)
-    # Keep the original shared NodeRegistry instance so route closures across the
-    # application observe the new federation secret immediately.
-    nodes.secret=settings.node_shared_secret
-    agent.provider=provider;agent.policy=policy;auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);auth_token=settings.api_key
-    diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
-    audit_log.write('config.updated',keys=sorted(requested));return {'status':'SUCCESS','version':2,'changed':sorted(requested),'restart_required':False,'diagnostics':diagnostics.run()}
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    requested=dict(payload.get('settings') or {})
+    if not requested:raise HTTPException(400,'settings are required')
+    unknown=set(requested)-set(settings.__class__.model_fields)
+    if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
+    unsupported=sorted(set(requested)&CONFIG_RUNTIME_UNSUPPORTED)
+    if unsupported:raise HTTPException(409,f"runtime cannot safely switch {unsupported}; configure them before startup and restart NOTSIP")
+    sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
+    if sensitive:
+        pending_id=uuid.uuid4().hex;auth.secrets.set('config:pending:'+pending_id,requested);result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
+        if result.get('status')=='FAILURE':auth.secrets.delete('config:pending:'+pending_id)
+        return result
+    try:return _apply_config(requested,bootstrap=False)
+    except RuntimeError as exc:raise HTTPException(400,str(exc))
 @app.post('/api/diagnostics/test-config')
 async def test_config(_:None=Depends(require_auth)):return diagnostics.run()
 @app.post('/api/backups')
-async def create_backup(_:None=Depends(require_auth)):return backups.create()
+async def create_backup(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return backups.create()
 @app.get('/api/backups')
-async def list_backups(_:None=Depends(require_auth)):return {'backups':backups.list()}
+async def list_backups(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'backups':backups.list()}
 @app.get('/api/backups/{name}/verify')
-async def verify_backup(name:str,_:None=Depends(require_auth)):return backups.verify(name)
+async def verify_backup(name:str,_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return backups.verify(name)
 @app.post('/api/backups/{name}/restore')
-async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):return backups.restore(name,bool(payload.get('confirm')))
+async def restore_backup(name:str,payload:dict,_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    if not payload.get('confirm'):raise HTTPException(400,'restore confirmation required')
+    return await agent.run_tool('backup_restore',{'name':name})
 @app.get('/api/approvals')
 async def approvals_route(_:None=Depends(require_auth)):return {'pending':approvals.pending()}
 @app.post('/api/approvals')
-async def create_approval(payload:dict,_:None=Depends(require_auth)):return approvals.request(str(payload.get('action','')),str(payload.get('reason','')),payload.get('context') or {})
+async def create_approval(payload:dict,_:None=Depends(require_auth)):
+    ctx=dict(payload.get('context') or {});ctx['actor']=current_actor();return approvals.request(str(payload.get('action','')),str(payload.get('reason','')),ctx)
 @app.post('/api/approvals/{approval_id}')
 async def decide_approval(approval_id:str,payload:dict,_:None=Depends(require_auth)):
     item=approvals.decide(approval_id,bool(payload.get('approved')))
     if not item:raise HTTPException(404,'approval not found')
+    ctx=item.get('context') or {};actor=str(ctx.get('actor','primary-user'))
+    if actor!=current_actor():raise HTTPException(403,'approval belongs to a different actor')
     audit_log.write('approval.decided',approval_id=approval_id,status=item['status'])
     if item['status']=='APPROVED' and payload.get('execute',True):
-        ctx=item.get('context') or {};name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
+        name=ctx.get('tool');args=ctx.get('args') or {};tool=registry.get(name)
         if not tool:raise HTTPException(400,'approved tool no longer exists')
-        result=tool.fn(**args);result=await result if inspect.isawaitable(result) else result;result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result};audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
+        ToolExecutionGate.wrap_registry(registry)
+        try:result=tool.fn(**args)
+        except PermissionError as exc:raise HTTPException(403,str(exc)) from exc
+        result=await result if inspect.isawaitable(result) else result;result=result if isinstance(result,dict) else {'status':'SUCCESS','result':result};audit_log.write('approval.executed',approval_id=approval_id,tool=name,result=result);item['execution']=result
     return item
 @app.get('/api/memory/lifecycle')
 async def memory_lifecycle(_:None=Depends(require_auth)):return memory_service.snapshot()
@@ -140,34 +209,15 @@ async def select_session(session_id:str,_:None=Depends(require_auth)):
 async def oauth_accounts(_:None=Depends(require_auth)):return {'accounts':accounts.list()}
 @app.post('/api/integrations/accounts/{account_id}/disconnect')
 async def oauth_disconnect(account_id:str,_:None=Depends(require_auth)):
-    item=accounts.disconnect(account_id)
-    if not item:raise HTTPException(404,'account not found')
-    return {'status':'SUCCESS','account_id':account_id}
+    if not accounts.get(account_id):raise HTTPException(404,'account not found')
+    return await agent.run_tool('oauth_revoke',{'account_id':account_id})
 @app.get('/api/self/provenance')
-async def self_provenance(_:None=Depends(require_auth)):return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
+async def self_provenance(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'repository':str(PRODUCT_ROOT),'resource_root':str(resource_root()),'files':maintenance.inventory()}
 @app.get('/api/process')
-async def process_info(_:None=Depends(require_auth)):return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
+async def process_info(_:None=Depends(require_auth)):
+    if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+    return {'pid':os.getpid(),'host':socket.gethostname(),'port':settings.port,'data_dir':str(DATA)}
 @app.get('/api/voice/native')
-async def native_voice_status(_:None=Depends(require_auth)):return {'running':native_voice.running}
-@app.post('/api/voice/native/start')
-async def native_voice_start(_:None=Depends(require_auth)):return native_voice.start()
-@app.post('/api/voice/native/stop')
-async def native_voice_stop(_:None=Depends(require_auth)):return native_voice.stop()
-@app.get('/api/windows/tree')
-async def windows_tree(window_title:str='',window_re:str='',_:None=Depends(require_auth)):return uia.control_tree(window_title,window_re)
-@app.post('/api/windows/click')
-async def windows_click(payload:dict,_:None=Depends(require_auth)):return uia.click(**payload)
-@app.post('/api/windows/type')
-async def windows_type(payload:dict,_:None=Depends(require_auth)):return uia.type_text(**payload)
-@app.post('/api/windows/hotkey')
-async def windows_hotkey(payload:dict,_:None=Depends(require_auth)):return uia.hotkey(*payload.get('keys',[]))
-@app.get('/api/federation/challenge')
-async def federation_challenge(node_id:str,nonce:str,_:None=Depends(require_auth)):return {'node_id':node_id,'nonce':nonce,'signature':nodes.sign(node_id,nonce)}
-@app.post('/api/federation/{node_id}/rotate')
-async def federation_rotate(node_id:str,_:None=Depends(require_auth)):
-    if not store.row('SELECT id FROM devices WHERE id=?',(node_id,)):raise HTTPException(404,'node not found')
-    token=__import__('secrets').token_urlsafe(32);store.exec('UPDATE devices SET token_hash=? WHERE id=?',(__import__('hashlib').sha256(token.encode()).hexdigest(),node_id));return {'node_id':node_id,'token':token}
-@app.post('/api/federation/{node_id}/revoke')
-async def federation_revoke(node_id:str,_:None=Depends(require_auth)):
-    store.exec("UPDATE devices SET token_hash='',status='REVOKED' WHERE id=?",(node_id,));return {'node_id':node_id,'status':'REVOKED'}
-__all__=['app']
+async def native_voice_status():return {'running':native_voice.running,'platform':os.name}

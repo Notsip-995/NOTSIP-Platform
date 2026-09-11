@@ -1,22 +1,27 @@
 $ErrorActionPreference='Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-$installRoot=Split-Path -Parent $MyInvocation.MyCommand.Path
-$exe=Join-Path (Get-Location) 'dist\NOTSIP.exe'
-if(-not(Test-Path $exe)){throw 'Run this from a source checkout and build the new NOTSIP.exe first.'}
-$backup=Join-Path (Get-Location) ("data\runtime\updates\"+(Get-Date -Format yyyyMMdd-HHmmss))
-New-Item -ItemType Directory -Force $backup | Out-Null
-$old=Join-Path $backup 'NOTSIP.exe'
-$installed=(Get-Command NOTSIP.exe -ErrorAction SilentlyContinue).Source
-if($installed){Copy-Item $installed $old -Force}
-Stop-Process -Name NOTSIP -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-$target=if($installed){$installed}else{Join-Path (Get-Location) 'NOTSIP.exe'}
-Copy-Item $exe $target -Force
-Start-Process $target
-Start-Sleep -Seconds 3
-try { $r=Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 5; if($r.StatusCode -ne 200){throw 'health check failed'}; Write-Host 'NOTSIP update verified.' -ForegroundColor Green }
-catch {
-  Stop-Process -Name NOTSIP -Force -ErrorAction SilentlyContinue
-  if(Test-Path $old){Copy-Item $old $target -Force}
-  throw "Update failed and previous executable was restored: $($_.Exception.Message)"
-}
+
+# The packaged updater and Python UpdateManager are the only supported update paths.
+# This script never copies an arbitrary executable over an installed NOTSIP binary.
+$python = Get-Command python.exe -ErrorAction SilentlyContinue
+if(-not $python){ throw 'Python is required to invoke the NOTSIP trusted updater. Use the packaged NOTSIP updater for frozen installations.' }
+$sourceRoot=(Get-Location).Path
+$env:PYTHONPATH=Join-Path $sourceRoot 'src'
+$code=@'
+import asyncio
+import json
+from pathlib import Path
+from notsip.config import settings
+from notsip.updater import UpdateManager
+
+async def main():
+    if not settings.github_update_enabled:
+        raise RuntimeError('automatic updates are disabled')
+    manager=UpdateManager(Path(settings.data_dir),settings)
+    result=await manager.download_release_asset('NOTSIP.exe')
+    print(json.dumps(result,sort_keys=True))
+
+asyncio.run(main())
+'@
+& $python.Source -c $code
+if($LASTEXITCODE -ne 0){ throw "NOTSIP trusted updater failed with exit code $LASTEXITCODE" }

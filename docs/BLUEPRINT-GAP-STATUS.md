@@ -1,44 +1,60 @@
-# NOTSIP blueprint gap status — 0.9
+# NOTSIP blueprint gap status — current hardening branch
 
-This document distinguishes implemented software from capabilities that require the user's real accounts, devices, permissions, signing material, or deferred physical hardware.
+This document is a truth-tracking aid for the chat-provided NOTSIP engineering blueprint. It does not override the blueprint itself and must not be read as release approval.
 
-## Operational software implemented
+## Implemented in the current source tree
 
-- authoritative `python -m notsip` runtime and Windows EXE/installer path
-- persistent identity, conversations, memory, provenance, world state and recovery checkpoints
-- primary/fallback OpenAI-compatible provider routing
-- risk/autonomy policy, persistent approvals and audited tool execution
-- durable scheduler with registered handlers, retries, atomic claiming and worker recovery
-- signed event ingress and authenticated WebSocket streams
-- Windows PowerShell/UI Automation, screenshot, clipboard, mouse, target-opening and verification controls
-- Playwright browsing with capability gating and private-address/SSRF protection
-- Brave web retrieval and SMTP/IMAP/ICS adapters
-- OIDC discovery, PKCE, encrypted pending state, durable browser sessions and account lifecycle
-- Android pairing, foreground service, device authentication, atomic command delivery and device-bound results
-- federation challenge/signature, token rotation, leases, revocation and reconciliation
-- self-inspection, source reading, compile/test verification and guarded self-modification/update/rollback paths
-- first-run configuration with persisted-state hydration and protected secret handling
-- diagnostics, structured rotating logs, request IDs, audit records, backup/restore and configuration migration
-- SQLite plus optional PostgreSQL storage interfaces
-- actual Windows `NOTSIP.exe` and `NOTSIP-Setup.exe` lifecycle acceptance tests
+- authoritative `python -m notsip` runtime and Windows EXE/installer build paths
+- persistent actor identity, conversations, memory, profiles, facts, world state and recovery state
+- capability/risk/autonomy policy, durable approvals and central tool execution gate
+- actor-scoped workspace, devices, tasks, approvals, OAuth accounts, notifications, audit/facts/world evidence
+- durable scheduler with atomic task claiming, idempotency, deadlines, retries, continuation and workflow resume
+- event journal, evidence/fusion, event reconstruction, predictive-maintenance analysis and proactive notification paths
+- Windows PowerShell/UI Automation/screenshot/clipboard/mouse/target-opening controls with explicit verification semantics
+- Linux command surface with workspace confinement and non-elevating execution
+- Playwright browser interaction with public-endpoint/redirect/SSRF controls and bounded actions
+- web/news/weather/navigation/flight-planning provider adapters with fail-closed external configuration
+- SMTP/IMAP/calendar/OAuth account integration with scope/account isolation and truthful delivery semantics
+- OIDC discovery, PKCE, state/nonce/CSRF/session protection and durable session revocation
+- Android pairing, foreground service, secure token storage, device ownership, command claiming, durable result delivery and replay protection
+- federation challenge/signature, one-use nonces, leases, revocation, ownership checks, reconciliation and stale-node handling
+- home/building, biometric telemetry, business administration and remote compute/sensing adapters with high-risk policy boundaries
+- read-only database routing with write/multi-statement rejection
+- threat assessment, forensics, audit verification, backup integrity and rollback-safe recovery
+- self-inspection, guarded self-modification, signed update provenance, SHA-256 verification, publisher verification and interrupted-update recovery
+- first-run Setup UI, configuration migration, protected secret handling and readiness reporting
 
-## External configuration / environment gates
+## Not yet validated as a release artifact
 
-- selected LLM, STT and TTS provider accounts/endpoints
+The source tree has not been locally executed in the current engineering environment, and GitHub Actions jobs for recent commits have repeatedly failed before exposing executable runner steps. Therefore the following are **not** marked as tested merely because code exists:
+
+- full unit/integration/regression/concurrency/security/E2E suite
+- frozen Windows executable startup and installed-copy acceptance
+- Windows installer install/upgrade/uninstall acceptance
+- Android release build plus real-device behavior
+- PostgreSQL real-environment behavior
+- signed production release artifacts
+
+## User/environment configuration gates
+
+These are intended to become operational when the user supplies the corresponding real resource:
+
+- primary/fallback LLM provider credentials/endpoints
+- STT/TTS providers and native audio hardware
 - web-search credentials
 - SMTP/IMAP mail accounts
-- OAuth application registrations/consent
-- Android installation, pairing and OS Accessibility/background permissions
-- real microphone/camera/audio hardware for native media behavior
-- Windows code-signing certificate/private material for signed releases
-- PostgreSQL server and credentials when that backend is selected
+- OAuth/OIDC application registration and provider consent
+- Android installation, pairing and required OS permissions
+- Windows signing certificate/private signing material
+- PostgreSQL service/credentials when that backend is selected
+- real remote sensing, business, building-control, biometric, compute or aviation providers
 
-NOTSIP must report these as unavailable/degraded until the real resource is configured and tested; it must not fabricate success.
+The application should report missing configuration as unavailable/degraded and never fabricate successful access.
 
-## Deferred physical systems
+## Physical/environment-gated capabilities
 
-Robotics, vehicles, satellites/remote sensing, smart-building infrastructure, Raspberry Pi/ESP32 sensor fleets, and external physical clusters remain deferred because those systems are not present in the current environment.
+Robotics, vehicles, physical sensor fleets, smart-building hardware, satellite feeds, microphones/cameras, Android hardware behavior, and other specialized external systems require their real environments for final validation. Software-side interfaces and safety/error semantics are implemented where possible, but physical execution is not claimed here.
 
-## Validation rule
+## Release rule
 
-A release is not declared universally production-ready until the current `main` head passes the full automated release gate using the actual frozen Windows executable and installed Windows installer, and a fresh code audit finds no substantive repository defect. External account, OS permission, signing-material and physical-hardware checks remain real-environment gates.
+The authoritative blueprint requires: implementation → integration → security → failure handling → tests → fresh audit → packaging → release validation. This branch is therefore an engineering/hardening branch until the current source passes the applicable automated and packaged-product gates in a real execution environment.

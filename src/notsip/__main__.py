@@ -3,7 +3,7 @@ import json, os, socket, sys, webbrowser
 from pathlib import Path
 import uvicorn
 from notsip.config import settings
-from notsip.product_layer import ProcessGuard
+from notsip.launcher_guard import LauncherProcessGuard
 
 
 def _is_notsip_listener(host:str,port:int)->bool:
@@ -31,33 +31,53 @@ def _select_port(host:str,configured:int)->int:
     return choose_free_port(host,configured+1,20)
 
 
+def _is_loopback_bind(host:str)->bool:
+    return host.strip().lower() in {'127.0.0.1','localhost','::1'}
+
+
+def _validate_bind_security(host:str)->None:
+    if not settings.api_key and settings.auth_mode=='api_key' and not _is_loopback_bind(host):
+        raise RuntimeError('refusing unauthenticated non-loopback bind; configure NOTSIP_API_KEY or OIDC before exposing NOTSIP remotely')
+
+
 def _open_browser(url:str):
     try:webbrowser.open(url)
     except Exception:pass
 
 
-def _lock_info(guard:ProcessGuard):
+def _lock_info(guard:LauncherProcessGuard):
     try:return json.loads(guard.path.read_text(encoding='utf-8'))
     except Exception:return {}
 
 
-def _set_lock_endpoint(guard:ProcessGuard,host:str,port:int):
+def _set_lock_endpoint(guard:LauncherProcessGuard,host:str,port:int):
     try:
         info=_lock_info(guard);info.update({'host':host,'port':port});guard.path.write_text(json.dumps(info),encoding='utf-8')
     except Exception:pass
 
 
 def main()->None:
-    guard=ProcessGuard(root=Path(settings.data_dir))
+    guard=LauncherProcessGuard(root=Path(settings.data_dir))
     if not guard.acquire():
-        info=_lock_info(guard);host=str(info.get('host') or settings.host);port=int(info.get('port') or settings.port)
+        info=_lock_info(guard)
+        if not info:raise RuntimeError('NOTSIP instance lock exists but is unreadable; refusing to start a duplicate instance')
+        host=str(info.get('host') or settings.host);port=int(info.get('port') or settings.port)
         url=f'http://{host}:{port}/'
         print(f'NOTSIP is already running; opening {url}')
         _open_browser(url)
         if getattr(sys,'frozen',False):os._exit(0)
         return
     try:
+        if getattr(sys,'frozen',False):
+            try:
+                from notsip.update_recovery import reconcile_frozen_update
+                recovery=reconcile_frozen_update(Path(settings.data_dir),Path(sys.executable),getattr(settings,'windows_publisher_thumbprint',''))
+                if recovery.get('status')=='ROLLED_BACK':print(f"NOTSIP update recovery restored {recovery.get('backup')}")
+                elif recovery.get('status')=='RECOVERY_UNAVAILABLE':raise RuntimeError('previous NOTSIP binary is invalid and no valid signed rollback binary is available')
+            except RuntimeError:raise
+            except Exception as exc:raise RuntimeError(f'NOTSIP update recovery failed: {exc}') from exc
         host=settings.host
+        _validate_bind_security(host)
         port=_select_port(host,settings.port)
         if port==0:
             return
@@ -74,7 +94,6 @@ def main()->None:
         print(f'NOTSIP listening at {url}')
         if settings.open_browser:_open_browser(url)
         uvicorn.run(app,host=host,port=port,log_level=settings.log_level.lower())
-    finally:
-        guard.release()
+    finally:guard.release()
 
 if __name__=='__main__':main()

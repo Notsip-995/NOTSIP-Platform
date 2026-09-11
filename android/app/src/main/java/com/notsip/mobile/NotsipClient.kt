@@ -2,6 +2,7 @@ package com.notsip.mobile
 
 import android.content.Context
 import android.util.Base64
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -16,7 +17,11 @@ class NotsipClient(private val ctx: Context) {
     private val http = OkHttpClient()
 
     fun baseUrl(): String = prefs.getString("base", "") ?: ""
-    fun setBaseUrl(value: String) = prefs.edit().putString("base", value.trimEnd('/')).apply()
+    fun setBaseUrl(value: String) {
+        val normalized = value.trimEnd('/')
+        validateBaseUrl(normalized)
+        prefs.edit().putString("base", normalized).apply()
+    }
 
     fun deviceId(): String {
         val existing = prefs.getString("device", null)
@@ -45,7 +50,7 @@ class NotsipClient(private val ctx: Context) {
     }
 
     suspend fun pair(code: String) {
-        require(baseUrl().startsWith("http://") || baseUrl().startsWith("https://")) { "Configure the NOTSIP server URL first" }
+        requireConfiguredUrl()
         val body = JSONObject()
             .put("code", code)
             .put("device_id", deviceId())
@@ -53,7 +58,9 @@ class NotsipClient(private val ctx: Context) {
             .put("platform", "android")
             .toString()
         val response = JSONObject(request("POST", "/api/pair/consume", body))
-        setToken(response.getString("token"))
+        val pairedToken=response.optString("device_token").ifBlank { response.optString("token") }
+        require(pairedToken.isNotBlank()) { "NOTSIP pairing response did not include a device token" }
+        setToken(pairedToken)
     }
 
     fun heartbeat() {
@@ -98,9 +105,34 @@ class NotsipClient(private val ctx: Context) {
         return JSONObject(request("POST", "/api/perception/frame", body, null, deviceHeaders()))
     }
 
+    private fun isLoopback(host: String): Boolean =
+        host == "127.0.0.1" || host == "localhost" || host == "::1"
+
+    private fun requireConfiguredUrl() {
+        val url = baseUrl().toHttpUrlOrNull() ?: throw IllegalArgumentException("Configure a valid NOTSIP server URL first")
+        require(url.encodedPath.isEmpty() || url.encodedPath == "/") { "NOTSIP server URL must not contain a path" }
+        if (url.scheme != "https") {
+            require(url.scheme == "http" && isLoopback(url.host)) {
+                "HTTPS is required for remote NOTSIP servers"
+            }
+        }
+    }
+
     private fun requireConfigured() {
-        require(baseUrl().startsWith("http://") || baseUrl().startsWith("https://")) { "Configure the NOTSIP server URL first" }
+        requireConfiguredUrl()
         require(token().isNotBlank()) { "Pair this device with NOTSIP first" }
+    }
+
+    private fun validateBaseUrl(value: String) {
+        val url = value.toHttpUrlOrNull() ?: throw IllegalArgumentException("Configure a valid NOTSIP server URL first")
+        require(url.username.isEmpty() && url.password.isEmpty()) { "Server URL must not contain credentials" }
+        require(url.query.isEmpty() && url.fragment.isEmpty()) { "Server URL must not contain query or fragment" }
+        require(url.encodedPath.isEmpty() || url.encodedPath == "/") { "Server URL must not contain a path" }
+        if (url.scheme != "https") {
+            require(url.scheme == "http" && isLoopback(url.host)) {
+                "HTTPS is required for remote NOTSIP servers"
+            }
+        }
     }
 
     private fun deviceHeaders(): Map<String, String> = mapOf(
@@ -115,6 +147,7 @@ class NotsipClient(private val ctx: Context) {
         requestBody: RequestBody? = null,
         headers: Map<String, String> = emptyMap()
     ): String {
+        requireConfiguredUrl()
         val builder = Request.Builder().url(baseUrl() + path)
         headers.forEach { (key, value) -> builder.addHeader(key, value) }
         if (method == "POST") {

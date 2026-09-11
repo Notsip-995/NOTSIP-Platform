@@ -38,23 +38,23 @@ class SecurePrefs(context: Context) {
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val ciphertext = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
         val packed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(ciphertext, Base64.NO_WRAP)
-        prefs.edit().putString(name, packed).apply()
+        check(prefs.edit().putString(name, packed).commit()) { "Failed to persist secure preference" }
     }
 
     fun getString(name: String, defaultValue: String = ""): String {
         val packed = prefs.getString(name, null) ?: return defaultValue
+        val parts = packed.split(":", limit = 2)
+        if (parts.size != 2) throw SecurityException("Corrupted secure preference: $name")
         return try {
-            val parts = packed.split(":", limit = 2)
-            if (parts.size != 2) return defaultValue
             val iv = Base64.decode(parts[0], Base64.NO_WRAP)
             val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
             String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
-        } catch (_: Exception) {
-            defaultValue
+        } catch (e: Exception) {
+            throw SecurityException("Unable to decrypt secure preference: $name", e)
         }
     }
 
-    fun remove(name: String) { prefs.edit().remove(name).apply() }
+    fun remove(name: String) { check(prefs.edit().remove(name).commit()) { "Failed to remove secure preference" } }
 }

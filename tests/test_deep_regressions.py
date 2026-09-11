@@ -1,13 +1,18 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 
+from notsip.agent import Agent
 from notsip.approval_hardening import attach as attach_approval
-from notsip.config import SECRET_FIELDS
+from notsip.config import SECRET_FIELDS, settings
+from notsip.policy import Policy, Risk
 from notsip.product_layer import ApprovalStore, ConfigStore
 from notsip.security import SecretStore
 from notsip.store import Store
+from notsip.tools import Registry, Tool
+from notsip.world import WorldModel
 
 
 def test_database_url_is_persistent_configuration(tmp_path):
@@ -36,27 +41,32 @@ def test_command_result_is_device_bound(tmp_path):
     assert store.command_result(command_id, 'SUCCESS', {'ok': True}, 'a') is True
 
 
-def test_approval_execution_is_one_time(tmp_path):
-    approvals = ApprovalStore(tmp_path)
-    item = approvals.request('calculator', 'test', {'tool': 'calculator', 'args': {}})
+def test_approval_execution_is_one_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'data_dir', str(tmp_path))
+    monkeypatch.setattr(settings, 'autonomy_level', 4)
+    monkeypatch.setattr(settings, 'capability_levels', {'COMPUTE': 0})
+    store = Store(tmp_path)
+    registry = Registry()
     calls = {'n': 0}
 
-    class Tool:
-        def fn(self, **kwargs):
-            calls['n'] += 1
-            return {'status': 'SUCCESS'}
+    def calculate():
+        calls['n'] += 1
+        return {'status': 'SUCCESS', 'value': 42}
 
-    class Registry:
-        def get(self, name):
-            return Tool() if name == 'calculator' else None
+    registry.add(Tool('calculator', 'test', 'COMPUTE', Risk.LOW, {'type': 'object', 'properties': {}}, calculate))
+    agent = Agent(settings, store, Policy(4), registry, SimpleNamespace(enabled=False, fallback_enabled=False), WorldModel(store))
+    item = agent.approvals.request('calculator', 'test', {'tool': 'calculator', 'args': {}, 'actor': 'primary-user'})
 
     app = FastAPI()
+
     class Log:
         def write(self, *args, **kwargs):
             return None
+
     async def require_auth(request):
         return None
-    attach_approval(app, require_auth=require_auth, approvals=approvals, registry=Registry(), audit_log=Log())
+
+    attach_approval(app, require_auth=require_auth, approvals=agent.approvals, registry=registry, audit_log=Log(), agent=agent)
     route = next(r for r in app.routes if getattr(r, 'path', None) == '/api/approvals/{approval_id}')
     first = asyncio.run(route.endpoint(item['id'], {'approved': True, 'execute': True}, None))
     assert first['status'] == 'EXECUTED'

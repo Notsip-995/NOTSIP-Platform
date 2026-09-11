@@ -1,14 +1,17 @@
 name: NOTSIP CI
+
 on:
   push:
   pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - name: Install
         run: python -m pip install -e '.[dev]'
       - name: Compile
@@ -17,12 +20,30 @@ jobs:
         run: pytest -q
       - name: Docker build
         run: docker build -t notsip-ci .
+      - name: Docker runtime smoke
+        run: |
+          set -euxo pipefail
+          cid=$(docker run -d --name notsip-ci-runtime \
+            -e NOTSIP_HOST=0.0.0.0 \
+            -e NOTSIP_API_KEY=ci-test-only-key \
+            -e NOTSIP_OPEN_BROWSER=false \
+            notsip-ci)
+          trap 'docker logs "$cid" || true; docker rm -f "$cid" || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8765/ >/dev/null 2>&1; then break; fi
+            sleep 1
+            if [ "$i" -eq 30 ]; then exit 1; fi
+          done
+          curl --fail --silent --show-error -H 'Authorization: Bearer ci-test-only-key' http://127.0.0.1:8765/api/health >/dev/null
+          docker exec "$cid" python -c "import urllib.request; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765/api/health',headers={'Authorization':'Bearer ci-test-only-key'}), timeout=3); print(r.read().decode())"
+
   windows-build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - name: Install
         shell: pwsh
         run: python -m pip install -e '.[windows]'
@@ -34,13 +55,14 @@ jobs:
         env:
           NOTSIP_HOST: '127.0.0.1'
           NOTSIP_PORT: '8765'
-          NOTSIP_API_KEY: ''
+          NOTSIP_API_KEY: 'ci-test-only-key'
           NOTSIP_AUTH_MODE: 'api_key'
           NOTSIP_DATA_DIR: '${{ github.workspace }}\\ci-data'
           NOTSIP_OPEN_BROWSER: 'false'
         run: |
           $ErrorActionPreference = 'Stop'
           $base='http://127.0.0.1:8765'
+          $headers=@{Authorization="Bearer $env:NOTSIP_API_KEY"}
           New-Item -ItemType Directory -Force -Path "$env:NOTSIP_DATA_DIR" | Out-Null
           $p = Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:NOTSIP_DATA_DIR\notsip.stdout.log" -RedirectStandardError "$env:NOTSIP_DATA_DIR\notsip.stderr.log"
           try {
@@ -57,12 +79,12 @@ jobs:
             $body='{"settings":{"local_timezone":"Africa/Kigali","autonomy_level":1,"vision_enabled":false,"perception_enabled":false,"browser_enabled":false,"checkpoint_interval":60,"health_interval":5,"proactive_interval":30,"memory_maintenance_interval":120}}'
             try {$cfg=Invoke-WebRequest -Uri "$base/api/config" -Method POST -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 5} catch {Write-Host '--- config response ---';try{Write-Host $_.ErrorDetails.Message}catch{};Write-Host '--- stdout ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.stdout.log" -ErrorAction SilentlyContinue;Write-Host '--- stderr ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.stderr.log" -ErrorAction SilentlyContinue;throw}
             if($cfg.StatusCode -ne 200 -or $cfg.Content -notmatch '"status":"SUCCESS"'){throw 'Minimal configuration failed'}
-            $state=Invoke-WebRequest "$base/api/config/public" -UseBasicParsing -TimeoutSec 5
+            $state=Invoke-WebRequest "$base/api/config/public" -Headers $headers -UseBasicParsing -TimeoutSec 5
             if($state.StatusCode -ne 200 -or $state.Content -notmatch '"autonomy_level":1' -or $state.Content -notmatch '"vision_enabled":false'){throw 'Saved configuration could not be read back'}
             $console=Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 5
             if($console.StatusCode -ne 200 -or $console.Content -notmatch 'NOTSIP</b>'){throw 'Configured console failed'}
             foreach($path in @('/api/health','/api/status','/api/diagnostics','/api/capabilities','/api/backups','/api/approvals','/api/devices','/api/tasks','/api/sessions','/api/integrations/accounts','/api/update/check')){
-              $r=Invoke-WebRequest "$base$path" -UseBasicParsing -TimeoutSec 5
+              $r=Invoke-WebRequest "$base$path" -Headers $headers -UseBasicParsing -TimeoutSec 5
               if($r.StatusCode -notin @(200,503)){throw "Endpoint failed: $path -> $($r.StatusCode)"}
             }
             Stop-Process -Id $p.Id -Force
@@ -72,14 +94,14 @@ jobs:
             $ready=$false
             1..40|ForEach-Object{if(-not $ready){try{$r=Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 2;if($r.StatusCode -eq 200 -and $r.Content -match 'NOTSIP'){$ready=$true}}catch{};if(-not $ready){Start-Sleep -Milliseconds 500}}}
             if(-not $ready){Write-Host '--- restart stdout ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.restart.stdout.log" -ErrorAction SilentlyContinue;Write-Host '--- restart stderr ---';Get-Content "$env:NOTSIP_DATA_DIR\notsip.restart.stderr.log" -ErrorAction SilentlyContinue;throw 'NOTSIP.exe did not restart'}
-            $persisted=Invoke-WebRequest "$base/api/config/public" -UseBasicParsing -TimeoutSec 5
+            $persisted=Invoke-WebRequest "$base/api/config/public" -Headers $headers -UseBasicParsing -TimeoutSec 5
             if($persisted.Content -notmatch '"autonomy_level":1' -or $persisted.Content -notmatch '"vision_enabled":false' -or $persisted.Content -notmatch '"perception_enabled":false'){throw 'Configuration was not retained across restart'}
             $p2=Start-Process -FilePath '.\dist\NOTSIP.exe' -PassThru -WindowStyle Hidden
             $duplicateExited=$false
             1..20|ForEach-Object{if(-not $duplicateExited){if($p2.HasExited){$duplicateExited=$true}else{Start-Sleep -Milliseconds 500}}}
             if(-not $duplicateExited){Stop-Process -Id $p2.Id -Force;throw 'Second NOTSIP.exe instance remained running'}
             if($p2.ExitCode -ne 0){throw "Second launch returned $($p2.ExitCode)"}
-            $live=Invoke-WebRequest "$base/api/health" -UseBasicParsing -TimeoutSec 5
+            $live=Invoke-WebRequest "$base/api/health" -Headers $headers -UseBasicParsing -TimeoutSec 5
             if($live.StatusCode -ne 200){throw 'Existing NOTSIP service was not left healthy after duplicate launch'}
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
       - name: Build installer
@@ -93,11 +115,13 @@ jobs:
         env:
           NOTSIP_HOST: '127.0.0.1'
           NOTSIP_PORT: '8776'
-          NOTSIP_API_KEY: ''
+          NOTSIP_API_KEY: 'ci-test-only-key'
           NOTSIP_AUTH_MODE: 'api_key'
           NOTSIP_OPEN_BROWSER: 'false'
         run: |
           $ErrorActionPreference='Stop'
+          $base='http://127.0.0.1:8776'
+          $headers=@{Authorization="Bearer $env:NOTSIP_API_KEY"}
           $installDir=Join-Path $env:RUNNER_TEMP 'NOTSIP-installed'
           if(Test-Path $installDir){Remove-Item $installDir -Recurse -Force}
           Start-Process -FilePath '.\Output\NOTSIP-Setup.exe' -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$installDir" -Wait
@@ -109,7 +133,12 @@ jobs:
             $ready=$false
             1..30|ForEach-Object{if(-not $ready){try{$r=Invoke-WebRequest 'http://127.0.0.1:8776/' -UseBasicParsing -TimeoutSec 2;if($r.StatusCode -in @(200,302)){$ready=$true}}catch{};if(-not $ready){Start-Sleep -Milliseconds 500}}}
             if(-not $ready){throw 'Installed NOTSIP.exe did not start'}
-            foreach($u in @('http://127.0.0.1:8776/api/health','http://127.0.0.1:8776/api/status')){$r=Invoke-WebRequest $u -UseBasicParsing -TimeoutSec 5;if($r.StatusCode -ne 200){throw "Installed endpoint failed: $u"}}
+            $setup=Invoke-WebRequest 'http://127.0.0.1:8776/setup' -UseBasicParsing -TimeoutSec 5
+            if($setup.StatusCode -ne 200 -or $setup.Content -notmatch 'NOTSIP first-run setup'){throw 'Installed first-run setup failed'}
+            $body='{"settings":{"local_timezone":"Africa/Kigali","autonomy_level":1,"vision_enabled":false,"perception_enabled":false,"browser_enabled":false}}'
+            $cfg=Invoke-WebRequest -Uri 'http://127.0.0.1:8776/api/config' -Method POST -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 5
+            if($cfg.StatusCode -ne 200 -or $cfg.Content -notmatch '"status":"SUCCESS"'){throw 'Installed configuration failed'}
+            foreach($u in @('http://127.0.0.1:8776/api/health','http://127.0.0.1:8776/api/status')){$r=Invoke-WebRequest $u -Headers $headers -UseBasicParsing -TimeoutSec 5;if($r.StatusCode -ne 200){throw "Installed endpoint failed: $u"}}
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
           $uninstaller=Join-Path $installDir 'unins000.exe';if(Test-Path $uninstaller){Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT','/NORESTART' -Wait}
       - name: Upload Windows artifacts
@@ -119,13 +148,17 @@ jobs:
           path: |
             dist/NOTSIP.exe
             Output/NOTSIP-Setup.exe
+
   android-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
-        with: {distribution: temurin, java-version: '17'}
+        with:
+          distribution: temurin
+          java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-        with: {gradle-version: '8.13'}
+        with:
+          gradle-version: '8.13'
       - name: Android assemble
         run: gradle -p android assembleDebug --no-daemon

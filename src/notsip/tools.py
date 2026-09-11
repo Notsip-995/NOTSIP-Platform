@@ -1,7 +1,5 @@
-from __future__ import annotations
 import ast,operator,os,platform,subprocess,webbrowser
 from pathlib import Path
-from .policy import Risk
 class Tool:
     def __init__(self,name,desc,capability,risk,schema,fn,destructive=False):self.name=name;self.desc=desc;self.capability=capability;self.risk=risk;self.schema=schema;self.fn=fn;self.destructive=destructive
     def openai(self):return {'type':'function','function':{'name':self.name,'description':self.desc,'parameters':self.schema}}
@@ -30,16 +28,24 @@ class Workspace:
     def list(self,q=''):return [str(p.relative_to(self.root)) for p in self.root.rglob('*') if p.is_file() and (not q or q.lower() in p.name.lower())][:500]
 class Windows:
     def __init__(self,workspace):self.workspace=workspace
-    def exec(self,command,timeout=60):
+    def exec(self,command,timeout=60,verify_command=''):
         if platform.system()!='Windows':raise RuntimeError('Windows node required')
         p=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',command],cwd=str(self.workspace.root),capture_output=True,text=True,timeout=max(1,min(int(timeout),180)))
-        return {'status':'SUCCESS' if p.returncode==0 else 'FAILURE','returncode':p.returncode,'stdout':p.stdout[-20000:],'stderr':p.stderr[-20000:]}
+        if p.returncode!=0:return {'status':'FAILURE','returncode':p.returncode,'stdout':p.stdout[-20000:],'stderr':p.stderr[-20000:],'verified':False}
+        result={'status':'SUCCESS','returncode':0,'stdout':p.stdout[-20000:],'stderr':p.stderr[-20000:],'verified_execution':True}
+        if verify_command:
+            v=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',verify_command],cwd=str(self.workspace.root),capture_output=True,text=True,timeout=30)
+            result['verification']={'status':'SUCCESS' if v.returncode==0 else 'FAILURE','returncode':v.returncode,'stdout':v.stdout[-10000:],'stderr':v.stderr[-10000:],'verified':v.returncode==0}
+            result['status']='SUCCESS' if v.returncode==0 else 'PARTIAL_SUCCESS'
+            if v.returncode!=0:result['note']='command executed successfully, but the requested postcondition was not verified'
+        return result
     def screenshot(self,filename='desktop.png'):
         if platform.system()!='Windows':raise RuntimeError('Windows node required')
         t=self.workspace.path(filename);e=str(t).replace("'","''");cmd=f"Add-Type -AssemblyName System.Drawing;Add-Type -AssemblyName System.Windows.Forms;$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height;$g=[System.Drawing.Graphics]::FromImage($i);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);$i.Save('{e}',[System.Drawing.Imaging.ImageFormat]::Png);$g.Dispose();$i.Dispose()";r=self.exec(cmd,30)
         if r['status']!='SUCCESS':raise RuntimeError(r['stderr'] or 'screenshot failed')
-        return {'status':'SUCCESS','path':str(t.relative_to(self.workspace.root)),'size':t.stat().st_size}
+        return {'status':'SUCCESS','path':str(t.relative_to(self.workspace.root)),'size':t.stat().st_size,'verified':t.exists() and t.stat().st_size>0}
 def open_target(target):
     try: opened=bool(webbrowser.open(target))
-    except Exception as exc: return {'status':'FAILURE','opened':False,'target':target,'error':str(exc)}
-    return {'status':'SUCCESS' if opened else 'UNKNOWN','opened':opened,'target':target,'note':'launch requested; target application/browser state was not independently verified'}
+    except Exception as exc:return {'status':'FAILURE','opened':False,'target':target,'error':str(exc),'verified':False}
+    if not opened:return {'status':'UNKNOWN','opened':False,'target':target,'note':'launch request was not accepted by the platform','verified':False}
+    return {'status':'PARTIAL_SUCCESS','opened':True,'target':target,'verification_required':True,'verified':False,'note':'launch requested; target application/browser state was not independently verified'}
