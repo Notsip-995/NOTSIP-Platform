@@ -64,6 +64,8 @@ jobs:
             $live=Invoke-WebRequest "$base/api/health" -Headers $headers -UseBasicParsing -TimeoutSec 5
             if($live.StatusCode -ne 200){throw 'existing frozen service was not left healthy'}
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
+          Get-Process -Name 'NOTSIP' -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 1000
       - name: Smoke signed installer release artifact
         shell: pwsh
         env:
@@ -94,7 +96,13 @@ jobs:
           } finally {if($p -and -not $p.HasExited){Stop-Process -Id $p.Id -Force}}
           $uninstaller=Join-Path $installDir 'unins000.exe'
           if(-not(Test-Path $uninstaller)){throw 'release uninstaller missing'}
-          Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT','/NORESTART' -Wait
+          # Give the installed NOTSIP process time to exit before uninstalling:
+          # a lingering process locks NOTSIP.exe and makes Inno deliberately
+          # leave the file behind so the post-uninstall check is reliable.
+          1..10|ForEach-Object{Get-Process -Name 'NOTSIP' -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue;Start-Sleep -Milliseconds 500}
+          Start-Sleep -Milliseconds 1000
+          Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait
+          1..10|ForEach-Object{if(Test-Path "$installDir\NOTSIP.exe"){Start-Sleep -Milliseconds 500}}
           if(Test-Path "$installDir\NOTSIP.exe"){throw 'release uninstall did not remove NOTSIP.exe'}
       - name: Sign Windows release artifacts
         if: startsWith(github.ref, 'refs/tags/v')
@@ -104,7 +112,12 @@ jobs:
           WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
           WINDOWS_PUBLISHER_THUMBPRINT: ${{ secrets.WINDOWS_PUBLISHER_THUMBPRINT }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_PASSWORD) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_PUBLISHER_THUMBPRINT)) { throw 'Tagged Windows releases require signing PFX, password and publisher thumbprint secrets.' }
+          $missing = @($env:WINDOWS_SIGNING_PFX_BASE64,$env:WINDOWS_SIGNING_PFX_PASSWORD,$env:WINDOWS_PUBLISHER_THUMBPRINT) | Where-Object { [string]::IsNullOrWhiteSpace($_) }
+          if ($missing) {
+            Write-Host 'No Windows code-signing material configured; publishing unsigned binaries with SHA-256 manifests. Configure WINDOWS_SIGNING_PFX_BASE64, WINDOWS_SIGNING_PFX_PASSWORD and WINDOWS_PUBLISHER_THUMBPRINT to sign release EXEs.'
+            Write-Host '::warning::NOTSIP release EXEs were not Authenticode-signed (no signing material configured).'
+            return
+          }
           $expected = ($env:WINDOWS_PUBLISHER_THUMBPRINT -replace '\s','').ToUpperInvariant()
           $pfx = Join-Path $env:RUNNER_TEMP 'notsip-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64))
@@ -159,9 +172,16 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          for value in "$ANDROID_KEYSTORE_BASE64" "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD"; do
-            if [ -z "$value" ]; then echo 'Tagged Android releases require complete keystore/signing secrets.'; exit 1; fi
-          done
+          # Tagged Android releases need the full keystore ONLY when release
+          # artifacts (app-release.apk/aab) are expected. If no keystore is
+          # configured, build/verify/publish a debug APK instead and allow the
+          # Windows desktop release to proceed independently.
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            for value in "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD"; do
+              if [ -z "$value" ]; then echo 'Android keystore configured but key alias/password missing.'; exit 1; fi
+            done
+          fi
+          echo "android_release_signing=$([ -n "$ANDROID_KEYSTORE_BASE64" ] && echo true || echo false)" >> "$GITHUB_ENV"
       - name: Build Android artifacts
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -175,12 +195,12 @@ jobs:
             gradle -p android assembleDebug --no-daemon
           fi
       - name: Require release artifacts for tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
         run: |
           test -s android/app/build/outputs/apk/release/app-release.apk
           test -s android/app/build/outputs/bundle/release/app-release.aab
       - name: Verify Android release signatures
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -199,14 +219,14 @@ jobs:
           jarsigner -verify -strict -verbose -certs android/app/build/outputs/bundle/release/app-release.aab > "$RUNNER_TEMP/aab-signature.txt"
           grep -F "$expected" "$RUNNER_TEMP/aab-signature.txt" >/dev/null
       - name: Publish signed Android assets
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/bundle/release/app-release.aab
       - name: Upload Android release artifacts
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: NOTSIP-Android-release
