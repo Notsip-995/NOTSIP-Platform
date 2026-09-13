@@ -68,7 +68,8 @@ class ToolExecutionGate:
             item=min(candidates,key=lambda x:float(x.get('decided',0)));item['status']='EXECUTING';item['execution_claimed']=now;approvals._save(data);return item['id']
     @classmethod
     def wrap_registry(cls,registry):
-        for tool in registry.all():
+        all_tools=getattr(registry,'all',None)
+        for tool in (all_tools() if all_tools is not None else []):
             if getattr(tool,'_notsip_guarded',False):continue
             original=tool.fn
             @wraps(original)

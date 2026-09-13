@@ -104,7 +104,12 @@ async def root():
 @app.get('/api/health')
 async def health(_:None=Depends(require_auth)):return {'status':'ok','identity':'NOTSIP','version':'0.9.0','llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'scheduler':True,'federation':True,'recovery':True}
 @app.get('/api/status')
-async def status(_:None=Depends(require_auth)):return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':store.devices(),'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':True,'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':True}}
+async def status(_:None=Depends(require_auth)):
+    devices=store.devices()
+    recovery_ok=False
+    try:recovery_ok=bool(recovery.verify_latest().get('valid'))
+    except (AttributeError,TypeError,ValueError,RuntimeError):recovery_ok=False
+    return {'identity':'NOTSIP','version':'0.9.0','autonomy_level':policy.level,'tools':[t.name for t in registry.all()],'devices':devices,'world':world.snapshot(),'tasks':store.tasks(),'capabilities':{'llm':provider.enabled,'fallback_llm':provider.fallback_enabled,'voice_stt':bool(settings.stt_base_url and settings.stt_model),'voice_tts':bool(settings.tts_base_url and settings.tts_model),'vision':settings.vision_enabled,'perception':settings.perception_enabled,'windows_uia':True,'web_search':web.enabled,'email':emailc.enabled,'oidc':auth.oidc.configured,'android_pairing':bool(devices),'self_maintenance':settings.self_modify_enabled,'distributed_nodes':True,'recovery_checkpoints':recovery_ok}}
 @app.get('/api/degraded')
 async def degraded(_:None=Depends(require_auth)):
     reasons=[]

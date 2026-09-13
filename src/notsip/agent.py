@@ -37,11 +37,16 @@ class Agent:
     def new_session(self,title='New conversation'):
         s=self._conversation_store().create(title);self.session=s;return s
     def context(self,text):
-        now=datetime.now(ZoneInfo(self.settings.local_timezone));session=self.session;store=self._conversation_store();return {'actor':self.user,'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':store.history(session['id'],20),'summary':session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':[x for x in self.approvals.pending() if (x.get('context') or {}).get('actor','primary-user')==self.user]}
+        now=self._local_now();session=self.session;store=self._conversation_store();return {'actor':self.user,'time':now.isoformat(),'utc_time':datetime.now(timezone.utc).isoformat(),'timezone':self.settings.local_timezone,'user_profile':self.profile.load(),'memory':self.store.memories(self.user,text,15),'conversation':store.history(session['id'],20),'summary':session.get('summary',''),'world':self.world.snapshot(),'pending_approvals':[x for x in self.approvals.pending() if (x.get('context') or {}).get('actor','primary-user')==self.user]}
+    def _local_now(self):
+        tz_name=str(self.settings.local_timezone or '').strip() or 'UTC'
+        try:
+            return datetime.now(ZoneInfo(tz_name))
+        except (ZoneInfoNotFoundError,ValueError):
+            return datetime.now(timezone.utc)
     def _time_response(self,text):
         s=text.strip().lower()
-        try:local=datetime.now(ZoneInfo(self.settings.local_timezone))
-        except ZoneInfoNotFoundError as exc:raise RuntimeError(f'invalid configured timezone: {self.settings.local_timezone}') from exc
+        local=self._local_now()
         utc=local.astimezone(timezone.utc)
         if s in {'time','date','today','day','what time is it','what date is it','what day is it'} or 'current time' in s or 'current date' in s or 'day of the week' in s:return f"It is {local.strftime('%A, %Y-%m-%d %H:%M:%S %Z')} ({self.settings.local_timezone}); UTC is {utc.strftime('%Y-%m-%d %H:%M:%S UTC')}."
         m=re.fullmatch(r'(?:what )?time (?:is it )?(?:in|at) ([a-z][a-z ._-]+)\??',s)

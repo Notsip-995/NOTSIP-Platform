@@ -37,9 +37,7 @@ def install(manager):
                     backup_target=rollback/item.name;existed=target.exists();changes.append((target,backup_target,existed))
                     if existed:shutil.move(str(target),str(backup_target))
                     try:shutil.move(str(item),str(target))
-                    except Exception:
-                        if existed and backup_target.exists():shutil.move(str(backup_target),str(target))
-                        raise
+                    except Exception:raise
                 return {'status':'SUCCESS','restored':name,'restart_required':True,'rollback_snapshot':str(rollback.relative_to(manager.root.parent))}
             except Exception:
                 for target,backup_target,existed in reversed(changes):

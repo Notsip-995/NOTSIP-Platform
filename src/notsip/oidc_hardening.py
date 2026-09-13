@@ -3,6 +3,7 @@ import secrets,time
 from fastapi import Cookie,HTTPException
 from fastapi.responses import RedirectResponse
 from .security import pkce_pair,_require_public_https
+from .httpcheck import is_redirect
 
 async def _safe_validate_id_token(provider,id_token,nonce=''):
     import httpx,jwt
@@ -11,7 +12,7 @@ async def _safe_validate_id_token(provider,id_token,nonce=''):
     _require_public_https(jwks_uri)
     async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as client:
         response=await client.get(jwks_uri,headers={'Accept':'application/json'})
-    if response.is_redirect or response.is_permanent_redirect:raise ValueError('OIDC JWKS redirect rejected')
+    if is_redirect(response):raise ValueError('OIDC JWKS redirect rejected')
     response.raise_for_status()
     if len(response.content)>5*1024*1024:raise ValueError('OIDC JWKS response exceeded safety limit')
     jwks=response.json();header=jwt.get_unverified_header(id_token);alg=str(header.get('alg') or '');kid=header.get('kid');advertised=metadata.get('id_token_signing_alg_values_supported') or ['RS256']

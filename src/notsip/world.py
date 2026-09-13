@@ -16,18 +16,27 @@ class WorldModel:
     def _relation_owner(row):
         source=str(row.get('source') or '')
         if source.startswith('actor:'):
+            # Legacy relations were created before relation ownership existed.
             owner,_,_source=source.partition('|')
             return owner[6:].strip() or 'primary-user'
         return 'primary-user'
+    @staticmethod
+    def _as_json(row,field,default=None):
+        try:value=json.loads(row.get(field) or '{}') if isinstance(row.get(field),str) else row.get(field) or {}
+        except (TypeError,ValueError):value=default or {}
+        return value if isinstance(value,dict) else default or {}
     def snapshot(self,owner=None):
         actor=current_actor() if owner is None else str(owner)
         all_entities=self.store.entities();hidden={str(e.get('id')) for e in all_entities if self._owner(e) not in {None,actor}}
-        entities=[e for e in all_entities if str(e.get('id')) not in hidden]
+        entities=[]
+        for e in all_entities:
+            if str(e.get('id')) in hidden:continue
+            out=dict(e);out['data']=self._as_json(out,'data');entities.append(out)
         relations=[]
         for relation in self.store.relations():
             if self._relation_owner(relation)!=actor:continue
             if str(relation.get('subject','')) in hidden or str(relation.get('object','')) in hidden:continue
-            relations.append(relation)
+            out=dict(relation);out['metadata']=self._as_json(out,'metadata');relations.append(out)
         facts=[f for f in self.store.facts(100) if self._owner(f) in {None,actor}]
         return {'entities':entities,'relations':relations,'devices':self.store.devices(actor),'facts':facts}
     def upsert(self,eid,kind,name,data,owner=None):

@@ -35,7 +35,9 @@ class ThreatAssessor:
                 scores.append(_SEVERITY[severity] * confidence)
         max_score = max(scores) if scores else 0.0
         corroborated = len({e['type'] for e in evidence if e['observed']}) >= 2
-        if max_score >= 2.5 and corroborated:
+        if max_score >= 2.5:
+            severity = 'CRITICAL'
+        elif corroborated and max_score >= 1.5:
             severity = 'CRITICAL'
         elif max_score >= 1.5 or corroborated:
             severity = 'HIGH'

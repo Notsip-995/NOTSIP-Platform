@@ -31,7 +31,7 @@ class Intelligence:
         q=query.strip().lower()
         if not q:return []
         actor=current_actor();groups=defaultdict(list)
-        for fact in self.store.facts(500):
+        for fact in reversed(self.store.facts(500)):
             if not self._fact_allowed(self.store,fact,actor):continue
             statement=str(fact.get('statement',''));url=str(fact.get('url') or '')
             if q not in statement.lower() and q not in url.lower():continue

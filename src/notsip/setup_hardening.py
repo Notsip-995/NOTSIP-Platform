@@ -7,13 +7,18 @@ SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fall
 RESTART_KEYS={'host','port','data_dir','database_url'}
 
 def _migrate_legacy_config(mod):
-    on_disk_version=1
+    on_disk_version=None
     try:
-        if mod.config_store.path.exists():
-            raw_document=json.loads(mod.config_store.path.read_text(encoding='utf-8'))
+        path=getattr(mod.config_store,'path',None)
+        if path is not None and path.exists():
+            raw_document=json.loads(path.read_text(encoding='utf-8'))
             on_disk_version=int(raw_document.get('version',1))
     except Exception as exc:raise RuntimeError(f'cannot inspect persisted configuration version: {exc}') from exc
-    data=mod.config_store.load();raw=dict(data.get('settings') or {});changed=on_disk_version<2
+    data=mod.config_store.load()
+    if on_disk_version is None:
+        try:on_disk_version=int((data.get('version') if isinstance(data,dict) else None) or 1)
+        except (TypeError,ValueError):on_disk_version=1
+    raw=dict(data.get('settings') or {});changed=on_disk_version<2
     for key in SECRET_NAMES:
         value=raw.get(key)
         if str(value or '').strip():

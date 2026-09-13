@@ -10,3 +10,11 @@ data/
 .DS_Store
 .idea/
 .vscode/
+master.key
+secrets.enc
+secrets.bin
+*.zip
+build/
+dist/
+Output/
+*.log

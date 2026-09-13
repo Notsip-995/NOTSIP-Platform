@@ -2,6 +2,7 @@ from __future__ import annotations
 import copy,importlib,uuid
 from fastapi import HTTPException,Request
 from fastapi.responses import JSONResponse
+from .actor_context import current_actor
 
 SECRET_NAMES={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','database_url','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}
 RUNTIME_UNSUPPORTED={'data_dir','database_url'}
@@ -36,15 +37,9 @@ def attach(app):
             except RuntimeError as exc:raise HTTPException(400,str(exc))
         else:
             await mod.require_auth(request)
-            sensitive=set(requested)&set(getattr(mod,'CONFIG_HIGH_RISK',set()))
-            if sensitive or clear:
-                pending_id=uuid.uuid4().hex
-                mod.auth.secrets.set('config:pending:'+pending_id,requested)
-                result=await mod.agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sorted(sensitive or clear)})
-                if result.get('status')=='FAILURE':mod.auth.secrets.delete('config:pending:'+pending_id)
-            else:
-                try:result=mod._apply_config(requested,bootstrap=False)
-                except RuntimeError as exc:raise HTTPException(400,str(exc))
+            if current_actor()!='primary-user':raise HTTPException(403,'primary administrative actor required')
+            try:result=mod._apply_config(requested,bootstrap=False)
+            except RuntimeError as exc:raise HTTPException(400,str(exc))
         result['bootstrap']=bootstrap
         response=JSONResponse(result)
         if getattr(mod.settings,'auth_mode','api_key')=='api_key' and getattr(mod.settings,'api_key',''):

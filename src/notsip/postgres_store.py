@@ -77,8 +77,8 @@ class PostgreSQLStore:
         lease=max(30,int(lease_seconds or os.getenv('NOTSIP_COMMAND_LEASE_SECONDS','300')));cutoff=time.time()-lease
         with self.conn() as c:
             rows=c.execute("SELECT c.id,c.device_id,c.action,d.status AS device_status,d.last_seen FROM commands c LEFT JOIN devices d ON d.id=c.device_id WHERE c.status='DELIVERED' AND c.updated<%s AND (d.id IS NULL OR d.status='STALE' OR d.status='REVOKED' OR d.last_seen<%s)",(cutoff,cutoff)).fetchall()
-            if rows:c.executemany("UPDATE commands SET status='UNKNOWN',updated=%s,result=%s::jsonb WHERE id=%s AND status='DELIVERED'",[(time.time(),json.dumps({'verified':False,'reason':'device did not return a command result before lease expiry'}),r['id']) for r in rows])
+            if rows:c.executemany("UPDATE commands SET status='UNKNOWN',updated=%s,result=%s::jsonb WHERE id=%s AND status='DELIVERED'",[(time.time(),json.dumps({'verified':False,'reason':'device was removed, revoked, or did not return a command result before lease expiry'}),r['id']) for r in rows])
             c.commit();return [dict(r) for r in rows]
     def command_result(self,cid,status,result,device_id=None):
         if device_id is None:return False
-        with self.conn() as c:cur=c.execute("UPDATE commands SET status=%s,result=%s::jsonb,updated=%s WHERE id=%s AND device_id=%s AND status='DELIVERED'",(status,json.dumps(result),time.time(),cid,device_id));c.commit();return cur.rowcount==1
+        with self.conn() as c:cur=c.execute("UPDATE commands SET status=%s,result=%s::jsonb,updated=%s WHERE id=%s AND device_id=%s AND status IN ('PENDING','DELIVERED')",(status,json.dumps(result),time.time(),cid,device_id));c.commit();return cur.rowcount==1

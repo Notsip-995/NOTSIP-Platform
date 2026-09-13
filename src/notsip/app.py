@@ -35,6 +35,10 @@ def _rebuild_runtime_after_config():
     global provider,web,emailc,policy,diagnostics,probes,auth_token
     provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
     web=Web(settings.brave_api_key);emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);policy=Policy(settings.autonomy_level);nodes.secret=settings.node_shared_secret;agent.provider=provider;agent.policy=policy;auth_token=settings.api_key
+    import notsip.runtime_prod as _runtime_prod_ref
+    _runtime_prod_ref.provider=provider;_runtime_prod_ref.web=web;_runtime_prod_ref.emailc=emailc;_runtime_prod_ref.policy=policy
+    # require_auth reads the runtime_prod module-level auth_token, not app's imported copy
+    _runtime_prod_ref.auth_token=settings.api_key;_runtime_prod_ref.auth.settings=settings
     ToolExecutionGate.configure(policy,agent.approvals)
     auth.settings=settings;auth.oidc=OIDCProvider(settings.oidc_provider,settings.oidc_issuer,settings.oidc_client_id,settings.oidc_client_secret,settings.oidc_redirect_uri,settings.oidc_scopes);diagnostics=Diagnostics(DATA,settings,store,provider,web,emailc,auth,nodes,recovery);probes=CapabilityProbe(settings,store,provider,web,emailc)
 
@@ -145,11 +149,10 @@ async def config_set(payload:dict,_:None=Depends(require_auth)):
     if unknown:raise HTTPException(400,f'unsupported settings: {sorted(unknown)}')
     unsupported=sorted(set(requested)&CONFIG_RUNTIME_UNSUPPORTED)
     if unsupported:raise HTTPException(409,f"runtime cannot safely switch {unsupported}; configure them before startup and restart NOTSIP")
-    sensitive=sorted(set(requested)&CONFIG_HIGH_RISK)
-    if sensitive:
-        pending_id=uuid.uuid4().hex;auth.secrets.set('config:pending:'+pending_id,requested);result=await agent.run_tool('config_admin',{'pending_id':pending_id,'keys':sensitive})
-        if result.get('status')=='FAILURE':auth.secrets.delete('config:pending:'+pending_id)
-        return result
+    # The authenticated primary admin persists their own configuration directly.
+    # Agent-initiated config changes keep the approval-gated config_admin tool path;
+    # routing the human admin's own save through that gate made secret/config saves
+    # impossible below autonomy level 4.
     try:return _apply_config(requested,bootstrap=False)
     except RuntimeError as exc:raise HTTPException(400,str(exc))
 @app.post('/api/diagnostics/test-config')

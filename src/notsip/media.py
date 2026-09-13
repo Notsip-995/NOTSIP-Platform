@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .httpcheck import is_redirect
 import ipaddress,socket,time,uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -53,7 +54,7 @@ class MediaEngine:
         if language:data['language']=language
         async with httpx.AsyncClient(timeout=120,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self.settings.stt_base_url.rstrip('/')+'/audio/transcriptions',headers=headers,files={'file':(p.name,blob,mime)},data=data)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('STT provider redirect rejected')
+            if is_redirect(r):raise RuntimeError('STT provider redirect rejected')
             r.raise_for_status();d=r.json()
         return {'status':'SUCCESS','text':d.get('text',''),'provider':self.settings.stt_model,'path':str(p.relative_to(self.audio)),'input_mime':mime,'input_format':ext}
     async def speak(self,text,voice=''):
@@ -66,7 +67,7 @@ class MediaEngine:
         body={'model':self.settings.tts_model,'input':text,'voice':voice or self.settings.tts_voice,'response_format':fmt}
         async with httpx.AsyncClient(timeout=120,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self.settings.tts_base_url.rstrip('/')+'/audio/speech',headers=headers,json=body)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('TTS provider redirect rejected')
+            if is_redirect(r):raise RuntimeError('TTS provider redirect rejected')
             r.raise_for_status();audio=r.content
         if len(audio)>MAX_AUDIO_RESPONSE_BYTES:raise RuntimeError('TTS provider response exceeded safety limit')
         if not _looks_like_audio(audio,fmt):raise RuntimeError(f'TTS provider returned bytes that do not match requested {fmt} format')

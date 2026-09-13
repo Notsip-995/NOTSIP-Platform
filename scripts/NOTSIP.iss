@@ -18,8 +18,11 @@ Source: "..\setup.html"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\src\notsip\*"; DestDir: "{app}\source\notsip"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\tests\*"; DestDir: "{app}\source\tests"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\scripts\*.ps1"; DestDir: "{app}\source\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\scripts\install.py"; DestDir: "{app}\source\scripts"; Flags: ignoreversion
+Source: "..\scripts\*.py"; DestDir: "{app}\source\scripts"; Flags: ignoreversion
 Source: "..\pyproject.toml"; DestDir: "{app}\source"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}\source"; Flags: ignoreversion
+Source: "..\INSTALL-QUICKSTART.md"; DestDir: "{app}\source"; Flags: ignoreversion
 Source: "..\docs\*.md"; DestDir: "{app}\source\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]

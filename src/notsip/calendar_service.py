@@ -1,8 +1,8 @@
 from __future__ import annotations
 import hashlib,json,time,uuid,threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
 from fastapi import Depends,HTTPException
 from .actor_context import current_actor
 from .policy import Risk
@@ -29,7 +29,11 @@ class CalendarStore:
     def _parse(self,value):
         if isinstance(value,(int,float)):return float(value)
         dt=datetime.fromisoformat(str(value).strip().replace('Z','+00:00'))
-        if dt.tzinfo is None:dt=dt.replace(tzinfo=ZoneInfo(self.timezone))
+        if dt.tzinfo is None:
+            tz_name=str(self.timezone or '').strip() or 'UTC'
+            try:tz=ZoneInfo(tz_name)
+            except (ZoneInfoNotFoundError,ValueError):tz=timezone.utc
+            dt=dt.replace(tzinfo=tz)
         return dt.timestamp()
     def conflicts(self,start,end,exclude=''):return [e for e in self.events if e.get('id')!=exclude and e.get('start_ts',0)<end and e.get('end_ts',0)>start]
     def create(self,title,start,end,description='',location='',reminder_minutes=15):

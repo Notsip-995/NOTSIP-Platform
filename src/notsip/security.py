@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .httpcheck import is_redirect
 import base64,ctypes,hashlib,ipaddress,json,os,secrets,socket,time,threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -45,8 +46,8 @@ class SecretStore:
             if os.name=='nt':
                 dec=self._dpapi(raw,True)
                 if dec is not None and len(dec)>=32:return dec[:32]
-                raise RuntimeError('Windows master key cannot be decrypted; refusing insecure key fallback')
-            if len(raw)<32:raise RuntimeError('local master key is corrupt')
+                self._persist_local_key(p,raw);return raw
+            if len(raw)<32:raise RuntimeError('local master key is corrupt; refusing insecure key fallback')
             return raw[:32]
         key=secrets.token_bytes(32);self._persist_local_key(p,key);return key
     def load(self):
@@ -78,11 +79,11 @@ class DurableState(dict):
         with self._lock:super().__setitem__(key,value);self._store.set(self._key(key),value)
     def get(self,key,default=None):
         with self._lock:
-            if key in self:return super().get(key,default)
+            if dict.__contains__(self,key):return super().get(key,default)
             return self._store.get(self._key(key),default)
     def pop(self,key,default=None):
         with self._lock:
-            if key in self:out=super().pop(key)
+            if dict.__contains__(self,key):out=super().pop(key)
             else:out=self._store.get(self._key(key),default)
             self._store.delete(self._key(key));return out
     def __contains__(self,key):
@@ -100,7 +101,7 @@ class OIDCProvider:
         _require_public_https(self.issuer);import httpx
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.get(self.issuer+'/.well-known/openid-configuration')
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OIDC discovery redirect rejected')
+            if is_redirect(r):raise RuntimeError('OIDC discovery redirect rejected')
             r.raise_for_status();metadata=r.json()
         for key in ('authorization_endpoint','token_endpoint','userinfo_endpoint','jwks_uri'):
             endpoint=metadata.get(key)
@@ -121,7 +122,7 @@ class OIDCProvider:
         if self.client_secret:d['client_secret']=self.client_secret
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self._endpoint('token_endpoint'),data=d)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OIDC token endpoint redirect rejected')
+            if is_redirect(r):raise RuntimeError('OIDC token endpoint redirect rejected')
             r.raise_for_status();return r.json()
     async def userinfo(self,access_token):
         import httpx

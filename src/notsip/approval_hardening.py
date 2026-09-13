@@ -7,6 +7,8 @@ _EXECUTION_LOCK=threading.RLock()
 def _owned(item,actor):return str((item.get('context') or {}).get('actor') or 'primary-user')==actor
 
 def attach(app, *, require_auth, approvals, registry, audit_log, agent):
+    # Every approved tool is protected by the central execution gate. A tool that is
+    # not marked _notsip_guarded means an approved tool is not protected by the central execution gate.
     paths={'/api/approvals','/api/approvals/{approval_id}'}
     app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in paths]
     @app.get('/api/approvals')

@@ -56,6 +56,8 @@ class Store:
         fid=str(uuid.uuid4());self.exec('INSERT INTO facts VALUES(?,?,?,?,?,?,?)',(fid,statement,source,url,confidence,time.time(),json.dumps(metadata or {})));return fid
     def facts(self,n=100):return self._backend.facts(n) if self._backend else self.rows('SELECT * FROM facts ORDER BY retrieved DESC LIMIT ?',(n,))
     def task(self,objective,state='PENDING',priority=0,handler='',data=None,run_at=None,interval_sec=None,idempotency_key=''):
+        if isinstance(handler,dict) and not isinstance(data,dict):
+            data,run_at,interval_sec,idempotency_key=handler,data,run_at,interval_sec;handler=''
         if self._backend:return self._backend.task(objective,state,priority,handler,data,run_at,interval_sec,idempotency_key)
         tid=str(uuid.uuid4());now=time.time();payload=json.dumps(data or {})
         with self.lock,self.conn() as c:
@@ -156,4 +158,4 @@ class Store:
         if self._backend:return self._backend.command_result(cid,status,result,device_id)
         if not device_id:return False
         with self.lock,self.conn() as c:
-            cur=c.execute("UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=? AND status='DELIVERED'",(status,json.dumps(result),time.time(),cid,device_id));return cur.rowcount==1
+            cur=c.execute("UPDATE commands SET status=?,result=?,updated=? WHERE id=? AND device_id=? AND status IN ('PENDING','DELIVERED')",(status,json.dumps(result),time.time(),cid,device_id));return cur.rowcount==1

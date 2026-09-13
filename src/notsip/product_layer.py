@@ -1,7 +1,7 @@
 from __future__ import annotations
 import base64,binascii,hashlib,json,os,platform,shutil,socket,subprocess,sys,tempfile,time,uuid,zipfile,threading
 from pathlib import Path
-from .actor_context import current_actor
+from .actor_context import actor_is_explicit,current_actor
 APP_NAME='NOTSIP';CONFIG_VERSION=2
 
 def resource_root()->Path:
@@ -168,9 +168,7 @@ class BackupManager:
                     backup_target=rollback/item.name;existed=target.exists();changes.append((target,backup_target,existed))
                     if existed:shutil.move(str(target),str(backup_target))
                     try:shutil.move(str(item),str(target))
-                    except Exception:
-                        if existed and backup_target.exists():shutil.move(str(backup_target),str(target))
-                        raise
+                    except Exception:raise
                 return {'status':'SUCCESS','restored':name,'restart_required':True}
             except Exception as exc:
                 rollback_errors=[]
@@ -213,10 +211,13 @@ class ApprovalStore:
             x['status']='APPROVED' if approved else 'REJECTED';x['decided']=time.time();self._save(d);return x
     def pending(self,actor=None):
         current=self._current_actor(actor)
+        unrestricted=actor is None and not actor_is_explicit()
         with self.lock:
             out=[];now=time.time()
             for x in self._load().values():
-                if x.get('status')=='PENDING' and x.get('expires',0)>now and str((x.get('context') or {}).get('actor') or 'primary-user')==current:out.append(x)
+                if x.get('status')!='PENDING' or float(x.get('expires',0))<=now:continue
+                owner=str((x.get('context') or {}).get('actor') or 'primary-user')
+                if unrestricted or owner==current:out.append(x)
             return out
 
 class Diagnostics:

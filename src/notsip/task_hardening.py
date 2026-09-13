@@ -43,8 +43,11 @@ def attach(app,require_auth,store,jobs):
         workflow_data.setdefault('step_results',[])
         return await durable.run_task(dict(task,data=json.dumps(workflow_data)))
 
-    jobs.register('agent',durable_agent_handler)
-    app.router.routes=[r for r in app.router.routes if getattr(r,'path',None) not in {'/api/tasks','/api/tasks/{task_id}/run'}]
+    if hasattr(jobs,'register'):
+        jobs.register('agent',durable_agent_handler)
+    router=getattr(app,'router',None)
+    if router is not None:
+        router.routes=[r for r in router.routes if getattr(r,'path',None) not in {'/api/tasks','/api/tasks/{task_id}/run'}]
     def own(task):
         try:data=json.loads(task.get('data') or '{}')
         except Exception:data={}

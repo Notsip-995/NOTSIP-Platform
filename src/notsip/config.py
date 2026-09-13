@@ -1,16 +1,29 @@
 from pathlib import Path
 import json, os, sys, ipaddress
+from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}
+SECRET_FIELDS={'api_key','event_hmac_secret','pairing_secret','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','oidc_client_secret','oauth_client_secret','node_shared_secret','brave_api_key','remote_compute_token','remote_sensing_token','home_adapter_token','biometric_adapter_token','flight_planning_token','business_admin_token','speaker_identity_token'}  # 'database_url' DSN is classified as a secret at the config API redaction layer, not as a bare secret field
 CONFIG_LOAD_ERROR='';SECRET_LOAD_ERROR=''
 DEFAULT_CAPABILITY_LEVELS={'TIME':0,'COMPUTE':0,'INTELLIGENCE':0,'INTERNET_SEARCH':0,'READ_FILES':0,'READ_CALENDAR':1,'WRITE_CALENDAR':2,'READ_EMAIL':1,'MEDIA':1,'PERCEPTION':1,'SYSTEM_DIAGNOSTICS':0,'WRITE_FILES':2,'DELETE_FILES':4,'CONTROL_COMPUTER':3,'ANDROID_CONTROL':3,'SEND_EMAIL':3,'SELF_MAINTENANCE':4,'CONTROL_HOME':3,'CONTROL_SERVER':4,'EXECUTE_CODE':4,'CODE_EXECUTION':4,'SIMULATION':4,'CONTROL_ROBOTICS':4,'ACCESS_CAMERA':2,'ACCESS_MICROPHONE':2,'READ_WEATHER':0,'READ_NEWS':0,'NAVIGATION':1,'FLIGHT_PLANNING':3,'MANAGE_ACCOUNTS':3,'BUSINESS_ADMIN':3}
 
 def _default_data_dir():
     if getattr(sys,'frozen',False):return str(Path(os.getenv('LOCALAPPDATA',Path.home()))/'NOTSIP'/'data')
     return './data'
+
+DEFAULT_LOCAL_TIMEZONE='Africa/Kigali'
+
+def _normalize_timezone(value):
+    candidate=str(value or '').strip()
+    if not candidate:
+        return DEFAULT_LOCAL_TIMEZONE
+    try:
+        ZoneInfo(candidate)
+    except (ValueError,ZoneInfoNotFoundError):
+        return DEFAULT_LOCAL_TIMEZONE
+    return candidate
 
 def _is_loopback_host(host):
     value=str(host or '').strip().lower()
@@ -19,7 +32,7 @@ def _is_loopback_host(host):
     except ValueError:return False
 
 class Settings(BaseSettings):
-    host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str=_default_data_dir(); local_timezone:str='Africa/Kigali'; max_tool_rounds:int=Field(10,ge=1,le=100)
+    host:str='127.0.0.1'; port:int=Field(8765,ge=1,le=65535); data_dir:str=_default_data_dir(); local_timezone:str=DEFAULT_LOCAL_TIMEZONE; max_tool_rounds:int=Field(10,ge=1,le=100)
     autonomy_level:int=Field(2,ge=0,le=4); self_modify_enabled:bool=False; capability_levels:dict[str,int]=Field(default_factory=lambda:dict(DEFAULT_CAPABILITY_LEVELS))
     api_key:str=''; event_hmac_secret:str=''; pairing_secret:str=''; auth_mode:Literal['api_key','oidc']='api_key'; session_ttl:int=Field(43200,ge=300,le=2592000)
     oidc_provider:str='generic'; oidc_issuer:str=''; oidc_client_id:str=''; oidc_client_secret:str=''; oidc_redirect_uri:str=''; oidc_scopes:str=''
@@ -35,7 +48,12 @@ class Settings(BaseSettings):
     database_url:str=''; github_update_enabled:bool=True; github_repository:str='Notsip-995/NOTSIP-Platform'; windows_publisher_thumbprint:str=''
     log_level:Literal['DEBUG','INFO','WARNING','ERROR']='INFO'; log_max_bytes:int=Field(10485760,ge=1024,le=1073741824); log_backup_count:int=Field(5,ge=1,le=50); open_browser:bool=True; node_name:str='NOTSIP'
     model_config=SettingsConfigDict(env_prefix='NOTSIP_',env_file='.env',extra='ignore',validate_assignment=True)
+    @field_validator('local_timezone',mode='before')
+    @classmethod
+    def _validate_local_timezone(cls,v):
+        return _normalize_timezone(v)
     def ensure(self):
+        self.local_timezone=_normalize_timezone(self.local_timezone)
         self.capability_levels={k:max(0,min(4,int(v))) for k,v in (self.capability_levels or DEFAULT_CAPABILITY_LEVELS).items()}
         if not _is_loopback_host(self.host):
             if self.auth_mode=='api_key' and not self.api_key:raise RuntimeError('Remote binding requires NOTSIP_API_KEY or OIDC authentication; refusing unauthenticated non-loopback bind')

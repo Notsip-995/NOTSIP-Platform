@@ -2,7 +2,7 @@ from __future__ import annotations
 import json,os,platform,shutil,socket,subprocess,time,zipfile
 from datetime import datetime,timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
 from fastapi import Depends,HTTPException
 from .config import settings
 from .tools import Workspace,Registry,Tool
@@ -11,7 +11,10 @@ from .execution_gate import ToolExecutionGate
 
 
 def _time_snapshot():
-    now=datetime.now(ZoneInfo(settings.local_timezone));utc=datetime.now(timezone.utc);return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
+    tz_name=str(settings.local_timezone or '').strip() or 'UTC'
+    try:now=datetime.now(ZoneInfo(tz_name))
+    except (ZoneInfoNotFoundError,ValueError):now=datetime.now(timezone.utc)
+    utc=datetime.now(timezone.utc);return {'iso':now.isoformat(),'date':now.date().isoformat(),'time':now.time().isoformat(timespec='seconds'),'timezone':settings.local_timezone,'unix':time.time(),'utc':utc.isoformat(timespec='seconds').replace('+00:00','Z')}
 
 def _telemetry():
     disk=shutil.disk_usage(Path(settings.data_dir).resolve());out={'host':socket.gethostname(),'platform':platform.platform(),'python':platform.python_version(),'cpu_count':os.cpu_count(),'disk':{'total':disk.total,'used':disk.used,'free':disk.free},'timestamp':time.time()}
@@ -23,6 +26,8 @@ def _telemetry():
 class WorkflowEngine:
     MAX_STEPS=50
     def __init__(self,store,agent):self.store=store;self.agent=agent
+    @staticmethod
+    def _accepted(status,step):return status in {'SUCCESS','DEGRADED','SKIPPED'} or (status=='PARTIAL_SUCCESS' and step.get('accept_partial',False))
     async def run(self,steps):
         if not isinstance(steps,list) or not steps:return {'status':'FAILURE','error':'workflow steps required','steps':[]}
         if len(steps)>self.MAX_STEPS:return {'status':'FAILURE','error':f'workflow too large; maximum is {self.MAX_STEPS} steps','steps':[]}
@@ -42,31 +47,28 @@ class WorkflowEngine:
                 if any(d not in results for d in deps):continue
                 condition=str(step.get('condition','always')).lower();dep_results=[results[d] for d in deps]
                 failed_dep=any(r.get('status') not in {'SUCCESS','DEGRADED','SKIPPED'} for r in dep_results)
+                unknown_dep=any(r.get('status')=='UNKNOWN' for r in dep_results)
+                if condition=='always' and failed_dep:
+                    results[sid]={'status':'SKIPPED','reason':'dependency failed'};del remaining[sid];progressed=True;continue
                 if condition in {'on_success','success'} and failed_dep:
                     results[sid]={'status':'SKIPPED','reason':'dependency failed'};del remaining[sid];progressed=True;continue
                 if condition in {'on_failure','failure'} and not failed_dep:
                     results[sid]={'status':'SKIPPED','reason':'failure condition not met'};del remaining[sid];progressed=True;continue
-                if condition in {'on_unknown','unknown'} and not any(r.get('status')=='UNKNOWN' for r in dep_results):
+                if condition in {'on_unknown','unknown'} and not unknown_dep:
                     results[sid]={'status':'SKIPPED','reason':'unknown condition not met'};del remaining[sid];progressed=True;continue
                 if 'tool' in step:
                     tool=str(step.get('tool','')).strip();args=step.get('args') or {}
                     if not tool or not isinstance(args,dict):
-                        results[sid]={'status':'FAILURE','error':'tool step requires a tool and object args'};del remaining[sid];progressed=True
-                        if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
-                        continue
+                        results[sid]={'status':'FAILURE','error':'tool step requires a tool and object args'};del remaining[sid];progressed=True;continue
                     result=await self.agent.run_tool(tool,args);objective=f'tool:{tool}'
                 else:
                     objective=str(step.get('objective','')).strip()
                     if not objective:
-                        results[sid]={'status':'FAILURE','error':'empty workflow step'};del remaining[sid];progressed=True
-                        if not step.get('continue_on_failure',False):return {'status':'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
-                        continue
+                        results[sid]={'status':'FAILURE','error':'empty workflow step'};del remaining[sid];progressed=True;continue
                     result=await self.agent.handle(objective)
                 status=str(result.get('status','UNKNOWN')) if isinstance(result,dict) else 'UNKNOWN';results[sid]={'status':status,'objective':objective,'result':result};del remaining[sid];progressed=True
-                accepted=status in {'SUCCESS','DEGRADED','SKIPPED'} or (status=='PARTIAL_SUCCESS' and step.get('accept_partial',False))
-                if not accepted and not step.get('continue_on_failure',False):return {'status':'UNKNOWN' if status=='UNKNOWN' else 'PARTIAL_SUCCESS','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
             if not progressed:return {'status':'FAILURE','error':'workflow dependency cycle or unsatisfied dependency','steps':[results[k]|{'id':k} for k,_ in normalized if k in results]}
-        final=[results[k]|{'id':k} for k,_ in normalized];return {'status':'SUCCESS' if all(r.get('status') in {'SUCCESS','DEGRADED','SKIPPED'} for r in final) else 'PARTIAL_SUCCESS','steps':final}
+        final=[results[k]|{'id':k} for k,_ in normalized];return {'status':'SUCCESS' if all(self._accepted(r.get('status'),{}) for r in final) else 'PARTIAL_SUCCESS','steps':final}
 
 # remaining file content unchanged from current branch
 

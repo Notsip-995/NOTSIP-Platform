@@ -27,4 +27,5 @@ class MemoryService:
             self.store.exec('DELETE FROM memory_fts WHERE rowid NOT IN (SELECT id FROM memories)',())
         return {'status':'SUCCESS','examined':len(rows),'unique':len(kept),'duplicates_removed':len(duplicates)}
     def snapshot(self,limit=200):
-        return {'memory_kinds':sorted({r['kind'] for r in self.store.rows('SELECT kind FROM memories WHERE user_id=?',(self.user_id,))}),'items':self.store.memories(self.user_id,'',limit)}
+        items=self.store.memories(self.user_id,'',limit)
+        return {'memory_kinds':sorted({str(r.get('kind') or 'semantic') for r in items}),'items':items}

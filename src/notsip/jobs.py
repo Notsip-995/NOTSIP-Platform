@@ -12,9 +12,6 @@ class Scheduler:
             if started and now-started>self.reclaim_after:
                 data.update({'recovered_from':data.get('worker_id'),'recovered_at':now,'state':'PENDING'});self.store.task_update(task['id'],state='PENDING',run_at=now,data=json.dumps(data),error='reclaimed after worker timeout')
     def register(self,name,fn):self.handlers[name]=fn
-    @staticmethod
-    def _storage_idempotency_key(actor,key):
-        return hashlib.sha256(f'{actor}\0{key}'.encode('utf-8')).hexdigest()
     def create(self,objective,handler='agent',delay=0,interval=None,data=None,priority=0,idempotency_key='',actor=None):
         delay=max(0.0,float(delay or 0));interval=None if interval is None else float(interval)
         if interval is not None and not 5<=interval<=30*86400:raise ValueError('interval must be between 5 seconds and 30 days')
@@ -24,7 +21,10 @@ class Scheduler:
                 existing_data=_json(existing.get('data'))
                 if existing_data.get('idempotency_key')==key and str(existing_data.get('actor') or 'primary-user')==actor_id:
                     return existing['id']
-        storage_key=self._storage_idempotency_key(actor_id,key) if idempotency_key else key
+            taken=self.store.rows('SELECT id FROM tasks WHERE idempotency_key=?',(key,)) if idempotency_key else []
+            storage_key='' if taken else key
+        else:
+            storage_key=key
         return self.store.task(objective,'PENDING',priority,handler or 'agent',payload,time.time()+delay,interval,storage_key)
     async def _publish(self,event_type,payload):
         if self.events is None:return []
@@ -46,12 +46,13 @@ class Scheduler:
         missing=[name for name in required if registry.get(name) is None]
         return f'required tools unavailable: {missing}' if missing else ''
     async def run_one(self,task):
-        handler=task.get('handler') or 'agent';fn=self.handlers.get(handler)
-        if not fn:
-            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':'no handler registered','attempt':int(task.get('retries') or 0)+1});return {'status':'FAILURE','error':'no handler registered'}
-        execution_id=uuid.uuid4().hex;started=time.time();payload=_json(task.get('data'));payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id});contract_error=self._contract_error(payload)
+        handler=task.get('handler') or 'agent';payload=_json(task.get('data'));contract_error=self._contract_error(payload)
         if contract_error:
             payload.update({'state':'FAILED','result':{'status':'FAILURE','error':contract_error},'verification':{'required':bool(payload.get('verification',{}).get('required',False)),'verified':False,'status':'UNVERIFIED'}});self.store.task_update(task['id'],state='FAILED',data=json.dumps(payload),error=contract_error);await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':contract_error,'actor':payload.get('actor','primary-user')});return {'status':'FAILURE','error':contract_error}
+        fn=self.handlers.get(handler)
+        if not fn:
+            self.store.task_update(task['id'],state='FAILED',error=f'no handler registered: {handler}');await self._publish('task.failed',{'task_id':task['id'],'objective':task.get('objective',''),'handler':handler,'error':'no handler registered','attempt':int(task.get('retries') or 0)+1});return {'status':'FAILURE','error':'no handler registered'}
+        execution_id=uuid.uuid4().hex;started=time.time();payload.update({'worker_id':self.worker_id,'started_at':started,'execution_id':execution_id})
         claimed=self.store.claim_task(task['id'],json.dumps(payload))
         if not claimed:return {'status':'SKIPPED','reason':'task already claimed'}
         self._active_tasks.add(task['id']);actor=str(payload.get('actor') or 'primary-user');token=set_actor(actor)

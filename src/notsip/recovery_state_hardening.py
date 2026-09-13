@@ -5,6 +5,12 @@ from pathlib import Path
 _FILES=('runtime/conversations.json',)
 _PREFIX='user-profile-'
 
+def _allowed(name):
+    rel=Path(name).as_posix()
+    if rel=='runtime/conversations.json':return True
+    if rel.startswith('profiles/') and rel.endswith('.json') and '/' not in rel[len('profiles/'):] and not rel.startswith('profiles/..'):return True
+    return rel==name and name.startswith(_PREFIX) and name.endswith('.json') and '/' not in name
+
 def capture(root):
     root=Path(root);items={}
     for rel in _FILES:
@@ -13,12 +19,14 @@ def capture(root):
             data=json.loads(p.read_text(encoding='utf-8'));items[rel]=data
     for p in root.glob('user-profile-*.json'):
         if p.is_file():items[p.name]=json.loads(p.read_text(encoding='utf-8'))
+    for p in root.glob('profiles/*.json'):
+        if p.is_file():items[p.relative_to(root).as_posix()]=json.loads(p.read_text(encoding='utf-8'))
     return items
 
 def validate(files):
     if not isinstance(files,dict):raise ValueError('recovery durable user state must be an object')
     for name,data in files.items():
-        if not (name=='runtime/conversations.json' or name.startswith(_PREFIX) and name.endswith('.json')):raise ValueError(f'unsupported recovery user-state file: {name}')
+        if not _allowed(name):raise ValueError(f'unsupported recovery user-state file: {name}')
         if not isinstance(data,dict):raise ValueError(f'invalid recovery user-state payload: {name}')
 
 def restore(root,files):

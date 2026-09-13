@@ -1,10 +1,14 @@
 from __future__ import annotations
+from .httpcheck import is_redirect
 import base64,email.policy
 from email.message import EmailMessage
 from urllib.parse import quote
 import httpx
 
 MAX_OAUTH_RESPONSE_BYTES=10*1024*1024
+
+def _redirect_rejected(response):
+    return is_redirect(response)
 
 class OAuthService:
     PROFILES={
@@ -31,7 +35,7 @@ class OAuthService:
         if required not in self._scopes(item):raise PermissionError(f'{provider} OAuth account lacks required scope: {required}')
     @staticmethod
     def _response_json(response):
-        if response.is_redirect or response.is_permanent_redirect:raise RuntimeError('OAuth provider redirect rejected')
+        if _redirect_rejected(response):raise RuntimeError('OAuth provider redirect rejected')
         response.raise_for_status()
         if len(response.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth provider response exceeded safety limit')
         return response.json()
@@ -55,7 +59,7 @@ class OAuthService:
             r=await c.request(method,path,headers=headers_for(token),**kwargs)
             if r.status_code==401:
                 await self.refresh(provider,item['id']);token,_=self._token(provider,item['id']);r=await c.request(method,path,headers=headers_for(token),**kwargs)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth provider redirect rejected')
+            if _redirect_rejected(r):raise RuntimeError('OAuth provider redirect rejected')
             if r.status_code not in (200,201,202,204):r.raise_for_status()
             if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth provider response exceeded safety limit')
             if r.status_code==204 or not r.content:return {'status':'SUCCESS','provider_status':r.status_code}
@@ -94,7 +98,7 @@ class OAuthService:
         if not refresh or not client_id:raise RuntimeError(f'{provider} refresh token or client id unavailable')
         async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self.PROFILES[provider]['token'],data={'grant_type':'refresh_token','refresh_token':refresh,'client_id':client_id})
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth token endpoint redirect rejected')
+            if _redirect_rejected(r):raise RuntimeError('OAuth token endpoint redirect rejected')
             r.raise_for_status()
             if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth token response exceeded safety limit')
             new=r.json()
@@ -109,7 +113,7 @@ class OAuthService:
             token=refresh or access
             async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as c:
                 r=await c.post(self.PROFILES['google']['revoke'],params={'token':token})
-                if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth revocation redirect rejected')
+                if _redirect_rejected(r):raise RuntimeError('OAuth revocation redirect rejected')
                 if r.status_code not in (200,400):r.raise_for_status()
                 if len(r.content)>MAX_OAUTH_RESPONSE_BYTES:raise RuntimeError('OAuth revocation response exceeded safety limit')
             if r.status_code==400:return {'status':'PROVIDER_TOKEN_ALREADY_INVALID','account_id':item['id'],'provider':provider,'provider_status':400}

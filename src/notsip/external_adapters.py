@@ -4,9 +4,12 @@ import httpx
 from .policy import Risk
 from .tools import Tool
 from .execution_gate import ToolExecutionGate
+from .httpcheck import ensure_httpx_redirect_attributes
 
 class AdapterUnavailable(RuntimeError): pass
 MAX_ADAPTER_RESPONSE_BYTES=10*1024*1024
+
+ensure_httpx_redirect_attributes()
 
 def _public_url(url:str)->bool:
     p=urlparse(str(url))

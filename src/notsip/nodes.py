@@ -61,7 +61,7 @@ class RecoveryManager:
     def __init__(self,root:Path):self.root=Path(root);self.dir=self.root/'recovery';self.dir.mkdir(parents=True,exist_ok=True)
     def checkpoint(self,state):
         name=f'checkpoint-{int(time.time())}-{uuid.uuid4().hex[:8]}.json';p=self.dir/name;payload=json.dumps(state,indent=2,sort_keys=True);digest=hashlib.sha256(payload.encode()).hexdigest();tmp=p.with_suffix('.tmp');tmp.write_text(payload,encoding='utf-8');tmp.replace(p);side=p.with_suffix('.sha256');tmp_side=side.with_suffix('.tmp');tmp_side.write_text(digest+'  '+name+'\n',encoding='utf-8');tmp_side.replace(side);return str(p.relative_to(self.root))
-    def _files(self):return sorted(self.dir.glob('checkpoint-*.json'),key=lambda p:p.stat().st_mtime,reverse=True)
+    def _files(self):return sorted(self.dir.glob('checkpoint-*.json'),key=lambda p:(p.stat().st_mtime,p.name),reverse=True)
     def latest_path(self):files=self._files();return files[0] if files else None
     def _load_verified(self,p):
         raw=p.read_text(encoding='utf-8');side=p.with_suffix('.sha256')
@@ -73,18 +73,20 @@ class RecoveryManager:
         invalid=[]
         for p in self._files():
             try:return p,self._load_verified(p),invalid
-            except (OSError,UnicodeError,ValueError,TypeError,json.JSONDecodeError,RuntimeError) as exc:invalid.append({'path':str(p.relative_to(self.root)),'reason':str(exc)})
-        if invalid:raise RuntimeError('no verified recovery checkpoint is available')
-        return None,None,[]
+            except (OSError,UnicodeError,ValueError,TypeError,json.JSONDecodeError,RuntimeError) as exc:invalid.append({'path':p.name,'reason':str(exc)})
+        return None,None,invalid
     def latest(self):p=self.latest_path();return self._load_verified(p) if p else None
     def verify_latest(self):
         files=self._files()
         if not files:return {'valid':False,'reason':'no recovery checkpoint available'}
         p,verified,invalid=self.latest_verified()
-        if p is None:return {'valid':False,'reason':'no verified recovery checkpoint is available','invalid_candidates':invalid}
+        if p is None:return {'valid':False,'reason':('no verified recovery checkpoint is available; '+('; '.join(i['reason'] for i in invalid))) if invalid else 'no verified recovery checkpoint is available','invalid_candidates':invalid}
         return {'valid':True,'path':str(p.relative_to(self.root)),'has_tasks':'tasks' in verified,'has_devices':'devices' in verified,'has_commands':'commands' in verified,'has_world':'world' in verified,'invalid_newer_candidates':invalid}
     def restore_state(self):
         p,state,invalid=self.latest_verified()
-        if not p:raise RuntimeError('no recovery checkpoint available')
+        if not p:
+            reason='no verified recovery checkpoint is available'
+            if invalid:reason='recovery checkpoint integrity verification failed' if any('integrity' in i['reason'] for i in invalid) else reason+'; '+'; '.join(i['reason'] for i in invalid)
+            raise RuntimeError(reason)
         verification={'valid':True,'path':str(p.relative_to(self.root)),'invalid_newer_candidates':invalid,'has_tasks':'tasks' in state,'has_devices':'devices' in state,'has_commands':'commands' in state,'has_world':'world' in state}
         return {'status':'RECOVERABLE','state':state,'verification':verification}

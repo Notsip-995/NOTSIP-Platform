@@ -1,1 +1,748 @@
-<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>NOTSIP</title><style>body{font-family:system-ui;margin:0;background:#09111f;color:#eef}nav{position:sticky;top:0;background:#101a2f;padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap;z-index:2}main{max-width:1200px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.card{background:#111c31;border:1px solid #263858;border-radius:14px;padding:16px}.mono{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;max-height:360px;overflow:auto}button,input,textarea,select{font:inherit;border-radius:8px;border:1px solid #33496e;background:#0d1728;color:#fff;padding:10px}button{cursor:pointer}textarea{width:100%;min-height:90px;box-sizing:border-box}.good{color:#7ee787}.bad{color:#ff7b72}.muted{color:#a8b4ca}.chat{height:280px;overflow:auto}.msg{padding:8px;margin:5px 0;border-radius:8px;background:#17243d}.you{background:#22385e}.hidden{display:none}</style></head><body><nav><b>NOTSIP</b><button onclick='show("dashboard")'>Dashboard</button><button onclick='show("memory")'>Memory</button><button onclick='show("tasks")'>Tasks</button><button onclick='show("devices")'>Devices</button><button onclick='show("security")'>Security</button><button onclick='show("integrations")'>Integrations</button><button onclick='show("diagnostics")'>Diagnostics</button><button onclick='show("backup")'>Backup</button><button onclick='location.href="/setup"'>Setup</button></nav><main><section id='login' class='card'><h2>Connect to NOTSIP</h2><input id='apiKey' type='password' placeholder='API key'><button onclick='login()'>Login</button><button onclick='oidc()'>OIDC Login</button><span id='loginMsg' class='muted'></span></section><section id='dashboard' class='view'><div class='grid'><div class='card'><h2>Status</h2><div id='status' class='mono'>Loading…</div></div><div class='card'><h2>Capabilities</h2><div id='caps' class='mono'>Loading…</div></div><div class='card'><h2>Degraded mode</h2><div id='degraded' class='mono'>Loading…</div></div></div><div class='card'><h2>Chat</h2><div id='chat' class='chat'></div><textarea id='prompt' placeholder='Talk to NOTSIP…'></textarea><button onclick='send()'>Send</button><button onclick='voice()'>🎙 Voice</button></div></section><section id='memory' class='view' hidden><div class='card'><h2>Memory</h2><button onclick='loadMemory()'>Refresh</button><button onclick='maintainMemory()'>Maintain</button><div id='memoryOut' class='mono'></div></div></section><section id='tasks' class='view' hidden><div class='card'><h2>Tasks</h2><div><input id='taskObjective' placeholder='Objective'><button onclick='createTask()'>Schedule</button></div><div id='tasksOut' class='mono'></div></div></section><section id='devices' class='view' hidden><div class='card'><h2>Android / nodes</h2><button onclick='pairCode()'>Create pairing code</button><div id='pairOut' class='mono'></div><div id='devicesOut' class='mono'></div></div></section><section id='security' class='view' hidden><div class='card'><h2>Approvals</h2><div id='approvalsOut' class='mono'></div><button onclick='loadApprovals()'>Refresh</button><h2>Self-awareness</h2><button onclick='inspect()'>Inspect codebase</button><button onclick='verifySelf()'>Verify codebase</button><div id='inspectOut' class='mono'></div></div></section><section id='integrations' class='view' hidden><div class='card'><h2>Accounts</h2><div id='accountsOut' class='mono'></div><button onclick='loadAccounts()'>Refresh accounts</button></div></section><section id='diagnostics' class='view' hidden><div class='card'><h2>Diagnostics</h2><button onclick='diag()'>Run full diagnostics</button><div id='diagOut' class='mono'></div></div></section><section id='backup' class='view' hidden><div class='card'><h2>Backup & recovery</h2><button onclick='backup()'>Create backup</button><button onclick='backups()'>List backups</button><div id='backupOut' class='mono'></div></div></section><script>let mediaRecorder=null,audioChunks=[];async function api(path,opt={}){const r=await fetch(path,{...opt,credentials:'same-origin',headers:{...(opt.headers||{}),...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'})}});if(r.status===401){loginMsg.textContent='Authentication required.';show('dashboard');throw Error('Authentication required')}if(!r.ok)throw Error(await r.text());return r}async function login(){try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey.value}),credentials:'same-origin'});if(!r.ok)throw Error(await r.text());loginMsg.textContent='Connected.';apiKey.value='';refresh()}catch(e){loginMsg.textContent=e.message}}function oidc(){location.href='/api/oauth/login'}function show(id){document.querySelectorAll('.view').forEach(x=>x.hidden=true);document.getElementById(id).hidden=false;if(id==='memory')loadMemory();if(id==='tasks')loadTasks();if(id==='devices')loadDevices();if(id==='security')loadApprovals();if(id==='integrations')loadAccounts();if(id==='diagnostics')diag()}async function refresh(){try{status.textContent=JSON.stringify(await api('/api/status').then(r=>r.json()),null,2);caps.textContent=JSON.stringify(await api('/api/capabilities').then(r=>r.json()),null,2);degraded.textContent=JSON.stringify(await api('/api/degraded').then(r=>r.json()),null,2)}catch(e){status.textContent='ERROR '+e.message}}function add(who,text){const d=document.createElement('div');d.className='msg '+(who==='You'?'you':'');d.textContent=who+': '+text;chat.appendChild(d);chat.scrollTop=chat.scrollHeight}async function send(text){text=text??prompt.value.trim();if(!text)return;add('You',text);prompt.value='';try{const d=await api('/api/message',{method:'POST',body:JSON.stringify({message:text})}).then(r=>r.json());add('NOTSIP',d.response||JSON.stringify(d));}catch(e){add('NOTSIP','ERROR '+e.message)}}async function voice(){try{const s=await navigator.mediaDevices.getUserMedia({audio:true});mediaRecorder=new MediaRecorder(s,{mimeType:'audio/webm'});audioChunks=[];mediaRecorder.ondataavailable=e=>e.data.size&&audioChunks.push(e.data);mediaRecorder.onstop=async()=>{try{const fd=new FormData();fd.append('file',new File([new Blob(audioChunks,{type:'audio/webm'})],'voice.webm',{type:'audio/webm'}));const d=await api('/api/voice/transcribe',{method:'POST',body:fd}).then(r=>r.json());if(d.text)send(d.text)}catch(e){add('NOTSIP','Voice error: '+e.message)}s.getTracks().forEach(t=>t.stop())};mediaRecorder.start();setTimeout(()=>mediaRecorder&&mediaRecorder.stop(),5000)}catch(e){add('NOTSIP','Voice unavailable: '+e.message)}}async function loadMemory(){memoryOut.textContent=JSON.stringify(await api('/api/memory').then(r=>r.json()),null,2)}async function maintainMemory(){memoryOut.textContent=JSON.stringify(await api('/api/memory/maintain',{method:'POST'}).then(r=>r.json()),null,2)}async function loadTasks(){tasksOut.textContent=JSON.stringify(await api('/api/tasks').then(r=>r.json()),null,2)}async function createTask(){const o=taskObjective.value.trim();if(!o)return;await api('/api/tasks',{method:'POST',body:JSON.stringify({objective:o,handler:'agent'})});taskObjective.value='';loadTasks()}async function loadDevices(){devicesOut.textContent=JSON.stringify(await api('/api/devices').then(r=>r.json()),null,2)}async function pairCode(){pairOut.textContent=JSON.stringify(await api('/api/pair/code').then(r=>r.json()),null,2)}async function loadApprovals(){approvalsOut.textContent=JSON.stringify(await api('/api/approvals').then(r=>r.json()),null,2)}async function inspect(){inspectOut.textContent=JSON.stringify(await api('/api/self/provenance').then(r=>r.json()),null,2)}async function verifySelf(){inspectOut.textContent=JSON.stringify(await api('/api/self/verify').then(r=>r.json()),null,2)}async function loadAccounts(){accountsOut.textContent=JSON.stringify(await api('/api/integrations/accounts').then(r=>r.json()),null,2)}async function diag(){diagOut.textContent=JSON.stringify(await api('/api/diagnostics').then(r=>r.json()),null,2)}async function backup(){backupOut.textContent=JSON.stringify(await api('/api/backups',{method:'POST'}).then(r=>r.json()),null,2)}async function backups(){backupOut.textContent=JSON.stringify(await api('/api/backups').then(r=>r.json()),null,2)}refresh();setInterval(refresh,15000)</script></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOTSIP — Command Center</title>
+<style>
+:root{--bg:#0a1120;--panel:#111c31;--panel2:#0d1728;--line:#263858;--line2:#33496e;--text:#eef3ff;--muted:#93a4c4;--accent:#58a6ff;--good:#3fb950;--warn:#d29922;--bad:#f85149;--chip:#1a2740;--cyan:#39c5cf}
+*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+button,input,textarea,select{font:inherit;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);padding:8px 12px}
+button{cursor:pointer;transition:filter .12s}button:hover{filter:brightness(1.2)}button.primary{background:#1f6feb;border-color:#1f6feb}button.good{background:#1a7f37;border-color:#1a7f37}button.bad{background:#b62324;border-color:#b62324}
+button.warn{background:#7d5c12;border-color:#7d5c12}button.mini{padding:3px 8px;font-size:12px}button:disabled{opacity:.5;cursor:not-allowed}
+input,textarea{width:100%;margin:4px 0}textarea{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;min-height:60px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row>*{margin:0}
+nav{position:sticky;top:0;z-index:20;background:rgba(10,17,32,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+nav .brand{font-weight:700;letter-spacing:.5px;margin-right:8px;font-size:15px}.spacer{flex:1}
+.banner{background:#1a2740;border:1px solid var(--accent);color:#cfe6ff;padding:10px 16px;border-radius:10px;margin:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.banner.warn{background:#2a2200;border-color:var(--warn);color:#ffe9a8}
+main{max-width:1280px;margin:0 auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:12px 0}.grid .card{margin:0}
+h2{margin:0 0 10px;font-size:16px}h3{margin:0 0 8px;font-size:14px;color:#c9d8f5}
+.mono{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;white-space:pre-wrap;max-height:360px}
+.muted{color:var(--muted)}.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}.accent{color:var(--accent)}
+.chip{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:11px;margin:2px;white-space:nowrap}
+.chip.g{color:var(--good);border-color:#1a7f37}.chip.r{color:var(--bad);border-color:#b62324}.chip.w{color:var(--warn);border-color:#7d5c12}.chip.b{color:var(--accent);border-color:#1f6feb}
+.chat{height:300px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px;margin:8px 0}
+.msg{margin:6px 0;padding:8px 10px;border-radius:8px;background:#182742;border-left:3px solid var(--accent);white-space:pre-wrap;font-size:13px}
+.msg.you{background:#22385e;border-left-color:var(--good)}
+.msg.err{background:#2a1520;border-left-color:var(--bad)}
+.msg .who{font-weight:600;font-size:11px;letter-spacing:.5px;display:block}
+.item{border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:10px 12px;margin:8px 0}
+.item .top{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.item .title{font-weight:600}.item .sub{font-size:12px;color:var(--muted);margin-top:3px;white-space:pre-wrap}
+.stat{display:inline-flex;flex-direction:column;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:110px}
+.stat .v{font-size:22px;font-weight:700}.stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.statrow{display:flex;gap:10px;flex-wrap:wrap}
+.hidden{display:none!important}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600;font-size:12px}
+a{color:var(--accent);text-decoration:none}
+input[type=checkbox]{width:auto}
+footer{margin:30px 0 10px;text-align:center;color:#51627f;font-size:12px}
+.mtoast{position:fixed;bottom:18px;right:18px;background:#152238;border:1px solid var(--accent);color:var(--text);padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.5);z-index:50;max-width:420px;font-size:13px}
+.mtoast.ok{border-color:var(--good)}.mtoast.err{border-color:var(--bad)}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">⚡ NOTSIP</span>
+  <span id="connDot" class="chip">…</span>
+  <div class="spacer"></div>
+  <button data-tab="dashboard" onclick="show('dashboard')">Dashboard</button>
+  <button data-tab="tasks" onclick="show('tasks')">Tasks</button>
+  <button data-tab="devices" onclick="show('devices')">Devices</button>
+  <button data-tab="approvals" onclick="show('approvals')">Approvals</button>
+  <button data-tab="memory" onclick="show('memory')">Memory</button>
+  <button data-tab="integrations" onclick="show('integrations')">Integrations</button>
+  <button data-tab="diagnostics" onclick="show('diagnostics')">Diagnostics</button>
+  <button data-tab="backup" onclick="show('backup')">Backup</button>
+  <button data-tab="config" onclick="show('config')">Config</button>
+  <button data-tab="audit" onclick="show('audit')">Audit</button>
+  <a href="/setup" id="setupLink" class="hidden" style="margin-left:4px"><button>Setup wizard</button></a>
+</nav>
+<div id="setupBanner" class="banner hidden">
+  <div>NOTSIP is <b>not configured yet</b>. Complete the first-run setup wizard to choose your AI provider, API key, and security settings.</div>
+  <a href="/setup"><button class="primary">Open setup wizard →</button></a>
+</div>
+<main>
+
+<section id="loginView" class="card">
+  <h2>🔐 Connect to NOTSIP</h2>
+  <div id="loginPanel"></div>
+</section>
+
+<!-- Dashboard -->
+<section id="view-dashboard" class="view">
+  <div class="statrow">
+    <div class="stat"><span class="v" id="stAutonomy">—</span><span class="l">Autonomy</span></div>
+    <div class="stat"><span class="v" id="stLLM">—</span><span class="l">Brain (LLM)</span></div>
+    <div class="stat"><span class="v" id="stDevices">0</span><span class="l">Devices</span></div>
+    <div class="stat"><span class="v" id="stTasks">0</span><span class="l">Tasks</span></div>
+    <div class="stat"><span class="v" id="stApprovals">0</span><span class="l">Pending approvals</span></div>
+    <div class="stat"><span class="v" id="stNode">—</span><span class="l">Federation nodes</span></div>
+  </div>
+  <div class="card"><h2>Capabilities</h2><div id="capsPanel" class="mono">Loading…</div></div>
+  <div class="card">
+    <h2>Chat with NOTSIP</h2>
+    <div class="chat" id="chat"></div>
+    <div class="row">
+      <textarea id="prompt" placeholder="Tell NOTSIP what to do — e.g. open the browser to a news site…" style="flex:1"></textarea>
+      <button id="sendBtn" onclick="send()">Send</button>
+      <button id="voiceBtn" onclick="voice()">🎙 Voice</button>
+    </div>
+  </div>
+  <div class="card"><h2>Notifications</h2><div id="notificationsPanel" class="mono">Loading…</div></div>
+</section>
+
+<!-- Tasks -->
+<section id="view-tasks" class="view hidden">
+  <div class="card">
+    <h2>Create task</h2>
+    <div class="row">
+      <input id="taskObjective" placeholder="Objective — e.g. summarize today's news" style="flex:1">
+      <button class="primary" onclick="createTask()">Schedule</button>
+    </div>
+    <div class="muted" style="margin-top:4px">Scheduled tasks run in the background on their deadline; pending approvals gate high-risk actions.</div>
+  </div>
+  <div class="card"><h2>Task queue</h2><div id="tasksPanel" class="mono">Loading…</div></div>
+</section>
+
+<!-- Devices -->
+<section id="view-devices" class="view hidden">
+  <div class="grid">
+    <div class="card">
+      <h2>Pair a new device</h2>
+      <button class="mini" onclick="pairCode()">Generate pairing code</button>
+      <div class="mono muted" id="pairOut" style="min-height:30px">Click above to create a code.</div>
+      <hr>
+      <input id="pairCodeInput" placeholder="Pairing code">
+      <input id="pairIdInput" placeholder="Device id (e.g. my-phone)">
+      <input id="pairNameInput" placeholder="Friendly name (e.g. My Phone)">
+      <select id="pairPlatformInput"><option value="android">Android</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option></select>
+      <button class="primary" onclick="consumePair()">Pair device</button>
+      <div id="pairResult" class="mono muted" style="min-height:24px"></div>
+    </div>
+    <div class="card">
+      <h2>Queue device command</h2>
+      <input id="cmdDeviceId" placeholder="Device id">
+      <select id="cmdAction"><option value="notify">Notify</option><option value="open_url">Open URL</option><option value="open_app">Open app</option><option value="click_text">Click text</option><option value="make_call">Make call</option><option value="send_sms">Send SMS</option></select>
+      <input id="cmdPayload" placeholder='Payload — e.g. {"text":"hello"}'>
+      <button class="primary" onclick="queueCommand()">Queue command</button>
+      <div class="mono muted" id="cmdOut" style="min-height:24px"></div>
+    </div>
+  </div>
+  <div class="card"><h2>Paired devices</h2><div id="devicesPanel" class="mono">Loading…</div></div>
+  <div class="card"><h2>Federation nodes</h2><div id="nodesPanel" class="mono">Loading…</div></div>
+</section>
+
+<!-- Approvals -->
+<section id="view-approvals" class="view hidden">
+  <div class="card"><h2>Pending approvals</h2><div id="approvalsPanel">Loading…</div></div>
+  <div class="card"><h2>Approval history</h2><div id="approvalHistoryPanel" class="mono">Loading…</div></div>
+</section>
+
+<!-- Memory -->
+<section id="view-memory" class="view hidden">
+  <div class="card">
+    <h2>Memory</h2>
+    <div class="row">
+      <button class="mini" onclick="loadMemory()">Refresh</button>
+      <button class="mini" onclick="maintainMemory()">Run maintenance</button>
+    </div>
+    <div class="mono" id="memoryOut">Loading…</div>
+  </div>
+  <div class="card"><h2>Facts</h2><div class="mono" id="factsOut">Loading…</div></div>
+  <div class="card"><h2>World model</h2><div class="mono" id="worldOut">Loading…</div></div>
+</section>
+
+<!-- Integrations -->
+<section id="view-integrations" class="view hidden">
+  <div class="card"><h2>Connected accounts</h2><div id="accountsOut" class="mono">Loading…</div></div>
+  <div class="card"><h2>Service availability</h2><div id="serviceOut">Loading…</div></div>
+</section>
+
+<!-- Diagnostics -->
+<section id="view-diagnostics" class="view hidden">
+  <div class="grid">
+    <div class="card"><h2>Health</h2><div id="healthOut" class="mono">Loading…</div></div>
+    <div class="card"><h2>Full diagnostics</h2><button onclick="diag()">Run diagnostics</button><div class="mono" id="diagOut" style="margin-top:8px">Click to run.</div></div>
+  </div>
+  <div class="card">
+    <h2>Self-maintenance</h2>
+    <div class="row">
+      <button class="mini" onclick="selfInspect()">Inspect codebase</button>
+      <button class="mini" onclick="selfVerify()">Verify codebase</button>
+      <button class="mini" onclick="selfRead()">Read self</button>
+    </div>
+    <div class="mono muted" id="selfOut" style="margin-top:8px"></div>
+  </div>
+</section>
+
+<!-- Backup -->
+<section id="view-backup" class="view hidden">
+  <div class="card">
+    <h2>Backup &amp; recovery</h2>
+    <div class="row">
+      <button class="primary" onclick="createBackup()">Create backup</button>
+      <button class="mini" onclick="listBackups()">List backups</button>
+      <button class="mini" onclick="checkRecovery()">Recovery check</button>
+    </div>
+    <div class="mono" id="backupOut" style="margin-top:8px">Loading…</div>
+  </div>
+  <div class="card"><h2>Recovery checkpoints</h2><div class="mono" id="recoveryOut">Loading…</div></div>
+</section>
+
+<!-- Config -->
+<section id="view-config" class="view hidden">
+  <div class="card">
+    <h2>Runtime configuration</h2>
+    <button class="mini" onclick="loadConfig()">Refresh</button>
+    <div class="mono" id="configOut">Loading…</div>
+    <div class="muted" style="margin-top:6px">Use the <a href="/setup">setup wizard</a> to change settings. Secrets are redacted; the API key is required to authenticate this dashboard.</div>
+  </div>
+  <div class="card"><h2>Security status</h2><div class="mono" id="securityOut">Loading…</div></div>
+</section>
+
+<!-- Audit -->
+<section id="view-audit" class="view hidden">
+  <div class="card">
+    <h2>Audit log</h2>
+    <button class="mini" onclick="loadAudit()">Refresh</button>
+    <div class="mono" id="auditOut">Loading…</div>
+    <div class="muted" style="margin-top:6px">Audit trail is a tamper-evident hash chain. Verify integrity from the diagnostics panel.</div>
+  </div>
+</section>
+
+</main>
+<footer>NOTSIP — command center. <a href="/api/health">/api/health</a></footer>
+
+<script>
+'use strict';
+let apiKey = sessionStorage.getItem('notsip_key') || '';
+let currentTab = 'dashboard';
+let mediaRecorder = null, audioChunks = [];
+const $ = id => document.getElementById(id);
+
+/* ---------- auth middleware ---------- */
+async function api(path, opt = {}) {
+  const headers = Object.assign({}, opt.headers || {});
+  if (!(opt.body instanceof FormData) && !(opt.body instanceof Blob)) headers['Content-Type'] = 'application/json';
+  if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
+  const r = await fetch(path, Object.assign({}, opt, { headers, credentials: 'same-origin', cache: 'no-store' }));
+  if (r.status === 401) {
+    $('connDot').textContent = 'Auth required';
+    $('connDot').className = 'chip r';
+    showModal('Authentication required — provide your API key.');
+    openLogin();
+    throw new Error('Authentication required');
+  }
+  const text = await r.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (e) { body = text; }
+  if (!r.ok) throw new Error(body && body.detail ? (typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)) : (text || r.statusText));
+  return body;
+}
+
+/* ---------- login ---------- */
+function openLogin() {
+  const p = $('loginPanel');
+  p.innerHTML = '';
+  const key = document.createElement('input'); key.type = 'password'; key.placeholder = 'API key'; key.id = 'loginKey';
+  const row = document.createElement('div'); row.className = 'row';
+  const bth = document.createElement('button'); bth.className = 'primary'; bth.textContent = 'Login';
+  bth.onclick = () => { apiKey = key.value.trim(); if (!apiKey) return; sessionStorage.setItem('notsip_key', apiKey); initialize(true); };
+  const bo = document.createElement('button'); bo.textContent = 'OIDC login'; bo.onclick = () => location.href = '/api/oauth/login';
+  row.append(bth, bo, document.createTextNode(' '), (() => { const a = document.createElement('a'); a.href = '/setup'; a.textContent = 'Create an API key in setup →'; return a; })());
+  p.append(key, row);
+  $('loginView').classList.remove('hidden');
+  if (!apiKey) $('loginView').scrollIntoView({ behavior: 'smooth' });
+}
+
+/* ---------- tab navigation ---------- */
+function show(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+  $('view-' + tab).classList.remove('hidden');
+  document.querySelectorAll('nav button[data-tab]').forEach(b => b.style.opacity = b.dataset.tab === tab ? '1' : '.6');
+  loaders[tab]();
+}
+const loaders = {
+  dashboard: refreshStatus,
+  tasks: loadTasks,
+  devices: () => { loadDevices(); listNodes(); },
+  approvals: loadApprovals,
+  memory: () => { loadMemory(); loadFacts(); loadWorld(); },
+  integrations: () => { loadAccounts(); loadServices(); },
+  diagnostics: () => { loadHealth(); },
+  backup: () => { listBackups(); checkRecovery(); },
+  config: loadConfig,
+  audit: loadAudit,
+};
+
+/* ---------- helpers ---------- */
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text !== undefined && text !== null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+function chip(label, cls) { return el('span', label, 'chip ' + (cls || '')); }
+function jsonBox(container, data) { container.textContent = JSON.stringify(data, null, 2); }
+function showModal(msg, isErr) {
+  const d = document.createElement('div');
+  d.className = 'mtoast ' + (isErr ? 'err' : 'ok');
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+function rowFromArray(items, fn) {
+  const d = document.createElement('div'); d.className = 'row';
+  (items || []).forEach(x => d.appendChild(fn(x)));
+  return d;
+}
+
+/* ---------- onboarding ---------- */
+async function checkSetupState() {
+  const configured = key => {
+    $('setupBanner').classList.toggle('hidden', !!key);
+    $('setupLink').classList.toggle('hidden', !!key);
+  };
+  try {
+    const r = await fetch('/api/config/public', { credentials: 'same-origin', cache: 'no-store' });
+    if (r.status === 401) { configured(true); return; }      // gated => config exists => configured
+    if (!r.ok) return;
+    const d = await r.json();
+    const keySet = d.secret_configured && d.secret_configured.api_key;
+    configured(!!keySet);
+  } catch (e) { /* offline — keep defaults */ }
+}
+
+/* ---------- initialize ---------- */
+async function initialize() {
+  if (apiKey) {
+    $('connDot').textContent = 'Connected';
+    $('connDot').className = 'chip g';
+    await refreshStatus();
+  } else {
+    $('connDot').textContent = 'Not connected';
+    $('connDot').className = 'chip r';
+    openLogin();
+  }
+}
+
+/* ---------- dashboard ---------- */
+function setStatBadge(id, on, yesTxt, noTxt) {
+  const e = $(id);
+  e.textContent = on ? yesTxt : noTxt;
+  e.className = 'v ' + (on ? 'good' : 'bad');
+}
+async function refreshStatus() {
+  try {
+    const [st, health, deg] = await Promise.all([api('/api/status'), api('/api/health'), api('/api/degraded')]);
+    const caps = st.capabilities || {};
+    $('stAutonomy').textContent = st.autonomy_level != null ? st.autonomy_level : '—';
+    setStatBadge('stLLM', caps.llm, 'ON', 'OFF');
+    $('stDevices').textContent = Array.isArray(st.devices) ? st.devices.length : '0';
+    const tasks = Array.isArray(st.tasks) ? st.tasks : [];
+    $('stTasks').textContent = tasks.length;
+    $('stApprovals').textContent = (Array.isArray(st.approvals) ? st.approvals.filter(a => (a.status || '').toUpperCase() === 'PENDING').length : 0);
+    const nodes = (st.nodes || st.federation_nodes || st.resources || []);
+    $('stNode').textContent = nodes.length || '0';
+
+    const cap = $('capsPanel'); cap.textContent = '';
+    const defs = [
+      ['Brain (LLM)', caps.llm], ['Fallback LLM', caps.fallback_llm],
+      ['Voice STT', caps.voice_stt], ['Voice TTS', caps.voice_tts],
+      ['Vision', caps.vision], ['Perception', caps.perception],
+      ['Windows control', caps.windows_uia], ['Web search', caps.web_search],
+      ['Email', caps.email], ['OIDC', caps.oidc],
+      ['Android pairing', caps.android_pairing], ['Self-maintenance', caps.self_maintenance],
+      ['Distributed nodes', caps.distributed_nodes], ['Recovery checkpoints', caps.recovery_checkpoints],
+    ];
+    defs.forEach(([label, on]) => cap.appendChild(chip(label + (on ? ' on' : ' off'), on ? 'g' : 'r')));
+    if (deg && deg.degraded) {
+      cap.appendChild(document.createTextNode('\ndegraded reasons: '));
+      const rr = rowFromArray(deg.reasons || [], r => chip(r, 'w'));
+      cap.appendChild(rr);
+    }
+  } catch (e) {
+    $('capsPanel').textContent = 'Error: ' + e.message;
+    $('connDot').textContent = 'Disconnected';
+    $('connDot').className = 'chip r';
+  }
+  loadTasks(true); loadApprovals(true); loadNotifications();
+}
+
+/* ---------- chat ---------- */
+function addMsg(who, text, err) {
+  const d = $('chat');
+  const m = el('div', null, 'msg ' + (who === 'You' ? 'you' : err ? 'err' : ''));
+  m.appendChild(el('span', who, 'who'));
+  m.appendChild(document.createTextNode(String(text == null ? '' : text)));
+  d.appendChild(m);
+  d.scrollTop = d.scrollHeight;
+}
+async function send(text) {
+  const t = (text !== undefined && text !== null) ? String(text) : $('prompt').value.trim();
+  if (!t) return;
+  addMsg('You', t);
+  $('prompt').value = '';
+  const btn = $('sendBtn'); btn.disabled = true;
+  try {
+    const d = await api('/api/message', { method: 'POST', body: JSON.stringify({ message: t }) });
+    addMsg('NOTSIP', d.response || d.reply || d.message || JSON.stringify(d));
+  } catch (e) { addMsg('NOTSIP', e.message, true); }
+  btn.disabled = false;
+}
+$('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+
+/* ---------- voice ---------- */
+async function voice() {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(s, { mimeType: 'audio/webm' });
+    audioChunks = [];
+    mediaRecorder.ondataavailable = e => { if (e.data.size) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      try {
+        const fd = new FormData();
+        fd.append('file', new File([new Blob(audioChunks, { type: 'audio/webm' })], 'voice.webm', { type: 'audio/webm' }));
+        const d = await api('/api/voice/transcribe', { method: 'POST', body: fd });
+        if (d && d.text) send(d.text); else addMsg('NOTSIP', 'Could not transcribe audio', true);
+      } catch (e) { addMsg('NOTSIP', 'Voice error: ' + e.message, true); }
+      s.getTracks().forEach(t => t.stop());
+    };
+    mediaRecorder.start();
+    addMsg('NOTSIP', 'Recording… (listening for up to 5s)');
+    setTimeout(() => { try { mediaRecorder && mediaRecorder.stop(); } catch (e) { s.getTracks().forEach(t => t.stop()); } }, 5000);
+  } catch (e) { addMsg('NOTSIP', 'Voice unavailable: ' + e.message, true); }
+}
+
+/* ---------- notifications ---------- */
+async function loadNotifications() {
+  try {
+    const d = await api('/api/notifications');
+    const p = $('notificationsPanel'); p.textContent = '';
+    const list = d.notifications || [];
+    if (!list.length) { p.textContent = 'No notifications.'; return; }
+    list.slice(0, 20).forEach(n => p.appendChild(el('div', (n.title || n.type || 'notification') + (n.message ? ' — ' + n.message : ''))));
+  } catch (e) { $('notificationsPanel').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- tasks ---------- */
+async function loadTasks(silent) {
+  try {
+    const d = await api('/api/tasks');
+    const tasks = d.tasks || [];
+    if (silent) { $('stTasks').textContent = tasks.length; return; }
+    const p = $('tasksPanel'); p.textContent = '';
+    if (!tasks.length) { p.textContent = 'No tasks yet.'; return; }
+    const sorted = tasks.slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    sorted.forEach(t => {
+      const it = el('div', null, 'item');
+      const top = el('div', null, 'top');
+      top.appendChild(el('span', t.objective || t.title || t.id, 'title'));
+      const st = (t.status || 'UNKNOWN').toString().toUpperCase();
+      top.appendChild(chip(st, st === 'COMPLETED' || st === 'SUCCESS' ? 'g' : st === 'PENDING' ? 'b' : 'w'));
+      it.appendChild(top);
+      it.appendChild(el('div', 'id: ' + t.id + ' · handler: ' + (t.handler || t.agent || '?') + (t.attempts != null ? ' · attempts: ' + t.attempts : ''), 'sub'));
+      if (t.result) it.appendChild(el('div', 'result: ' + JSON.stringify(t.result), 'sub'));
+      if (t.error) it.appendChild(el('div', 'error: ' + t.error, 'sub bad'));
+      if (st === 'PENDING' || st === 'SCHEDULED' || st === 'QUEUED') {
+        const runBtn = el('button', '▶ Run now', 'mini primary');
+        runBtn.onclick = async () => {
+          runBtn.disabled = true;
+          try { await api('/api/tasks/' + encodeURIComponent(t.id) + '/run', { method: 'POST' }); showModal('Task started.'); loadTasks(); } catch (e) { showModal(e.message, true); runBtn.disabled = false; }
+        };
+        it.appendChild(runBtn);
+      }
+      p.appendChild(it);
+    });
+  } catch (e) { $('tasksPanel').textContent = 'Error: ' + e.message; }
+}
+async function createTask() {
+  const o = $('taskObjective').value.trim();
+  if (!o) { showModal('Enter an objective.', true); return; }
+  try {
+    await api('/api/tasks', { method: 'POST', body: JSON.stringify({ objective: o, handler: 'agent' }) });
+    $('taskObjective').value = '';
+    showModal('Task scheduled.');
+    loadTasks();
+  } catch (e) { showModal(e.message, true); }
+}
+
+/* ---------- devices ---------- */
+async function pairCode() {
+  try {
+    const d = await api('/api/pair/code');
+    $('pairOut').textContent = 'Code: ' + d.code + ' (expires in ' + d.expires_in + 's) — enter it in the device form below or on the device.';
+    $('pairCodeInput').value = d.code;
+  } catch (e) { $('pairOut').textContent = 'Error: ' + e.message; }
+}
+async function consumePair() {
+  const code = $('pairCodeInput').value.trim(), id = $('pairIdInput').value.trim(), name = $('pairNameInput').value.trim(), platform = $('pairPlatformInput').value;
+  if (!code || !id || !name) { showModal('Code, id and name are required.', true); return; }
+  try {
+    const d = await api('/api/pair/consume', { method: 'POST', body: JSON.stringify({ code, device_id: id, name, platform }) });
+    $('pairResult').textContent = 'Paired! Device token: ' + (d.token || d.device_token) + '  (store this on the device)';
+    showModal('Device paired successfully.');
+    loadDevices();
+  } catch (e) { $('pairResult').textContent = 'Error: ' + e.message; }
+}
+async function loadDevices() {
+  try {
+    const d = await api('/api/devices');
+    const items = d.devices || [];
+    if ($('stDevices')) $('stDevices').textContent = items.length;
+    const p = $('devicesPanel'); p.textContent = '';
+    if (!items.length) { p.textContent = 'No devices paired yet. Pair one to control it from here.'; return; }
+    items.forEach(dev => {
+      const it = el('div', null, 'item');
+      const top = el('div', null, 'top');
+      top.appendChild(el('span', dev.name || dev.id, 'title'));
+      const st = (dev.status || 'UNKNOWN').toString().toUpperCase();
+      top.appendChild(chip(st === 'ONLINE' ? 'online' : st, st === 'ONLINE' ? 'g' : 'r'));
+      it.appendChild(top);
+      it.appendChild(el('div', 'id: ' + dev.id + ' · platform: ' + (dev.platform || '?'), 'sub'));
+      if (dev.last_seen) it.appendChild(el('div', 'last seen: ' + new Date(dev.last_seen * 1000).toLocaleString(), 'sub'));
+      const btns = el('div', null, 'row');
+      const q = el('button', 'Queue command', 'mini'); q.onclick = () => { $('cmdDeviceId').value = dev.id; $('cmdDeviceId').scrollIntoView({ behavior: 'smooth' }); };
+      btns.appendChild(q); it.appendChild(btns);
+      p.appendChild(it);
+    });
+  } catch (e) { $('devicesPanel').textContent = 'Error: ' + e.message; }
+}
+async function queueCommand() {
+  const did = $('cmdDeviceId').value.trim(), action = $('cmdAction').value, payloadText = $('cmdPayload').value.trim();
+  if (!did) { showModal('Device id required.', true); return; }
+  let payload = {};
+  if (payloadText) { try { payload = JSON.parse(payloadText); } catch (e) { showModal('Payload must be valid JSON.', true); return; } }
+  try {
+    const d = await api('/api/devices/' + encodeURIComponent(did) + '/commands', { method: 'POST', body: JSON.stringify({ action, payload }) });
+    $('cmdOut').textContent = 'Queued command ' + (d.command_id || '') + ' — status ' + d.status;
+    showModal('Command queued for ' + did);
+  } catch (e) { $('cmdOut').textContent = 'Error: ' + e.message; }
+}
+async function listNodes() {
+  try {
+    const d = await api('/api/resources');
+    const nodes = d.nodes || d.resources || [];
+    const p = $('nodesPanel'); p.textContent = '';
+    if (!nodes.length) { p.textContent = 'No federation nodes registered.'; return; }
+    nodes.forEach(n => {
+      const it = el('div', null, 'item');
+      const top = el('div', null, 'top');
+      top.appendChild(el('span', n.name || n.node_id || n.id, 'title'));
+      const st = (n.status || '').toString().toUpperCase();
+      top.appendChild(chip(st === 'ONLINE' ? 'online' : (st || 'unknown'), st === 'ONLINE' ? 'g' : 'w'));
+      it.appendChild(top);
+      it.appendChild(el('div', 'id: ' + (n.node_id || n.id) + ' · platform: ' + (n.platform || '?') + (n.lease_expires ? ' · lease until ' + new Date(n.lease_expires * 1000).toLocaleString() : ''), 'sub'));
+      p.appendChild(it);
+    });
+  } catch (e) { $('nodesPanel').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- approvals ---------- */
+async function loadApprovals(silent) {
+  try {
+    const d = await api('/api/approvals');
+    const all = (d.approvals || d.pending || []).slice();
+    const pending = all.filter(a => (a.status || '').toString().toUpperCase() === 'PENDING');
+    if (silent) { $('stApprovals').textContent = pending.length; return; }
+    const p = $('approvalsPanel'); p.textContent = '';
+    if (!pending.length) p.appendChild(el('div', 'No pending approvals.'));
+    else pending.forEach(a => renderApproval(p, a, true));
+    const hist = $('approvalHistoryPanel'); hist.textContent = '';
+    const resolved = all.filter(a => (a.status || '').toString().toUpperCase() !== 'PENDING');
+    if (!resolved.length) hist.textContent = 'No resolved approvals.';
+    else resolved.slice(0, 30).forEach(a => renderApproval(hist, a, false));
+  } catch (e) { $('approvalsPanel').textContent = 'Error: ' + e.message; }
+}
+function renderApproval(container, a, actionable) {
+  const it = el('div', null, 'item');
+  const top = el('div', null, 'top');
+  top.appendChild(el('span', a.title || a.action || a.id, 'title'));
+  const st = (a.status || 'UNKNOWN').toString().toUpperCase();
+  top.appendChild(chip(st, st === 'APPROVED' ? 'g' : st === 'DENIED' ? 'r' : st === 'PENDING' ? 'w' : 'b'));
+  it.appendChild(top);
+  it.appendChild(el('div', 'id: ' + a.id, 'sub'));
+  if (a.action) it.appendChild(el('div', 'action: ' + a.action, 'sub'));
+  if (a.reason) it.appendChild(el('div', 'reason: ' + a.reason, 'sub'));
+  if (a.context && a.context.tool) it.appendChild(el('div', 'tool: ' + a.context.tool + ' · args: ' + JSON.stringify(a.context.args || {}), 'sub'));
+  if (a.expires) it.appendChild(el('div', 'expires: ' + new Date(a.expires * 1000).toLocaleString(), 'sub'));
+  if (a.execution) it.appendChild(el('div', 'execution: ' + JSON.stringify(a.execution, null, 2), 'sub'));
+  if (actionable) {
+    const row = el('div', null, 'row');
+    const approve = el('button', '✓ Approve', 'mini good');
+    const deny = el('button', '✗ Deny', 'mini bad');
+    const exec = el('button', '⚡ Approve & execute', 'mini primary');
+    approve.onclick = () => decide(a.id, true, false, row);
+    deny.onclick = () => decide(a.id, false, false, row);
+    exec.onclick = () => decide(a.id, true, true, row);
+    row.append(approve, deny, exec);
+    it.appendChild(row);
+  }
+  container.appendChild(it);
+}
+async function decide(id, approved, execute) {
+  try {
+    await api('/api/approvals/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify({ approved, execute }) });
+    showModal(approved ? (execute ? 'Approval granted and executed.' : 'Approval granted.') : 'Approval denied.');
+    loadApprovals();
+  } catch (e) { showModal(e.message, true); loadApprovals(); }
+}
+
+/* ---------- memory ---------- */
+async function loadMemory() {
+  try { jsonBox($('memoryOut'), await api('/api/memory')); } catch (e) { $('memoryOut').textContent = 'Error: ' + e.message; }
+}
+async function maintainMemory() {
+  try { await api('/api/memory/maintain', { method: 'POST' }); showModal('Memory maintenance complete.'); loadMemory(); } catch (e) { showModal(e.message, true); }
+}
+async function loadFacts() {
+  try { jsonBox($('factsOut'), await api('/api/facts')); } catch (e) { $('factsOut').textContent = 'Error: ' + e.message; }
+}
+async function loadWorld() {
+  try { jsonBox($('worldOut'), await api('/api/world')); } catch (e) { $('worldOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- integrations ---------- */
+async function loadAccounts() {
+  try { jsonBox($('accountsOut'), await api('/api/integrations/accounts')); } catch (e) { $('accountsOut').textContent = 'Error: ' + e.message; }
+}
+async function loadServices() {
+  try {
+    const h = await api('/api/health');
+    const p = $('serviceOut'); p.textContent = '';
+    ['llm', 'fallback_llm', 'voice_stt', 'voice_tts', 'vision', 'windows_uia', 'scheduler', 'federation'].forEach(k => {
+      p.appendChild(el('div', k + ': ' + (h[k] ? 'available' : 'not configured'), 'item'));
+    });
+  } catch (e) { $('serviceOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- diagnostics ---------- */
+async function loadHealth() {
+  try { jsonBox($('healthOut'), await api('/api/health')); } catch (e) { $('healthOut').textContent = 'Error: ' + e.message; }
+}
+async function diag() {
+  $('diagOut').textContent = 'Running…';
+  try { jsonBox($('diagOut'), await api('/api/diagnostics')); } catch (e) { $('diagOut').textContent = 'Error: ' + e.message; }
+}
+async function selfInspect() {
+  try { jsonBox($('selfOut'), await api('/api/self/inspect')); } catch (e) { $('selfOut').textContent = 'Error: ' + e.message; }
+}
+async function selfVerify() {
+  try { jsonBox($('selfOut'), await api('/api/self/verify')); } catch (e) { $('selfOut').textContent = 'Error: ' + e.message; }
+}
+async function selfRead() {
+  try { jsonBox($('selfOut'), await api('/api/self/read')); } catch (e) { $('selfOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- backup ---------- */
+async function createBackup() {
+  try {
+    const d = await api('/api/backups', { method: 'POST' });
+    showModal('Backup created: ' + (d.path || ''));
+    listBackups();
+  } catch (e) { showModal(e.message, true); }
+}
+async function listBackups() {
+  try {
+    const d = await api('/api/backups');
+    const p = $('backupOut'); p.textContent = '';
+    const list = d.backups || d.files || [];
+    if (!list.length) { p.textContent = 'No backups yet. Create one above.'; return; }
+    list.forEach(b => {
+      const name = b.name || b.path || (typeof b === 'string' ? b : null);
+      if (!name) return;
+      const it = el('div', null, 'item');
+      const top = el('div', null, 'top');
+      top.appendChild(el('span', name, 'title'));
+      const btns = el('div', null, 'row');
+      const restore = el('button', 'Restore', 'mini warn');
+      restore.onclick = async () => {
+        if (!confirm('Restore backup ' + name + '? Current state will be replaced from this snapshot.')) return;
+        restore.disabled = true;
+        try { const r = await api('/api/backups/' + encodeURIComponent(name) + '/restore', { method: 'POST' }); showModal('Restore completed: ' + JSON.stringify(r)); } catch (e) { showModal(e.message, true); } finally { restore.disabled = false; }
+      };
+      btns.appendChild(restore);
+      top.appendChild(btns);
+      it.appendChild(top);
+      if (b.created_at && typeof b.created_at === 'number') it.appendChild(el('div', new Date(b.created_at * 1000).toLocaleString(), 'sub'));
+      if (b.bytes != null) it.appendChild(el('div', b.bytes + ' bytes', 'sub'));
+      p.appendChild(it);
+    });
+  } catch (e) { $('backupOut').textContent = 'Error: ' + e.message; }
+}
+async function checkRecovery() {
+  try { jsonBox($('recoveryOut'), await api('/api/recovery/latest')); } catch (e) { $('recoveryOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- config ---------- */
+async function loadConfig() {
+  try {
+    const d = await api('/api/config');
+    const out = $('configOut');
+    out.textContent = '';
+    out.appendChild(el('div', 'version: ' + d.version));
+    if (d.settings) {
+      const tbl = document.createElement('table');
+      const thead = document.createElement('thead');
+      const hr = document.createElement('tr');
+      ['setting', 'value'].forEach(c => { const th = document.createElement('th'); th.textContent = c; hr.appendChild(th); });
+      thead.appendChild(hr); tbl.appendChild(thead);
+      const tb = document.createElement('tbody');
+      Object.keys(d.settings).forEach(k => {
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td'); td1.textContent = k; td1.className = 'muted';
+        const td2 = document.createElement('td'); td2.textContent = String(d.settings[k]);
+        tr.append(td1, td2); tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      out.appendChild(tbl);
+    }
+    const sec = $('securityOut'); sec.textContent = '';
+    sec.appendChild(el('div', 'Secret configuration:'));
+    if (d.secret_configured) {
+      Object.keys(d.secret_configured).forEach(k => {
+        sec.appendChild(el('div', k + ': ' + (d.secret_configured[k] ? 'configured ✓' : 'not set'), 'item'));
+      });
+    }
+  } catch (e) { $('configOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- audit ---------- */
+async function loadAudit() {
+  try {
+    const d = await api('/api/audit/log');
+    const events = d.events || [];
+    const p = $('auditOut'); p.textContent = '';
+    if (!events.length) { p.textContent = 'No audit events yet.'; return; }
+    events.slice(0, 60).forEach(ev => {
+      const ts = ev.ts ? new Date(ev.ts * 1000).toLocaleString() : '';
+      p.appendChild(el('div', (ts ? '[' + ts + '] ' : '') + (ev.event || '') + (ev.method ? ' ' + ev.method + ' ' + ev.path : ev.action || '') + (ev.status != null ? ' → ' + ev.status : '')));
+    });
+  } catch (e) { $('auditOut').textContent = 'Error: ' + e.message; }
+}
+
+/* ---------- poll ---------- */
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    if (!apiKey) return;
+    if (currentTab === 'dashboard') refreshStatus();
+    else if (currentTab === 'tasks') loadTasks(true);
+    else if (currentTab === 'approvals') loadApprovals(true);
+  }, 10000);
+}
+
+/* ---------- boot ---------- */
+checkSetupState();
+initialize();
+startPolling();
+</script>
+</body>
+</html>

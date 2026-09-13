@@ -21,7 +21,7 @@ class BusinessAdminAdapter:
     @property
     def configured(self):return bool(self.base_url and self.token)
     def _url(self,path=''):
-        if not self.configured:raise BusinessAdminUnavailable('business administration adapter is not configured')
+        if not self.base_url:raise BusinessAdminUnavailable('business administration adapter is not configured')
         parsed=urllib.parse.urlparse(self.base_url)
         if parsed.scheme not in {'https','http'} or not parsed.hostname or parsed.username or parsed.password:raise ValueError('business administration requires a valid HTTP(S) base URL')
         if parsed.scheme!='https' and not (parsed.hostname in {'127.0.0.1','::1','localhost','localhost.localdomain'}):raise ValueError('business administration requires HTTPS for non-loopback providers')
@@ -34,7 +34,8 @@ class BusinessAdminAdapter:
         url=self._url('query');payload={'operation':str(operation or 'status'),'params':params or {}}
         async with httpx.AsyncClient(timeout=20) as client:
             response=await client.post(url,json=payload,headers=self._headers());response.raise_for_status();data=response.json()
-        return {'status':'SUCCESS','verified':False,'operation':payload['operation'],'data':data,'verification':{'transport':'HTTP 2xx','authoritative_state':bool(data.get('authoritative',False)),'independently_verified':bool(data.get('independently_verified',False))}}
+        independently_verified=bool(data.get('independently_verified',False));verified=bool(data.get('verified',False)) or independently_verified
+        return {'status':'SUCCESS','verified':verified,'operation':payload['operation'],'data':data,'verification':{'transport':'HTTP 2xx','authoritative_state':bool(data.get('authoritative',False)),'independently_verified':independently_verified}}
     async def action(self,operation,payload=None):
         url=self._url('action');name=str(operation or '').strip()
         if not name:raise ValueError('operation is required')
@@ -42,5 +43,5 @@ class BusinessAdminAdapter:
         async with httpx.AsyncClient(timeout=30) as client:
             response=await client.post(url,json=body,headers=self._headers());response.raise_for_status();data=response.json()
         if 'success' not in data:return {'status':'UNKNOWN','verified':False,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','provider_success_field_present':False,'independently_verified':False}}
-        succeeded=bool(data.get('success'));independently_verified=bool(data.get('independently_verified',False))
-        return {'status':'SUCCESS' if succeeded else 'FAILURE','verified':independently_verified,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','provider_success_field_present':True,'independently_verified':independently_verified}}
+        succeeded=bool(data.get('success'));independently_verified=bool(data.get('independently_verified',False));verified=bool(data.get('verified',False)) or independently_verified
+        return {'status':'SUCCESS' if succeeded else 'FAILURE','verified':verified,'operation':name,'data':data,'verification':{'transport':'HTTP 2xx','provider_success_field_present':True,'independently_verified':independently_verified,'delivery_was_independently_verified':independently_verified}}

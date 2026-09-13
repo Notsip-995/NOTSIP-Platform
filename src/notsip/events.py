@@ -5,7 +5,7 @@ import asyncio
 class Event:
     type:str;payload:dict;source:str='internal';timestamp:str=field(default_factory=lambda:datetime.now(timezone.utc).isoformat())
 class EventBus:
-    def __init__(self,subscriber_queue_size=1000):self.handlers={};self.subscribers=[];self.subscriber_queue_size=max(10,int(subscriber_queue_size))
+    def __init__(self,subscriber_queue_size=1000):self.handlers={};self.subscribers=[];self.subscriber_queue_size=max(1,int(subscriber_queue_size))
     def on(self,event_type,fn):self.handlers.setdefault(event_type,[]).append(fn)
     async def publish(self,event):
         errors=[]

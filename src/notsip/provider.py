@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64,httpx,ipaddress,socket
 from urllib.parse import urlsplit
 from .config import settings
+from .httpcheck import is_redirect
 
 MAX_MODEL_RESPONSE_BYTES=10*1024*1024
 
@@ -50,7 +51,7 @@ class Provider:
         if tools:body['tools']=tools
         async with httpx.AsyncClient(timeout=120,follow_redirects=False,trust_env=False) as c:
             r=await c.post(base.rstrip('/')+'/chat/completions',headers=h,json=body)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('model provider redirect rejected')
+            if is_redirect(r):raise RuntimeError('model provider redirect rejected')
             r.raise_for_status()
             if len(r.content)>MAX_MODEL_RESPONSE_BYTES:raise RuntimeError('model provider response exceeded safety limit')
             return r.json()

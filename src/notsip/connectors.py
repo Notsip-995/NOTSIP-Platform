@@ -3,6 +3,7 @@ from email.message import EmailMessage
 from pathlib import Path
 import httpx
 from .config import settings
+from .httpcheck import is_redirect
 class Web:
     def __init__(self,key=''):self.key=key or ''
     @property
@@ -13,7 +14,7 @@ class Web:
         if not self.enabled:raise RuntimeError('web search not configured')
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.get('https://api.search.brave.com/res/v1/web/search',params={'q':q,'count':count},headers={'Accept':'application/json','X-Subscription-Token':self._key})
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('web search provider redirect rejected')
+            if is_redirect(r):raise RuntimeError('web search provider redirect rejected')
             r.raise_for_status()
             if len(r.content)>5*1024*1024:raise RuntimeError('web search response exceeded safety limit')
             d=r.json()
@@ -85,7 +86,7 @@ class OAuth:
         if self.client_secret:data['client_secret']=self.client_secret
         async with httpx.AsyncClient(timeout=20,follow_redirects=False,trust_env=False) as c:
             r=await c.post(self.token,data=data)
-            if r.is_redirect or r.is_permanent_redirect:raise RuntimeError('OAuth token endpoint redirect rejected')
+            if is_redirect(r):raise RuntimeError('OAuth token endpoint redirect rejected')
             r.raise_for_status()
             if len(r.content)>10*1024*1024:raise RuntimeError('OAuth token response exceeded safety limit')
             return r.json()

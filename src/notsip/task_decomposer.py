@@ -22,7 +22,7 @@ class TaskDecomposer:
         if any(k in low for k in ("meeting", "schedule", "tomorrow", "calendar")):
             add("Resolve the relevant date and schedule context", "calendar")
             add("Identify matching event, participants and conflicts", "calendar", (1,))
-        if any(k in low for k in ("report", "document", "file", "briefing")):
+        if any(k in low for k in ("report", "document", "briefing", "write a file")):
             deps=(steps[-1].id,) if steps else ()
             add("Retrieve relevant authorized documents and prior correspondence", "retrieval", deps)
             add("Extract facts, decisions and unresolved items", "analysis", (steps[-1].id,))
