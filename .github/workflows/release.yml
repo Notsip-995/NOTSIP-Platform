@@ -112,11 +112,11 @@ jobs:
           WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
           WINDOWS_PUBLISHER_THUMBPRINT: ${{ secrets.WINDOWS_PUBLISHER_THUMBPRINT }}
         run: |
-          $missing = @($env:WINDOWS_SIGNING_PFX_BASE64,$env:WINDOWS_SIGNING_PFX_PASSWORD,$env:WINDOWS_PUBLISHER_THUMBPRINT) | Where-Object { [string]::IsNullOrWhiteSpace($_) }
-          if ($missing) {
+          $hasMaterial = [bool]($env:WINDOWS_SIGNING_PFX_BASE64 -and $env:WINDOWS_SIGNING_PFX_PASSWORD -and $env:WINDOWS_PUBLISHER_THUMBPRINT)
+          if (-not $hasMaterial) {
             Write-Host 'No Windows code-signing material configured; publishing unsigned binaries with SHA-256 manifests. Configure WINDOWS_SIGNING_PFX_BASE64, WINDOWS_SIGNING_PFX_PASSWORD and WINDOWS_PUBLISHER_THUMBPRINT to sign release EXEs.'
             Write-Host '::warning::NOTSIP release EXEs were not Authenticode-signed (no signing material configured).'
-            return
+            exit 0
           }
           $expected = ($env:WINDOWS_PUBLISHER_THUMBPRINT -replace '\s','').ToUpperInvariant()
           $pfx = Join-Path $env:RUNNER_TEMP 'notsip-signing.pfx'
@@ -127,9 +127,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed with exit code $LASTEXITCODE" }
           foreach ($target in @('dist\NOTSIP.exe','Output\NOTSIP-Setup.exe')) {
             $sig = Get-AuthenticodeSignature $target
-            if ($sig.Status -ne 'Valid') { throw "Authenticode verification failed for $target: $($sig.Status)" }
+            if ($sig.Status -ne 'Valid') { throw "Authenticode verification failed for ${target}: $($sig.Status)" }
             $actual = (($sig.SignerCertificate.Thumbprint -replace '\s','').ToUpperInvariant())
-            if ($actual -ne $expected) { throw "Authenticode publisher mismatch for $target: expected $expected, got $actual" }
+            if ($actual -ne $expected) { throw "Authenticode publisher mismatch for ${target}: expected $expected, got $actual" }
           }
       - name: Generate Windows SHA-256 manifests
         shell: pwsh
@@ -172,16 +172,14 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          # Tagged Android releases need the full keystore ONLY when release
-          # artifacts (app-release.apk/aab) are expected. If no keystore is
-          # configured, build/verify/publish a debug APK instead and allow the
-          # Windows desktop release to proceed independently.
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            for value in "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD"; do
-              if [ -z "$value" ]; then echo 'Android keystore configured but key alias/password missing.'; exit 1; fi
-            done
-          fi
-          echo "android_release_signing=$([ -n "$ANDROID_KEYSTORE_BASE64" ] && echo true || echo false)" >> "$GITHUB_ENV"
+          # Tagged Android releases require the complete keystore/signing
+          # secrets; failing fast leaves the strict signing contract intact.
+          # Because the Windows release job is a separate workflow job, a
+          # missing Android keystore fails only the Android job and does not
+          # prevent Windows NOTSIP.exe / NOTSIP-Setup.exe from publishing.
+          for value in "$ANDROID_KEYSTORE_BASE64" "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD"; do
+            if [ -z "$value" ]; then echo 'Tagged Android releases require complete keystore/signing secrets.'; exit 1; fi
+          done
       - name: Build Android artifacts
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -195,12 +193,12 @@ jobs:
             gradle -p android assembleDebug --no-daemon
           fi
       - name: Require release artifacts for tagged release
-        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           test -s android/app/build/outputs/apk/release/app-release.apk
           test -s android/app/build/outputs/bundle/release/app-release.aab
       - name: Verify Android release signatures
-        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -219,14 +217,14 @@ jobs:
           jarsigner -verify -strict -verbose -certs android/app/build/outputs/bundle/release/app-release.aab > "$RUNNER_TEMP/aab-signature.txt"
           grep -F "$expected" "$RUNNER_TEMP/aab-signature.txt" >/dev/null
       - name: Publish signed Android assets
-        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/bundle/release/app-release.aab
       - name: Upload Android release artifacts
-        if: startsWith(github.ref, 'refs/tags/v') && env.android_release_signing == 'true'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: NOTSIP-Android-release
