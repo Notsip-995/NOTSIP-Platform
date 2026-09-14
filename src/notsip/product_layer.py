@@ -91,8 +91,48 @@ class ConfigStore:
         if not self.path.exists():self.save({})
         dst=self.root/'runtime'/f'config-{time.strftime("%Y%m%d-%H%M%S")}.json';dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(self.path,dst);return str(dst.relative_to(self.root))
 
+class _FileLock:
+    """Portable advisory exclusive lock used to serialize audit-log append
+    across processes. Uses fcntl on POSIX and msvcrt on Windows; degrades to
+    a no-op when neither is available so the audit path never hard-fails."""
+    def __init__(self,path):self.path=str(path);self._fd=None
+    def acquire(self):
+        try:
+            import fcntl  # type: ignore
+            self._fd=os.open(self.path,os.O_CREAT|os.O_RDWR,0o600)
+            fcntl.flock(self._fd,fcntl.LOCK_EX)
+            return
+        except (ImportError,OSError,ValueError):
+            self._fd=None
+        try:
+            import msvcrt  # type: ignore
+            self._fd=os.open(self.path,os.O_CREAT|os.O_RDWR,0o600)
+            if os.fstat(self._fd).st_size==0:
+                os.write(self._fd,b'0')
+            os.lseek(self._fd,0,os.SEEK_SET)
+            msvcrt.locking(self._fd,msvcrt.LK_LOCK,1)
+        except (ImportError,OSError,ValueError):
+            self._fd=None
+    def release(self):
+        if self._fd is None:return
+        try:
+            import fcntl  # type: ignore
+            fcntl.flock(self._fd,fcntl.LOCK_UN)
+        except ImportError:
+            try:
+                import msvcrt  # type: ignore
+                try:
+                    os.lseek(self._fd,0,os.SEEK_SET)
+                    msvcrt.locking(self._fd,msvcrt.LK_UNLCK,1)
+                except OSError:pass
+            except ImportError:pass
+        except OSError:pass
+        try:os.close(self._fd)
+        except OSError:pass
+        self._fd=None
+
 class AuditLog:
-    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
+    def __init__(self,root):self.path=Path(root)/'runtime'/'audit.jsonl';self.path.parent.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock();self._flock=_FileLock(self.path.with_suffix('.lock'))
     @staticmethod
     def _digest(row):
         unsigned=dict(row);unsigned.pop('digest',None);return hashlib.sha256(json.dumps(unsigned,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
@@ -109,14 +149,46 @@ class AuditLog:
                 previous=digest;entries+=1
             return {'valid':True,'entries':entries,'head':previous}
         except OSError as exc:return {'valid':False,'entries':entries,'reason':f'audit log read failed: {exc}','failed_entry':entries+1}
+    def recover(self):
+        """Quarantine a corrupt/tampered audit log and restart an empty chain.
+
+        Run explicitly at process startup so a log corrupted by a previous
+        crash or a concurrent-writer race does not make the product unusable.
+        The invalid file is delivered to runtime/quarantine/ (preserving
+        evidence) and an 'audit.chain.reset' entry records the recovery before
+        any request writes. Returns {'recovered': bool, 'reason': str|None,
+        'quarantined': str|None, 'entries': int}."""
+        with self.lock:
+            self._flock.acquire()
+            try:
+                result=self.verify()
+                if result['valid']:return {'recovered':False,'reason':None,'quarantined':None,'entries':result['entries']}
+                qdir=self.path.parent/'quarantine';qdir.mkdir(parents=True,exist_ok=True)
+                dest=qdir/f'audit-{time.strftime("%Y%m%d-%H%M%S")}.jsonl'
+                quarantined=None
+                if self.path.exists():
+                    try:os.replace(self.path,dest);quarantined=str(dest.relative_to(self.path.parent.parent))
+                    except OSError:
+                        dest=qdir/f'audit-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:8]}.jsonl'
+                        try:os.replace(self.path,dest);quarantined=str(dest.relative_to(self.path.parent.parent))
+                        except OSError:quarantined=None
+                row={'ts':time.time(),'event':'audit.chain.reset','reason':result.get('reason','audit hash chain verification failed'),'quarantined':quarantined,'repair':True};row['prev_digest']='0'*64;row['digest']=self._digest(row)
+                with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
+                return {'recovered':True,'reason':result.get('reason'),'quarantined':quarantined,'entries':0}
+            finally:
+                self._flock.release()
     def _last_hash(self):
         result=self.verify()
         if not result['valid']:raise RuntimeError(result.get('reason','audit log integrity verification failed'))
         return result.get('head','0'*64)
     def write(self,event,**fields):
         with self.lock:
-            row={'ts':time.time(),'event':event,**fields};row['prev_digest']=self._last_hash();row['digest']=self._digest(row)
-            with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
+            self._flock.acquire()
+            try:
+                row={'ts':time.time(),'event':event,**fields};row['prev_digest']=self._last_hash();row['digest']=self._digest(row)
+                with self.path.open('a',encoding='utf-8') as f:f.write(json.dumps(row,sort_keys=True,separators=(',',':'),default=str)+'\n')
+            finally:
+                self._flock.release()
     def tail(self,n=200):
         if not self.path.exists():return []
         return [json.loads(x) for x in self.path.read_text(encoding='utf-8').splitlines()[-n:] if x.strip()]
