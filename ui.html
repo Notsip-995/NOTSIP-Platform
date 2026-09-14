@@ -66,6 +66,10 @@ footer{margin:30px 0 10px;text-align:center;color:#51627f;font-size:12px}
   <div>NOTSIP is <b>not configured yet</b>. Complete the first-run setup wizard to choose your AI provider, API key, and security settings.</div>
   <a href="/setup"><button class="primary">Open setup wizard →</button></a>
 </div>
+<div id="restartBanner" class="banner warn hidden">
+  <div><b>Restart required.</b> Some saved settings only take effect after NOTSIP restarts. Restart the app to apply: <span id="restartKeys" class="mono"></span></div>
+  <button class="mini" onclick="window.close();">Close dashboard</button>
+</div>
 <main>
 
 <section id="loginView" class="card">
@@ -199,6 +203,7 @@ footer{margin:30px 0 10px;text-align:center;color:#51627f;font-size:12px}
   <div class="card">
     <h2>Runtime configuration</h2>
     <button class="mini" onclick="loadConfig()">Refresh</button>
+    <div id="configPendingNote" class="banner warn hidden" style="margin:8px 0"></div>
     <div class="mono" id="configOut">Loading…</div>
     <div class="muted" style="margin-top:6px">Use the <a href="/setup">setup wizard</a> to change settings. Secrets are redacted; the API key is required to authenticate this dashboard.</div>
   </div>
@@ -367,6 +372,9 @@ async function refreshStatus() {
       const rr = rowFromArray(deg.reasons || [], r => chip(r, 'w'));
       cap.appendChild(rr);
     }
+    const pending = (deg && deg.restart_pending) || [];
+    $('restartBanner').classList.toggle('hidden', !pending.length);
+    if (pending.length) $('restartKeys').textContent = pending.join(', ');
   } catch (e) {
     $('capsPanel').textContent = 'Error: ' + e.message;
     $('connDot').textContent = 'Disconnected';
@@ -683,6 +691,16 @@ async function checkRecovery() {
 /* ---------- config ---------- */
 async function loadConfig() {
   try {
+    let pendingNote = '';
+    try {
+      const deg = await api('/api/degraded');
+      const pending = (deg && deg.restart_pending) || [];
+      if (pending.length) pendingNote = 'Restart required to apply: ' + pending.join(', ') + '. Restart NOTSIP to activate these changes.';
+    } catch (e) { /* degraded endpoint may be unavailable; ignore */ }
+    const note = $('configPendingNote');
+    note.textContent = pendingNote;
+    note.classList.toggle('hidden', !pendingNote);
+
     const d = await api('/api/config');
     const out = $('configOut');
     out.textContent = '';

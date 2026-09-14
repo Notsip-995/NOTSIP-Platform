@@ -24,6 +24,32 @@ from .security import AuthManager,pkce_pair
 from .oauth_services import OAuthService
 
 settings.ensure();DATA=Path(settings.data_dir).resolve();ROOT=Path(__file__).resolve().parents[2];WS=Workspace(DATA/'workspace')
+
+_RESTART_SENSITIVE={'host','port','auth_mode','oidc_provider','oidc_issuer','oidc_client_id','oidc_redirect_uri','oidc_scopes','llm_base_url','llm_model','fallback_llm_base_url','fallback_llm_model','stt_base_url','stt_model','stt_language','stt_stream_url','tts_base_url','tts_model','tts_language','tts_voice','tts_format','voice_enabled','native_voice_enabled','vision_enabled','perception_enabled','brave_api_key','browser_enabled','smtp_host','smtp_port','imap_host','email_username','oauth_authorize_url','oauth_token_url','oauth_client_id','oauth_redirect_uri','oauth_scopes','node_shared_secret','remote_compute_url','remote_sensing_url','home_adapter_url','biometric_adapter_url','flight_planning_url','business_admin_url','speaker_identity_url','github_repository','windows_publisher_thumbprint','github_update_enabled','self_modify_enabled','perception_screen_enabled','open_browser'}
+_BOOLEAN_KEYS={'voice_enabled','native_voice_enabled','vision_enabled','perception_enabled','self_modify_enabled','browser_enabled','github_update_enabled','perception_screen_enabled','open_browser'}
+def _stored_secret_names():
+    """Names of secret-store entries that exist (configured) for this install."""
+    try:
+        store=getattr(auth,'secrets',None)
+        if store is None:return set()
+        names=set()
+        for key in ('api_key','llm_api_key','fallback_llm_api_key','stt_api_key','tts_api_key','email_password','brave_api_key','pairing_secret','node_shared_secret','event_hmac_secret'):
+            if store.get('NOTSIP_'+key.upper()):names.add(key)
+        return names
+    except Exception:
+        return set()
+def _persisted_settings():
+    """Best-effort read of the on-disk persisted config (non-secret settings only).
+
+    Secrets live in the OS secret store, so they cannot be faithfully compared
+    here; the caller adds api_key as a special case. A missing/unreadable file
+    simply means 'nothing persisted', matching a fresh install."""
+    from pathlib import Path
+    from .product_layer import ConfigStore
+    try:
+        return ConfigStore(Path(settings.data_dir)).load().get('settings') or {}
+    except Exception:
+        return {}
 store=Store(DATA,settings.database_url);policy=Policy(settings.autonomy_level);registry=Registry();events=EventBus();provider=Provider(settings.llm_base_url,settings.llm_api_key,settings.llm_model,settings.fallback_llm_base_url,settings.fallback_llm_api_key,settings.fallback_llm_model)
 world=WorldModel(store);jobs=Scheduler(store);win=Windows(WS);uia=WindowsAutomation();web=Web(settings.brave_api_key);browser=Browser();emailc=Email(settings.smtp_host,settings.smtp_port,settings.imap_host,settings.email_username,settings.email_password);calendarc=Calendar();pairing=Pairing(store)
 agent=Agent(settings,store,policy,registry,provider,world);maint=SelfMaintenance(ROOT);media=MediaEngine(settings,provider,DATA);nodes=NodeRegistry(store,settings.node_shared_secret);recovery=RecoveryManager(DATA);intellect=Intelligence(store,world);auth=AuthManager(settings,DATA);oauth=OAuthService(auth.secrets)
@@ -120,7 +146,21 @@ async def degraded(_:None=Depends(require_auth)):
     if not web.enabled:reasons.append('web_search_not_configured')
     if not emailc.enabled:reasons.append('email_not_configured')
     if auth.mode=='oidc' and not auth.oidc.configured:reasons.append('oidc_not_configured')
-    return {'degraded':bool(reasons),'reasons':reasons}
+    restart_pending=[]
+    try:
+        saved=_persisted_settings()
+        for key in _RESTART_SENSITIVE:
+            if key not in saved:continue   # never persisted => default runtime value is fine
+            current=getattr(settings,key,None)
+            if isinstance(current,int):current=bool(current) if key in _BOOLEAN_KEYS else current
+            if current!=saved.get(key):restart_pending.append(key)
+        secrets_deferred=_stored_secret_names()
+        if 'api_key' not in restart_pending and 'api_key' in secrets_deferred and not getattr(settings,'api_key',''):
+            restart_pending.append('api_key')
+        if 'llm_api_key' in secrets_deferred and not bool(getattr(settings,'llm_api_key','')):
+            restart_pending.append('llm_api_key')
+    except Exception:restart_pending=[]
+    return {'degraded':bool(reasons),'reasons':reasons,'restart_pending':sorted(restart_pending)}
 @app.post('/api/message')
 async def message(body:Message,_:None=Depends(require_auth)):return await agent.handle(body.message)
 @app.get('/api/memory')
